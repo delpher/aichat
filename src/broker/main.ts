@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Broker } from "./broker.js";
-import { ConfigFile } from "./config.js";
+import { ConfigFile, type BrokerConfig } from "./config.js";
 
 const path = resolve(process.argv[2] ?? process.env.AICHAT_CONFIG ?? "agents.json");
 if (!existsSync(path)) {
@@ -10,8 +10,18 @@ if (!existsSync(path)) {
   process.exit(1);
 }
 const config = new ConfigFile(path);
-const broker = new Broker({ config: () => config.get(), updateSettings: (patch) => config.updateSettings(patch) });
-const cfg = config.get();
+/** Environment overrides on top of the config file (used by the Docker image to listen on all interfaces). */
+const withEnv = (c: BrokerConfig): BrokerConfig => ({
+  ...c,
+  host: process.env.AICHAT_HOST || c.host,
+  port: Number(process.env.AICHAT_PORT) || c.port,
+  db: process.env.AICHAT_DB || c.db,
+});
+const broker = new Broker({
+  config: () => withEnv(config.get()),
+  updateSettings: (patch) => withEnv(config.updateSettings(patch)),
+});
+const cfg = withEnv(config.get());
 const port = await broker.listen();
 console.error(`[broker] listening on http://${cfg.host}:${port} (WebSocket: ws://${cfg.host}:${port}/ws)`);
 console.error(`[broker] agents: ${cfg.agents.map((a) => `${a.name} (${a.kind})`).join(", ") || "none"}`);

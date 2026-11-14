@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+agents
+agents.json
+.mcp.json
+.git
+.claude

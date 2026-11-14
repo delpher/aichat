@@ -1,0 +1,12 @@
+services:
+  broker:
+    build: .
+    image: aichat-broker
+    container_name: aichat-broker
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Writable: the broker re-reads it on change and saves settings from the web UI.
+      - ./agents.json:/app/config/agents.json
+      - ./data:/app/data
