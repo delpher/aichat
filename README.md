@@ -181,6 +181,16 @@ docker compose up -d --build
 Адреса брокера в локальній мережі: `http://<IP-цього-ПК>:8787` (вебінтерфейс), `ws://<IP-цього-ПК>:8787` для агентів.
 На іншій машині в `.mcp.json` агента вкажіть `"AICHAT_URL": "ws://<IP-цього-ПК>:8787"` і шлях до `dist/adapters/claude-channel.js` на тій машині.
 
+Щоб звертатися до брокера за ім'ям, додайте запис DNS на роутері. Приклад для MikroTik (RouterOS), де ПК має адресу 192.168.1.19:
+
+```
+/ip dhcp-server lease make-static [find address=192.168.1.19]
+/ip dns static add name=aichat.home.arpa address=192.168.1.19 comment="AIChat broker"
+```
+
+Перша команда закріплює IP за ПК, друга додає ім'я. Після цього брокер доступний як `http://aichat.home.arpa:8787`
+і `ws://aichat.home.arpa:8787` (`"AICHAT_URL": "ws://aichat.home.arpa:8787"` у `.mcp.json`) на всіх пристроях, що беруть DNS від роутера.
+
 Змінні середовища перекривають `agents.json`: `AICHAT_HOST`, `AICHAT_PORT`, `AICHAT_DB` (а `AICHAT_CONFIG` задає шлях до конфігу).
 
 > **Увага:** трафік не шифрується, токени передаються відкритим текстом. Використовуйте лише в довіреній мережі
