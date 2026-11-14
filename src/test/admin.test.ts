@@ -73,7 +73,7 @@ test("admin WebSocket observes every message and presence, and is read-only", as
   const { broker, url } = await startBroker([{ name: "a" }, { name: "b" }, { name: "c" }], { adminToken: ADMIN });
   const obs = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
   await obs.connect();
-  assert.equal(obs.agent, "admin");
+  assert.equal(obs.agent, "owner");
   const presence = new Promise<{ agent: string; online: boolean }>((res) => obs.once("presence", res));
   const a = await connect(url, "a");
   assert.deepEqual(await presence, { agent: "a", online: true });
@@ -320,7 +320,10 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   const mcp = JSON.parse(c.setup.steps.find((s) => s.lang === "json")!.code!);
   assert.equal(mcp.mcpServers.aichat.env.AICHAT_TOKEN, c.token);
   assert.match(mcp.mcpServers.aichat.env.AICHAT_URL, /^ws:\/\/127\.0\.0\.1:\d+$/);
-  assert.match(mcp.mcpServers.aichat.args[0], /<AICHAT_DIR>\/dist\/adapters\/claude-channel\.js$/);
+  assert.equal(mcp.mcpServers.aichat.args[0], "<AICHAT_DIR>/claude-channel.mjs");
+  const dl = c.setup.steps.find((s) => (s as { download?: unknown }).download) as unknown as { download: { url: string; filename: string } };
+  assert.equal(dl.download.filename, "claude-channel.mjs");
+  assert.match(dl.download.url, /^http:\/\/127\.0\.0\.1:\d+\/client\/claude-channel\.mjs$/);
   assert.ok(c.setup.steps.some((s) => s.code?.includes("--dangerously-load-development-channels server:aichat")));
 
   // publicUrl and projectDir from settings go into the instructions
@@ -338,10 +341,10 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   r = await post("/admin/api/agents", { name: "gpt", kind: "openai" });
   const o = (await r.json()) as SetupRes;
   const bash = o.setup.steps.find((s) => s.lang === "bash")!.code!;
-  assert.match(bash, /cd 'D:\/AIChat'/);
+  assert.match(bash, /node 'D:\/AIChat\/openai-agent\.mjs'/);
   assert.match(bash, /AICHAT_URL='ws:\/\/aichat\.lan:8787'/);
   assert.ok(bash.includes(o.token));
-  assert.ok(o.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("npm run openai-agent")));
+  assert.ok(o.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("node 'D:/AIChat/openai-agent.mjs'")));
 
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);
@@ -354,7 +357,7 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   const again = JSON.stringify(await r.json());
   assert.ok(again.includes("<TOKEN>"));
   assert.ok(!again.includes(c.token));
-  assert.ok(again.includes("D:/AIChat/dist/adapters/claude-channel.js"));
+  assert.ok(again.includes("D:/AIChat/claude-channel.mjs"));
 
   r = await post("/admin/api/agents/claude-c/token");
   const t = (await r.json()) as SetupRes;
@@ -440,5 +443,86 @@ test("an agent that leaves a configured room stays out after reconnecting", asyn
   assert.deepEqual(me.rooms, ["lobby"]);
   assert.deepEqual(cfg().agents[0].rooms, ["lobby"]);
   a2.close();
+  await broker.close();
+});
+
+test("bundled adapters are served without a token; nothing else under /client", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "aichat-bundle-"));
+  writeFileSync(join(dir, "claude-channel.mjs"), "// bundle");
+  writeFileSync(join(dir, "secret.txt"), "no");
+  const { broker, http } = await startBroker([{ name: "a" }], {}, { bundleDir: dir });
+  let r = await fetch(`${http}/client/claude-channel.mjs`);
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), "// bundle");
+  assert.match(r.headers.get("content-disposition")!, /attachment; filename="claude-channel.mjs"/);
+  assert.equal((await fetch(`${http}/client/openai-agent.mjs`)).status, 404); // listed but missing
+  assert.equal((await fetch(`${http}/client/secret.txt`)).status, 404);
+  assert.equal((await fetch(`${http}/client/..%2fsecret.txt`)).status, 404);
+  await broker.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a human can be made an admin: own token opens the admin API and the observer feed", async () => {
+  const { broker, url, http, cfg } = await startBroker(
+    [{ name: "olena", kind: "human" }, { name: "bot", kind: "claude" }, { name: "c" }],
+    { adminToken: ADMIN },
+  );
+  const olenaTok = tok("olena");
+  const as = (t: string) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
+  const patch = (name: string, body: unknown, t = ADMIN) =>
+    fetch(`${http}/admin/api/agents/${name}`, { method: "PATCH", headers: as(t), body: JSON.stringify(body) });
+
+  assert.equal((await fetch(`${http}/admin/api/overview`, { headers: as(olenaTok) })).status, 401);
+
+  let r = await patch("olena", { admin: true });
+  assert.equal(r.status, 200);
+  assert.equal(((await r.json()) as { agent: { admin: boolean } }).agent.admin, true);
+  assert.equal(cfg().agents.find((a) => a.name === "olena")?.admin, true);
+  assert.equal((await patch("bot", { admin: true })).status, 403);
+  assert.equal((await patch("olena", { admin: "yes" })).status, 400);
+  assert.equal((await patch("olena", { kind: "x" })).status, 400);
+
+  r = await fetch(`${http}/admin/api/overview`, { headers: as(olenaTok) });
+  assert.equal(r.status, 200);
+  const o = (await r.json()) as { me: unknown; agents: { name: string; admin: boolean }[] };
+  assert.deepEqual(o.me, { name: "olena", root: false });
+  assert.equal(o.agents.find((a) => a.name === "olena")?.admin, true);
+  r = await fetch(`${http}/admin/api/overview`, { headers: as(ADMIN) });
+  assert.deepEqual(((await r.json()) as { me: unknown }).me, { name: "owner", root: true });
+
+  // raw WebSocket: auth with observer:true gives the admin feed
+  const { WebSocket } = await import("ws");
+  const openFeed = (token: string) =>
+    new Promise<{ ws: InstanceType<typeof WebSocket>; first: { type: string; agent?: string; observer?: boolean; error?: string } }>((res) => {
+      const ws = new WebSocket(`${url}/ws`);
+      ws.on("open", () => ws.send(JSON.stringify({ type: "auth", token, observer: true })));
+      ws.once("message", (d) => res({ ws, first: JSON.parse(String(d)) }));
+    });
+  const feed = await openFeed(olenaTok);
+  assert.deepEqual([feed.first.type, feed.first.agent, feed.first.observer], ["welcome", "olena", true]);
+  const seen = new Promise<{ message: { text: string } }>((res) =>
+    feed.ws.on("message", (d) => {
+      const f = JSON.parse(String(d));
+      if (f.type === "message") res(f);
+    }),
+  );
+  const bot = await connect(url, "bot");
+  await bot.send({ to: "c", text: "private bot->c" });
+  assert.equal((await seen).message.text, "private bot->c");
+
+  // the admin human can manage others with her own token
+  assert.equal((await patch("c", { admin: false }, olenaTok)).status, 200);
+
+  // removing her rights closes the feed and locks the admin API again
+  const closed = new Promise<number>((res) => feed.ws.on("close", (code) => res(code)));
+  assert.equal((await patch("olena", { admin: false }, olenaTok)).status, 200);
+  assert.equal(await closed, 4003);
+  assert.equal((await fetch(`${http}/admin/api/overview`, { headers: as(olenaTok) })).status, 401);
+  const denied = await openFeed(olenaTok);
+  assert.equal(denied.first.type, "error");
+  // without observer:true she is still a normal member
+  const member = await connect(url, "olena");
+  assert.equal(member.agent, "olena");
+  member.close(); bot.close();
   await broker.close();
 });

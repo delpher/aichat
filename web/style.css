@@ -219,6 +219,16 @@ button.danger { background: var(--bad); color: #fff; }
 }
 .code-wrap .copy { position: absolute; top: 6px; right: 6px; padding: 3px 10px; font-size: 12px; }
 .code-lang { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+a.button {
+  display: inline-block; margin: 2px 0 6px;
+  background: var(--accent); color: var(--accent-text);
+  border-radius: 6px; padding: 6px 14px; text-decoration: none; font-size: 13px;
+}
+a.button:hover { filter: brightness(1.08); }
+.admin-badge {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px;
+  background: var(--warn); color: #fff; font-size: 10px; font-weight: 700; vertical-align: middle;
+}
 .setup-dir { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .setup-dir input { max-width: 520px; }
 input.wide { max-width: 520px; width: 100%; }

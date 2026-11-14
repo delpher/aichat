@@ -12,6 +12,8 @@ export interface AgentConfig {
   webhook?: string;
   /** Rooms this agent is put into automatically. */
   rooms?: string[];
+  /** A human whose own token also opens the admin web UI and /admin/api. */
+  admin?: boolean;
 }
 
 export interface BrokerConfig {
@@ -115,6 +117,8 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     if (!a.token || a.token.length < 16) throw new Error(`agent ${a.name}: token must be at least 16 characters`);
     if (tokens.has(a.token)) throw new Error(`agent ${a.name}: token is shared with another agent`);
     for (const r of a.rooms ?? []) if (!ROOM_RE.test(r)) throw new Error(`agent ${a.name}: invalid room ${r}`);
+    if (a.admin != null && typeof a.admin !== "boolean") throw new Error(`agent ${a.name}: admin must be true or false`);
+    if (a.admin && a.kind !== "human") throw new Error(`agent ${a.name}: only agents of kind "human" can be admins`);
     names.add(a.name);
     tokens.add(a.token);
     a.kind ??= "agent";

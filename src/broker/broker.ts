@@ -39,9 +39,20 @@ export interface BrokerOptions {
   defaultProjectDir?: string;
   /** Folder with the web UI (index.html, app.js, ...). Defaults to `web/` in the package root. */
   webDir?: string;
+  /** Folder with the bundled adapters. Defaults to `dist/bundle`. */
+  bundleDir?: string;
 }
 
 const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web");
+const DEFAULT_BUNDLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle");
+/** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
+const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs"]);
+
+/** Who is using the admin API: the root adminToken ("owner") or a human agent with `admin: true`. */
+export interface AdminIdentity {
+  name: string;
+  root: boolean;
+}
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -76,8 +87,8 @@ function safeEqual(a: string, b: string) {
 export class Broker {
   readonly store: Store;
   private sockets = new Map<string, Set<WebSocket>>();
-  /** Admin sockets (web UI) that see every message and presence change. */
-  private observers = new Set<WebSocket>();
+  /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
+  private observers = new Map<WebSocket, string>();
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -106,9 +117,17 @@ export class Broker {
     return agent;
   }
 
+  /** The admin behind a token: the root adminToken, or a human agent marked `admin: true`. */
+  adminFor(token: string | undefined): AdminIdentity | undefined {
+    if (!token) return undefined;
+    const root = this.cfg.adminToken;
+    if (root && safeEqual(root, token)) return { name: "owner", root: true };
+    const a = this.cfg.agents.find((x) => safeEqual(x.token, token));
+    return a?.admin && a.kind === "human" ? { name: a.name, root: false } : undefined;
+  }
+
   isAdmin(token: string | undefined): boolean {
-    const admin = this.cfg.adminToken;
-    return !!token && !!admin && safeEqual(admin, token);
+    return !!this.adminFor(token);
   }
 
   // ---------------- core operations ----------------
@@ -225,12 +244,18 @@ export class Broker {
   }
 
   private notifyObservers(f: ServerFrame) {
-    for (const ws of this.observers) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
   }
 
   /** Drops every live connection of an agent (after its token changed or it was removed). */
   private disconnect(name: string, reason: string) {
     for (const ws of this.sockets.get(name) ?? []) ws.close(4003, reason);
+    this.disconnectObserver(name, reason);
+  }
+
+  /** Drops the admin feed of a human admin (rights removed, token changed, removed). */
+  private disconnectObserver(name: string, reason: string) {
+    for (const [ws, who] of this.observers) if (who === name) ws.close(4003, reason);
   }
 
   /** Pending messages for a polling agent; marks them delivered. */
@@ -248,7 +273,7 @@ export class Broker {
   }
 
   private deliver(m: ChatMessage) {
-    for (const ws of this.observers) this.sendFrame(ws, { type: "message", message: m });
+    for (const ws of this.observers.keys()) this.sendFrame(ws, { type: "message", message: m });
     for (const name of this.recipients(m)) {
       const socks = this.sockets.get(name);
       if (socks?.size) {
@@ -297,7 +322,7 @@ export class Broker {
   private broadcastPresence(agent: string, online: boolean) {
     const f: ServerFrame = { type: "presence", agent, online };
     for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, f);
-    for (const ws of this.observers) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
   }
 
   // ---------------- WebSocket ----------------
@@ -328,13 +353,18 @@ export class Broker {
       }
       if (!agent) {
         if (f.type !== "auth") return this.sendFrame(ws, { type: "error", error: "authenticate first", ref });
-        if (this.isAdmin(f.token)) {
+        const admin = this.adminFor(f.token);
+        if (admin && (admin.root || f.observer)) {
           observer = true;
           clearTimeout(authTimer);
-          this.observers.add(ws);
-          this.sendFrame(ws, { type: "welcome", agent: "admin", rooms: [], observer: true, ref });
-          this.log("admin observer connected");
+          this.observers.set(ws, admin.name);
+          this.sendFrame(ws, { type: "welcome", agent: admin.name, rooms: [], observer: true, ref });
+          this.log(`admin observer ${admin.name} connected`);
           return;
+        }
+        if (f.observer) {
+          this.sendFrame(ws, { type: "error", error: "this token has no admin rights", ref });
+          return ws.close(4003, "not an admin");
         }
         agent = this.authenticate(f.token);
         if (!agent) {
@@ -410,6 +440,7 @@ export class Broker {
     };
     try {
       if (url.pathname === "/health") return reply(200, { ok: true });
+      if (req.method === "GET" && url.pathname.startsWith("/client/")) return await this.serveClient(url.pathname, res);
       if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
         return await this.serveStatic(url.pathname, res);
       if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, url, reply);
@@ -483,14 +514,37 @@ export class Broker {
     res.end(data);
   }
 
+  private async serveClient(pathname: string, res: ServerResponse) {
+    const name = pathname.slice("/client/".length);
+    let data: Buffer | undefined;
+    if (CLIENT_FILES.has(name))
+      data = await readFile(join(this.opts.bundleDir ?? DEFAULT_BUNDLE_DIR, name)).catch(() => undefined);
+    if (!data) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      return res.end("not found");
+    }
+    res.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "content-disposition": `attachment; filename="${name}"`,
+      "cache-control": "no-cache",
+      "x-content-type-options": "nosniff",
+    });
+    res.end(data);
+  }
+
   private async onAdminRequest(req: IncomingMessage, url: URL, reply: (status: number, body: unknown) => void) {
     if (!this.cfg.adminToken)
       return reply(403, { error: "admin access is off: run `npm run admin-token` to create a token" });
-    if (!this.isAdmin(req.headers.authorization?.replace(/^Bearer\s+/i, "")))
-      return reply(401, { error: "invalid or missing admin token" });
+    const me = this.adminFor(req.headers.authorization?.replace(/^Bearer\s+/i, ""));
+    if (!me) return reply(401, { error: "invalid or missing admin token" });
     const route = `${req.method} ${url.pathname}`;
+    const adminAgents = () =>
+      this.agents().map((a) => {
+        const c = this.cfg.agents.find((x) => x.name === a.name);
+        return { ...a, webhook: !!c?.webhook, admin: !!c?.admin };
+      });
     if (route === "GET /admin/api/overview")
-      return reply(200, { agents: this.agents(), rooms: this.store.rooms(), dms: this.store.dms() });
+      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms() });
     const edit = (fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig => {
       if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
       try {
@@ -523,10 +577,7 @@ export class Broker {
         httpUrl: this.cfg.publicUrl || `http://${req.headers.host ?? `127.0.0.1:${this.cfg.port}`}`,
         projectDir: this.cfg.projectDir || this.opts.defaultProjectDir || "",
       });
-    if (route === "GET /admin/api/agents")
-      return reply(200, {
-        agents: this.agents().map((a) => ({ ...a, webhook: !!this.cfg.agents.find((c) => c.name === a.name)?.webhook })),
-      });
+    if (route === "GET /admin/api/agents") return reply(200, { agents: adminAgents() });
     if (route === "POST /admin/api/agents") {
       const b = await readJson(req);
       const name = b.name;
@@ -565,7 +616,7 @@ export class Broker {
         raw.agents.push(agent);
       });
       for (const r of agent.rooms ?? []) this.store.join(name, r);
-      this.log(`admin added ${name} (${kind})`);
+      this.log(`${me.name} added ${name} (${kind})`);
       const { token, ...info } = agent;
       this.notifyRooms(name);
       return reply(201, {
@@ -580,6 +631,23 @@ export class Broker {
       const target = this.cfg.agents.find((a) => a.name === name);
       if (!target) throw new BrokerError(`unknown agent: ${name}`, 404);
       if (req.method === "GET" && agentMatch[2] === "/setup") return reply(200, { setup: setupFor(target, TOKEN_PLACEHOLDER) });
+      if (req.method === "PATCH" && !agentMatch[2]) {
+        const b = await readJson(req);
+        const keys = Object.keys(b);
+        if (keys.length !== 1 || keys[0] !== "admin") throw new BrokerError("only `admin` can be changed here");
+        if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
+        if (b.admin && target.kind !== "human")
+          throw new BrokerError(`only agents of kind "human" can be admins; ${name} is "${target.kind}"`, 403);
+        edit((raw) => {
+          const a = raw.agents?.find((x) => x.name === name);
+          if (!a) throw new BrokerError(`unknown agent: ${name}`, 404);
+          if (b.admin) a.admin = true;
+          else delete a.admin;
+        });
+        if (!b.admin) this.disconnectObserver(name, "admin rights removed");
+        this.log(`${me.name} ${b.admin ? "made" : "removed"} ${name} ${b.admin ? "an admin" : "from admins"}`);
+        return reply(200, { agent: adminAgents().find((a) => a.name === name) });
+      }
       if (req.method === "POST" && agentMatch[2] === "/token") {
         const token = newToken();
         edit((raw) => {
@@ -588,7 +656,7 @@ export class Broker {
           a.token = token;
         });
         this.disconnect(name, "token changed");
-        this.log(`admin issued a new token for ${name}`);
+        this.log(`${me.name} issued a new token for ${name}`);
         return reply(200, { token, setup: setupFor(target, token) });
       }
       if (req.method === "DELETE" && !agentMatch[2]) {
@@ -597,7 +665,7 @@ export class Broker {
         });
         this.disconnect(name, "agent removed");
         this.store.forgetAgent(name);
-        this.log(`admin removed ${name}`);
+        this.log(`${me.name} removed ${name}`);
         this.notifyObservers({ type: "rooms_changed" });
         return reply(200, { ok: true });
       }
@@ -727,7 +795,7 @@ export class Broker {
   async close() {
     clearInterval(this.retryTimer);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
-    for (const ws of this.observers) ws.terminate();
+    for (const ws of this.observers.keys()) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));
     await new Promise<void>((r) => (this.http ? this.http.close(() => r()) : r()));
     await Promise.all(this.webhookChains.values());

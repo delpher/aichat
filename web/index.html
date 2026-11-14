@@ -97,9 +97,9 @@
             <p class="muted small">Адреса, за якою брокер доступний з інших комп'ютерів. Її підставляють у команди запуску агентів. Якщо поле порожнє, береться адреса, з якої відкрито цю сторінку.</p>
           </div>
           <div class="field">
-            <label for="set-projectDir">Папка AIChat на комп'ютері агента (<code>projectDir</code>)</label>
-            <input id="set-projectDir" name="projectDir" class="wide" placeholder="D:/Programming/My Projects/AIChat">
-            <p class="muted small">Шлях, який підставляється в <code>.mcp.json</code> для Claude Code (туди, де лежить <code>dist/adapters/claude-channel.js</code>). Якщо брокер працює в Docker, сам він цього шляху не знає.</p>
+            <label for="set-projectDir">Папка для адаптера на комп'ютері агента (<code>projectDir</code>)</label>
+            <input id="set-projectDir" name="projectDir" class="wide" placeholder="C:/aichat">
+            <p class="muted small">Куди на комп'ютері агента кладуть завантажений файл адаптера (<code>claude-channel.mjs</code>). Цей шлях підставляється в <code>.mcp.json</code>. Якщо поле порожнє, в інструкції буде <code>&lt;AICHAT_DIR&gt;</code>, і шлях можна вписати прямо там.</p>
           </div>
           <div class="actions">
             <button id="settings-save" type="submit">Зберегти</button>
@@ -115,8 +115,8 @@
         <div id="setup-box" class="token-box" hidden>
           <h2 id="setup-title"></h2>
           <p id="setup-warning" class="small">Токен показується <strong>лише один раз</strong>. Скопіюйте потрібне зараз і передайте тому, хто запускатиме агента. Пізніше інструкцію можна відкрити знову, але вже без токена.</p>
-          <label id="setup-dir-wrap" class="setup-dir" hidden>Папка AIChat на комп'ютері агента (підставиться замість <code>&lt;AICHAT_DIR&gt;</code>)
-            <input id="setup-dir" placeholder="D:/Programming/My Projects/AIChat">
+          <label id="setup-dir-wrap" class="setup-dir" hidden>Папка, куди ви покладете адаптер на комп'ютері агента (підставиться замість <code>&lt;AICHAT_DIR&gt;</code>)
+            <input id="setup-dir" placeholder="C:/aichat">
           </label>
           <ol id="setup-steps" class="setup-steps"></ol>
           <button id="setup-close" class="link" type="button">Сховати</button>

@@ -50,6 +50,7 @@
     token: null,
     mode: null,            // "admin" | "user"
     me: null,              // user mode: { name, kind }
+    adminMe: null,         // admin mode: { name, root }
     overview: { agents: [], rooms: [], dms: [], all_rooms: [] },
     view: { kind: "all" },
     messages: [],          // current view, ascending by id
@@ -128,9 +129,12 @@
     state.token = token;
     state.mode = found.mode;
     state.me = found.mode === "user" ? found.data.me : null;
+    // admin mode: the root adminToken ({root: true}) or a person marked admin ({name})
+    state.adminMe = found.mode === "admin" ? (found.data.me || { name: "owner", root: true }) : null;
     document.body.classList.toggle("mode-admin", isAdmin());
     document.body.classList.toggle("mode-user", !isAdmin());
-    $("whoami").textContent = isAdmin() ? "Режим адміністратора" : `Ви: ${state.me.name}`;
+    $("whoami").textContent = !isAdmin() ? `Ви: ${state.me.name}`
+      : state.adminMe.root ? "Адмін (головний токен)" : `Адмін: ${state.adminMe.name}`;
     setOverview(found.data);
 
     store.del(OLD_TOKEN_KEY);
@@ -148,6 +152,7 @@
     state.token = null;
     state.mode = null;
     state.me = null;
+    state.adminMe = null;
     clearTimeout(state.wsTimer);
     if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
     state.messages = []; state.ids.clear(); state.unread.clear(); state.seenLive.clear();
@@ -579,7 +584,9 @@
     let welcomed = false;
     setConn("wait", "З'єднуюсь…");
 
-    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: state.token }));
+    // A person who is an admin must ask for the observer stream; without it they'd get only their own messages.
+    const observer = isAdmin() && state.adminMe && !state.adminMe.root;
+    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: state.token, ...(observer ? { observer: true } : {}) }));
 
     ws.onmessage = (ev) => {
       let frame;
@@ -620,8 +627,22 @@
       if (state.ws !== ws || !state.token) return;
       state.ws = null;
       if (ev.code === 4003) {
-        // Token rotated or person removed by the admin.
-        logout("Доступ змінено: токен перевидано або вас видалено з чату. Попросіть у адміністратора новий токен.");
+        // Access changed by an admin. If the same token still works (e.g. admin rights were removed,
+        // so it is now a personal token), log in again in whatever mode it has now.
+        const token = state.token;
+        const remember = !!store.get(TOKEN_KEY);
+        const wasAdmin = isAdmin();
+        detectMode(token)
+          .then(() => {
+            logout("");
+            return login(token, remember).then(() => {
+              if (wasAdmin && !isAdmin()) {
+                state.flash = "Права адміністратора з вас зняли, тепер ви в режимі учасника.";
+                applyHash();
+              }
+            });
+          })
+          .catch(() => logout("Доступ змінено: токен перевидано або вас видалено з чату. Попросіть у адміністратора новий токен."));
         return;
       }
       state.wsRetry += 1;
@@ -682,7 +703,8 @@
     if (admin) {
       names = humans();
       const asSel = $("as");
-      const prev = asSel.value || store.get(AS_KEY);
+      // default sender: the last choice, else the admin themself if they are a person
+      const prev = asSel.value || store.get(AS_KEY) || (state.adminMe && !state.adminMe.root ? state.adminMe.name : null);
       asSel.replaceChildren(...names.map((n) => { const o = el("option", null, n); o.value = n; return o; }));
       if (prev && names.includes(prev)) asSel.value = prev;
       asSel.disabled = !names.length;
@@ -913,6 +935,8 @@
       const tr = el("tr");
       const nameCell = el("td");
       nameCell.append(el("strong", null, a.name));
+      if (a.admin) nameCell.append(el("span", "admin-badge", "АДМІН"));
+      if (state.adminMe && !state.adminMe.root && state.adminMe.name === a.name) nameCell.append(el("span", "kind", " (ви)"));
       if (a.description) nameCell.append(el("span", "desc", a.description));
       if (a.webhook) nameCell.append(el("span", "desc", "webhook"));
       tr.append(nameCell);
@@ -925,16 +949,29 @@
 
       const actions = el("td", "row-actions");
       if (people.confirm && people.confirm.name === a.name) {
-        const del = people.confirm.action === "delete";
-        const what = del
-          ? `Видалити ${a.name}? Історія лишиться, але підключитися буде неможливо.`
-          : `Перевидати токен ${a.name}? Старий перестане працювати, відкриті з'єднання закриються${a.kind === "human" ? "" : ", агента треба буде перезапустити з новим токеном"}.`;
+        const action = people.confirm.action;
+        const isMe = state.adminMe && state.adminMe.name === a.name && !state.adminMe.root;
+        const what = {
+          delete: `Видалити ${a.name}? Історія лишиться, але підключитися буде неможливо.${isMe ? " Це ваш обліковий запис: вас одразу вилогінить." : ""}`,
+          rotate: `Перевидати токен ${a.name}? Старий перестане працювати, відкриті з'єднання закриються${a.kind === "human" ? "" : ", агента треба буде перезапустити з новим токеном"}.`,
+          grant: `Зробити ${a.name} адміном? Зі своїм токеном ${a.name} бачитиме всю переписку, зможе писати від імені будь-якої людини, керувати агентами, кімнатами й налаштуваннями.`,
+          revoke: isMe
+            ? "Зняти права адміна із себе? Ви одразу перейдете в режим учасника."
+            : `Зняти права адміна з ${a.name}? Відкриті адмін-сесії ${a.name} закриються.`,
+        }[action];
+        const run = { delete: removePerson, rotate: rotateToken, grant: (n) => setAdmin(n, true), revoke: (n) => setAdmin(n, false) }[action];
         actions.append(el("span", "small", what + " "));
         actions.append(
-          smallButton("Так", del ? "danger" : "", () => (del ? removePerson(a.name) : rotateToken(a.name)), people.busy),
+          smallButton("Так", action === "delete" || action === "grant" ? "danger" : "", () => run(a.name), people.busy),
           smallButton("Ні", "secondary", () => { people.confirm = null; renderPeople(); }),
         );
       } else {
+        const ask = (action) => () => { people.confirm = { name: a.name, action }; renderPeople(); };
+        if (a.kind === "human") {
+          actions.append(a.admin
+            ? smallButton("Зняти адміна", "secondary", ask("revoke"), locked)
+            : smallButton("Зробити адміном", "secondary", ask("grant"), locked));
+        }
         actions.append(
           smallButton("Інструкція", "secondary", () => showSavedSetup(a.name)),
           smallButton("Новий токен", "secondary", () => { people.confirm = { name: a.name, action: "rotate" }; renderPeople(); }, locked),
@@ -984,6 +1021,15 @@
       const li = el("li");
       if (step.title) li.append(el("h3", null, step.title));
       if (step.text) li.append(el("p", "small", withDir(step.text)));
+      const dl = step.download || (step.url ? { url: step.url } : null);
+      if (dl && dl.url) {
+        const filename = dl.filename || dl.url.split("/").pop();
+        const a = el("a", "button", `⬇ Завантажити ${filename}`);
+        a.href = dl.url;
+        a.download = filename;
+        a.title = dl.url;
+        li.append(a);
+      }
       if (step.code) {
         const code = withDir(step.code);
         if (step.lang) li.append(el("div", "code-lang", step.lang));
@@ -1082,6 +1128,23 @@
       const data = await api(`/admin/api/agents/${encodeURIComponent(name)}/token`, { method: "POST" });
       showSetup(`Новий токен для ${name}`, data.setup || { steps: [{ title: "Токен", code: data.token }] }, true);
     }, `Токен ${name} перевидано.`);
+  }
+
+  function setAdmin(name, admin) {
+    const self = state.adminMe && !state.adminMe.root && state.adminMe.name === name;
+    if (self && !admin) {
+      // Losing admin rights: the same token still works as a personal one, so log in again in user mode.
+      people.busy = true;
+      renderPeople();
+      api(`/admin/api/agents/${encodeURIComponent(name)}`, { method: "PATCH", body: JSON.stringify({ admin: false }) })
+        .then(() => { const t = state.token; const keep = !!store.get(TOKEN_KEY); logout(""); return login(t, keep); })
+        .catch((err) => { people.busy = false; handleError(err, "Не вдалося"); renderPeople(); });
+      return;
+    }
+    return peopleAction(
+      () => api(`/admin/api/agents/${encodeURIComponent(name)}`, { method: "PATCH", body: JSON.stringify({ admin }) }),
+      admin ? `${name} тепер адмін.` : `${name} більше не адмін.`,
+    );
   }
 
   function removePerson(name) {

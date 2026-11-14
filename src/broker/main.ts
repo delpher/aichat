@@ -21,10 +21,11 @@ const withEnv = (c: BrokerConfig): BrokerConfig => ({
 const broker = new Broker({
   config: () => withEnv(config.get()),
   editConfig: (fn) => withEnv(config.edit(fn)),
-  // Inside Docker the broker cannot know the project's path on the host; set projectDir in the web UI instead.
+  // Where the bundled adapters already are when the broker runs from this checkout. Inside Docker the
+  // broker cannot know a path on the host, so the instructions show a placeholder until projectDir is set.
   defaultProjectDir:
     process.env.AICHAT_PROJECT_DIR ??
-    (existsSync("/.dockerenv") ? "" : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")),
+    (existsSync("/.dockerenv") ? "" : resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle")),
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();

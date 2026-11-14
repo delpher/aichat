@@ -29,7 +29,8 @@ export interface AgentInfo {
 
 // ---- client -> broker ----
 export type ClientFrame =
-  | { type: "auth"; token: string; ref?: string }
+  /** `observer: true` asks for the admin feed (every message); only for admins. */
+  | { type: "auth"; token: string; observer?: boolean; ref?: string }
   | { type: "send"; to?: string; room?: string; text: string; reply_to?: number; ref?: string }
   | { type: "join"; room: string; ref?: string }
   | { type: "leave"; room: string; ref?: string }

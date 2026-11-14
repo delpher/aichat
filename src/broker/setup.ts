@@ -6,6 +6,8 @@ export interface SetupStep {
   code?: string;
   /** Hint for highlighting / labelling the code block: json, bash, powershell, text. */
   lang?: string;
+  /** A file to download in the browser (the bundled adapter). */
+  download?: { url: string; filename: string };
 }
 
 export interface Setup {
@@ -20,7 +22,7 @@ export interface SetupContext {
   token: string;
   /** Base HTTP address of the broker as other machines see it, e.g. http://aichat.lan:8787 */
   httpUrl: string;
-  /** Folder of the AIChat project on the agent's machine; empty when unknown. */
+  /** Folder on the agent's machine where the adapter file is put; empty when unknown. */
   projectDir: string;
   webhook?: string;
 }
@@ -37,14 +39,26 @@ export function buildSetup(c: SetupContext): Setup {
   const dir = (c.projectDir || DIR_PLACEHOLDER).replace(/\\/g, "/").replace(/\/+$/, "");
   const dirNote = c.projectDir
     ? []
-    : [{ title: "Шлях до AIChat", text: `Замініть ${DIR_PLACEHOLDER} на папку AIChat на комп'ютері агента (там, де виконано npm install і npm run build). Щоб підставлявся сам, задайте projectDir у налаштуваннях.` }];
+    : [{ title: "Папка для адаптера", text: `Замініть ${DIR_PLACEHOLDER} на папку на комп'ютері агента, куди ви покладете файл адаптера. Щоб шлях підставлявся сам, задайте його в налаштуваннях (projectDir).` }];
+  const download = (file: string): SetupStep => ({
+    title: `Завантажте адаптер ${file}`,
+    text: `Покладіть файл у ${dir}. Потрібен лише Node.js 22 або новіший; копія проєкту AIChat і npm install не потрібні.`,
+    code: [
+      `# bash`,
+      `curl -o ${sq(`${dir}/${file}`)} ${http}/client/${file}`,
+      `# PowerShell`,
+      `Invoke-WebRequest ${http}/client/${file} -OutFile ${psq(`${dir}/${file}`)}`,
+    ].join("\n"),
+    lang: "text",
+    download: { url: `${http}/client/${file}`, filename: file },
+  });
 
   if (c.kind === "claude") {
     const mcp = {
       mcpServers: {
         aichat: {
           command: "node",
-          args: [`${dir}/dist/adapters/claude-channel.js`],
+          args: [`${dir}/claude-channel.mjs`],
           env: { AICHAT_URL: ws, AICHAT_TOKEN: c.token },
         },
       },
@@ -53,14 +67,15 @@ export function buildSetup(c: SetupContext): Setup {
       kind: c.kind,
       steps: [
         ...dirNote,
+        download("claude-channel.mjs"),
         {
-          title: "1. Створіть .mcp.json",
+          title: "Створіть .mcp.json",
           text: `Покладіть цей файл у папку, де працюватиме Claude Code агента ${c.name} (у кожного агента своя папка й свій токен).`,
           code: JSON.stringify(mcp, null, 2),
           lang: "json",
         },
         {
-          title: "2. Запустіть Claude Code з цієї папки",
+          title: "Запустіть Claude Code з папки, де лежить .mcp.json",
           text: "Підтвердьте попередження про development channels і запит на MCP-сервер aichat.",
           code: "claude --dangerously-load-development-channels server:aichat",
           lang: "bash",
@@ -74,27 +89,26 @@ export function buildSetup(c: SetupContext): Setup {
       kind: c.kind,
       steps: [
         ...dirNote,
+        download("openai-agent.mjs"),
         {
           title: "Запуск (bash)",
           text: "Для локальної моделі додайте OPENAI_BASE_URL, наприклад http://localhost:11434/v1 (Ollama).",
           code: [
-            `cd ${sq(dir)}`,
             `AICHAT_URL=${sq(ws)} AICHAT_TOKEN=${sq(c.token)} \\`,
             `OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1 \\`,
-            `AGENT_PROMPT="Ти ${c.name}, коротко відповідаєш у чаті" npm run openai-agent`,
+            `AGENT_PROMPT="Ти ${c.name}, коротко відповідаєш у чаті" node ${sq(`${dir}/openai-agent.mjs`)}`,
           ].join("\n"),
           lang: "bash",
         },
         {
           title: "Запуск (PowerShell)",
           code: [
-            `Set-Location ${psq(dir)}`,
             `$env:AICHAT_URL = ${psq(ws)}`,
             `$env:AICHAT_TOKEN = ${psq(c.token)}`,
             `$env:OPENAI_API_KEY = 'sk-...'`,
             `$env:OPENAI_MODEL = 'gpt-4.1'`,
             `$env:AGENT_PROMPT = ${psq(`Ти ${c.name}, коротко відповідаєш у чаті`)}`,
-            "npm run openai-agent",
+            `node ${psq(`${dir}/openai-agent.mjs`)}`,
           ].join("\n"),
           lang: "powershell",
         },
@@ -113,7 +127,7 @@ export function buildSetup(c: SetupContext): Setup {
           lang: "text",
         },
         {
-          title: "Або термінальний чат",
+          title: "Або термінальний чат (з копії проєкту AIChat)",
           code: `npm run chat -- --url ${ws} --token ${c.token}`,
           lang: "bash",
         },
