@@ -526,3 +526,42 @@ test("a human can be made an admin: own token opens the admin API and the observ
   member.close(); bot.close();
   await broker.close();
 });
+
+test("a human admin's observer feed counts as that human being online; the root feed does not", async () => {
+  const { broker, url, http } = await startBroker(
+    [{ name: "olena", kind: "human", admin: true }, { name: "owner", kind: "human" }, { name: "bot" }],
+    { adminToken: ADMIN },
+  );
+  const onlineOf = async (name: string) => {
+    const r = await fetch(`${http}/admin/api/agents`, { headers: auth() });
+    const { agents } = (await r.json()) as { agents: { name: string; online: boolean }[] };
+    return agents.find((a) => a.name === name)?.online;
+  };
+  const bot = await connect(url, "bot");
+  const presences: { agent: string; online: boolean }[] = [];
+  bot.on("presence", (p) => presences.push(p));
+  const waitPresence = (online: boolean) =>
+    new Promise<void>((res) => {
+      const check = () => presences.some((p) => p.agent === "olena" && p.online === online) && res();
+      check();
+      bot.on("presence", check);
+    });
+
+  // the root admin's feed is not a participant, even if a human is called "owner"
+  const root = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
+  await root.connect();
+  assert.equal(await onlineOf("owner"), false);
+
+  const { WebSocket } = await import("ws");
+  const feed = new WebSocket(`${url}/ws`);
+  feed.on("open", () => feed.send(JSON.stringify({ type: "auth", token: tok("olena"), observer: true })));
+  await waitPresence(true);
+  assert.equal(await onlineOf("olena"), true);
+
+  feed.close();
+  await waitPresence(false);
+  assert.equal(await onlineOf("olena"), false);
+  assert.ok(!presences.some((p) => p.agent === "owner"));
+  root.close(); bot.close();
+  await broker.close();
+});

@@ -88,7 +88,8 @@ export class Broker {
   readonly store: Store;
   private sockets = new Map<string, Set<WebSocket>>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
-  private observers = new Map<WebSocket, string>();
+  /** Admin feed sockets; a human admin's feed also counts as that human being online. */
+  private observers = new Map<WebSocket, AdminIdentity>();
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -200,12 +201,27 @@ export class Broker {
     this.notifyObservers({ type: "rooms_changed" });
   }
 
+  /** Online = a live participant socket, a human admin's feed socket, or a webhook. */
+  private isOnline(name: string): boolean {
+    if ((this.sockets.get(name)?.size ?? 0) > 0) return true;
+    for (const who of this.observers.values()) if (!who.root && who.name === name) return true;
+    return !!this.cfg.agents.find((a) => a.name === name)?.webhook;
+  }
+
+  /** Runs a change to an agent's connections and broadcasts presence if its online state flipped. */
+  private trackPresence(name: string, change: () => void) {
+    const before = this.isOnline(name);
+    change();
+    const after = this.isOnline(name);
+    if (before !== after) this.broadcastPresence(name, after);
+  }
+
   agents(): AgentInfo[] {
     return this.cfg.agents.map((a) => ({
       name: a.name,
       kind: a.kind,
       ...(a.description ? { description: a.description } : {}),
-      online: (this.sockets.get(a.name)?.size ?? 0) > 0 || !!a.webhook,
+      online: this.isOnline(a.name),
       rooms: this.store.roomsOf(a.name),
     }));
   }
@@ -255,7 +271,7 @@ export class Broker {
 
   /** Drops the admin feed of a human admin (rights removed, token changed, removed). */
   private disconnectObserver(name: string, reason: string) {
-    for (const [ws, who] of this.observers) if (who === name) ws.close(4003, reason);
+    for (const [ws, who] of this.observers) if (!who.root && who.name === name) ws.close(4003, reason);
   }
 
   /** Pending messages for a polling agent; marks them delivered. */
@@ -357,8 +373,9 @@ export class Broker {
         if (admin && (admin.root || f.observer)) {
           observer = true;
           clearTimeout(authTimer);
-          this.observers.set(ws, admin.name);
           this.sendFrame(ws, { type: "welcome", agent: admin.name, rooms: [], observer: true, ref });
+          if (admin.root) this.observers.set(ws, admin);
+          else this.trackPresence(admin.name, () => this.observers.set(ws, admin));
           this.log(`admin observer ${admin.name} connected`);
           return;
         }
@@ -373,14 +390,14 @@ export class Broker {
         }
         clearTimeout(authTimer);
         const name = agent.name;
-        const wasOnline = (this.sockets.get(name)?.size ?? 0) > 0;
         this.sendFrame(ws, { type: "welcome", agent: name, rooms: this.store.roomsOf(name), ref });
         const pending = this.store.pendingFor(name);
         for (const m of pending) this.sendFrame(ws, { type: "message", message: m });
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
-        if (!this.sockets.has(name)) this.sockets.set(name, new Set());
-        this.sockets.get(name)!.add(ws);
-        if (!wasOnline) this.broadcastPresence(name, true);
+        this.trackPresence(name, () => {
+          if (!this.sockets.has(name)) this.sockets.set(name, new Set());
+          this.sockets.get(name)!.add(ws);
+        });
         this.log(`${name} connected`);
         return;
       }
@@ -394,14 +411,16 @@ export class Broker {
     ws.on("close", () => {
       clearTimeout(authTimer);
       clearInterval(heartbeat);
-      this.observers.delete(ws);
+      const who = this.observers.get(ws);
+      if (who && !who.root) this.trackPresence(who.name, () => this.observers.delete(ws));
+      else this.observers.delete(ws);
       if (!agent) return;
-      const set = this.sockets.get(agent.name);
-      set?.delete(ws);
-      if (set && set.size === 0) {
-        this.sockets.delete(agent.name);
-        this.broadcastPresence(agent.name, false);
-      }
+      const name = agent.name;
+      this.trackPresence(name, () => {
+        const set = this.sockets.get(name);
+        set?.delete(ws);
+        if (set && set.size === 0) this.sockets.delete(name);
+      });
       this.log(`${agent.name} disconnected`);
     });
   }
