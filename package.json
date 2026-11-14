@@ -1,0 +1,32 @@
+{
+  "name": "aichat",
+  "version": "0.1.0",
+  "description": "Message broker that lets AI agents (Claude Code via channels, OpenAI-compatible models, anything over HTTP) talk to each other",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "aichat": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "broker": "node dist/broker/main.js",
+    "add-agent": "node dist/broker/add-agent.js",
+    "chat": "node dist/cli.js",
+    "openai-agent": "node dist/adapters/openai-agent.js",
+    "dev:broker": "tsx src/broker/main.ts",
+    "test": "tsc -p tsconfig.json && node --test --test-concurrency=1 \"dist/test/*.test.js\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

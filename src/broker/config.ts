@@ -1,0 +1,92 @@
+import { readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { NAME_RE, ROOM_RE } from "../protocol.js";
+
+export interface AgentConfig {
+  name: string;
+  token: string;
+  /** Free-form label shown to other agents: "claude", "openai", "human", ... */
+  kind: string;
+  description?: string;
+  /** If set, the broker POSTs every message for this agent to this URL. */
+  webhook?: string;
+  /** Rooms this agent is put into automatically. */
+  rooms?: string[];
+}
+
+export interface BrokerConfig {
+  host: string;
+  port: number;
+  db: string;
+  /** Longest allowed reply chain. Stops two agents from answering each other forever. */
+  maxHops: number;
+  /** Messages one agent may send per minute. */
+  ratePerMinute: number;
+  maxTextLength: number;
+  agents: AgentConfig[];
+}
+
+export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
+  host: "127.0.0.1",
+  port: 8787,
+  db: "data/aichat.db",
+  maxHops: 8,
+  ratePerMinute: 30,
+  maxTextLength: 20000,
+};
+
+export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
+  const cfg: BrokerConfig = { ...DEFAULTS, ...raw, agents: raw.agents ?? [] };
+  const names = new Set<string>();
+  const tokens = new Set<string>();
+  for (const a of cfg.agents) {
+    if (!NAME_RE.test(a.name)) throw new Error(`invalid agent name: ${a.name}`);
+    if (names.has(a.name)) throw new Error(`duplicate agent name: ${a.name}`);
+    if (!a.token || a.token.length < 16) throw new Error(`agent ${a.name}: token must be at least 16 characters`);
+    if (tokens.has(a.token)) throw new Error(`agent ${a.name}: token is shared with another agent`);
+    for (const r of a.rooms ?? []) if (!ROOM_RE.test(r)) throw new Error(`agent ${a.name}: invalid room ${r}`);
+    names.add(a.name);
+    tokens.add(a.token);
+    a.kind ??= "agent";
+  }
+  return cfg;
+}
+
+/** Config file that is re-read when it changes on disk, so new agents work without a restart. */
+export class ConfigFile {
+  private mtime = 0;
+  private cfg: BrokerConfig;
+
+  constructor(private path: string) {
+    this.cfg = this.load();
+  }
+
+  private load(): BrokerConfig {
+    this.mtime = statSync(this.path).mtimeMs;
+    return validate(JSON.parse(readFileSync(this.path, "utf8")));
+  }
+
+  get(): BrokerConfig {
+    try {
+      if (statSync(this.path).mtimeMs !== this.mtime) this.cfg = this.load();
+    } catch (e) {
+      console.error(`[config] keeping previous config: ${(e as Error).message}`);
+    }
+    return this.cfg;
+  }
+}
+
+export function newToken(): string {
+  return randomBytes(24).toString("base64url");
+}
+
+export function addAgent(path: string, agent: Omit<AgentConfig, "token">): AgentConfig {
+  const raw: Partial<BrokerConfig> = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { ...DEFAULTS, agents: [] };
+  raw.agents ??= [];
+  if (raw.agents.some((a) => a.name === agent.name)) throw new Error(`agent ${agent.name} already exists in ${path}`);
+  const full: AgentConfig = { ...agent, token: newToken() };
+  raw.agents.push(full);
+  validate(structuredClone(raw));
+  writeFileSync(path, JSON.stringify(raw, null, 2) + "\n");
+  return full;
+}
