@@ -14,6 +14,7 @@
     "build": "tsc -p tsconfig.json",
     "broker": "node dist/broker/main.js",
     "add-agent": "node dist/broker/add-agent.js",
+    "admin-token": "node dist/broker/admin-token.js",
     "chat": "node dist/cli.js",
     "openai-agent": "node dist/adapters/openai-agent.js",
     "dev:broker": "tsx src/broker/main.ts",

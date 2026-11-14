@@ -10,7 +10,7 @@ if (!existsSync(path)) {
   process.exit(1);
 }
 const config = new ConfigFile(path);
-const broker = new Broker({ config: () => config.get() });
+const broker = new Broker({ config: () => config.get(), updateSettings: (patch) => config.updateSettings(patch) });
 const cfg = config.get();
 const port = await broker.listen();
 console.error(`[broker] listening on http://${cfg.host}:${port} (WebSocket: ws://${cfg.host}:${port}/ws)`);

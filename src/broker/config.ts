@@ -23,6 +23,8 @@ export interface BrokerConfig {
   /** Messages one agent may send per minute. */
   ratePerMinute: number;
   maxTextLength: number;
+  /** Bearer token for the web UI and /admin/api: sees every message, may post as `human` agents. */
+  adminToken?: string;
   agents: AgentConfig[];
 }
 
@@ -35,8 +37,41 @@ export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
   maxTextLength: 20000,
 };
 
+/** Settings the admin may change at runtime from the web UI, with their allowed ranges. */
+export const SETTING_LIMITS = {
+  maxHops: { min: 1, max: 100 },
+  ratePerMinute: { min: 1, max: 10_000 },
+  maxTextLength: { min: 100, max: 1_000_000 },
+} as const;
+export type SettingName = keyof typeof SETTING_LIMITS;
+export type Settings = Pick<BrokerConfig, SettingName>;
+
+export function settingsOf(cfg: BrokerConfig): Settings {
+  return { maxHops: cfg.maxHops, ratePerMinute: cfg.ratePerMinute, maxTextLength: cfg.maxTextLength };
+}
+
+/** Checks a partial settings object from an untrusted source; returns it typed or throws with a readable message. */
+export function checkSettingsPatch(patch: unknown): Partial<Settings> {
+  if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("settings must be an object");
+  const entries = Object.entries(patch);
+  if (!entries.length) throw new Error("nothing to change");
+  const out: Partial<Settings> = {};
+  for (const [k, v] of entries) {
+    if (!(k in SETTING_LIMITS)) throw new Error(`unknown setting: ${k}`);
+    const { min, max } = SETTING_LIMITS[k as SettingName];
+    if (typeof v !== "number" || !Number.isInteger(v)) throw new Error(`${k} must be an integer`);
+    if (v < min || v > max) throw new Error(`${k} must be between ${min} and ${max}`);
+    out[k as SettingName] = v;
+  }
+  return out;
+}
+
 export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
   const cfg: BrokerConfig = { ...DEFAULTS, ...raw, agents: raw.agents ?? [] };
+  for (const k of Object.keys(SETTING_LIMITS) as SettingName[]) {
+    const v = cfg[k];
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
+  }
   const names = new Set<string>();
   const tokens = new Set<string>();
   for (const a of cfg.agents) {
@@ -48,6 +83,10 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     names.add(a.name);
     tokens.add(a.token);
     a.kind ??= "agent";
+  }
+  if (cfg.adminToken != null) {
+    if (cfg.adminToken.length < 16) throw new Error("adminToken must be at least 16 characters");
+    if (tokens.has(cfg.adminToken)) throw new Error("adminToken is shared with an agent");
   }
   return cfg;
 }
@@ -74,6 +113,16 @@ export class ConfigFile {
     }
     return this.cfg;
   }
+
+  /** Writes changed settings into the file (keeping everything else) and applies them at once. */
+  updateSettings(patch: Partial<Settings>): BrokerConfig {
+    const raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<BrokerConfig>;
+    Object.assign(raw, patch);
+    validate(structuredClone(raw));
+    writeFileSync(this.path, JSON.stringify(raw, null, 2) + "\n");
+    this.cfg = this.load();
+    return this.cfg;
+  }
 }
 
 export function newToken(): string {
@@ -89,4 +138,14 @@ export function addAgent(path: string, agent: Omit<AgentConfig, "token">): Agent
   validate(structuredClone(raw));
   writeFileSync(path, JSON.stringify(raw, null, 2) + "\n");
   return full;
+}
+
+/** Returns the admin token from the config file, creating one if it is missing (or if `rotate`). */
+export function ensureAdminToken(path: string, rotate = false): { token: string; created: boolean } {
+  const raw: Partial<BrokerConfig> = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { ...DEFAULTS, agents: [] };
+  if (raw.adminToken && !rotate) return { token: raw.adminToken, created: false };
+  raw.adminToken = newToken();
+  validate(structuredClone(raw));
+  writeFileSync(path, JSON.stringify(raw, null, 2) + "\n");
+  return { token: raw.adminToken, created: true };
 }

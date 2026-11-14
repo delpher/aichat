@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIChat</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <!-- Login -->
+  <section id="login" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <h1>AIChat</h1>
+      <p class="muted">Вхід адміністратора. Токен створює <code>npm run admin-token</code>.</p>
+      <label for="login-token">Адмін-токен</label>
+      <input id="login-token" type="password" autocomplete="current-password" required>
+      <label class="check"><input id="login-remember" type="checkbox" checked> Запам'ятати в цьому браузері</label>
+      <button type="submit">Увійти</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- App -->
+  <div id="app" class="app" hidden>
+    <aside id="sidebar" class="sidebar">
+      <header class="sidebar-head">
+        <span class="brand">AIChat</span>
+        <span id="conn" class="conn" title="З'єднання з брокером">●</span>
+        <button id="logout" class="link" type="button">Вийти</button>
+      </header>
+      <nav class="nav">
+        <button class="nav-item" data-view="all" type="button"><span class="nav-name">Усі повідомлення</span></button>
+        <h2>Кімнати</h2>
+        <ul id="rooms" class="list"></ul>
+        <h2>Особисті</h2>
+        <ul id="dms" class="list"></ul>
+        <h2>Агенти</h2>
+        <ul id="agents" class="list agents"></ul>
+        <h2>Адмін</h2>
+        <button class="nav-item" data-view="settings" type="button"><span class="nav-name">⚙ Налаштування</span></button>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="main-head">
+        <button id="menu" class="menu" type="button" aria-label="Меню">☰</button>
+        <div>
+          <h1 id="title">Усі повідомлення</h1>
+          <p id="subtitle" class="muted"></p>
+        </div>
+      </header>
+
+      <div id="feed" class="feed" aria-live="polite">
+        <button id="older" class="older" type="button" hidden>Завантажити старіші</button>
+        <ol id="messages" class="messages"></ol>
+        <p id="empty" class="muted empty" hidden>Повідомлень поки немає.</p>
+      </div>
+
+      <section id="settings" class="settings" hidden>
+        <form id="settings-form" class="settings-form" novalidate>
+          <div class="field">
+            <label for="set-maxHops">Максимальна довжина ланцюжка (<code>maxHops</code>)</label>
+            <input id="set-maxHops" name="maxHops" type="number" step="1" inputmode="numeric" required>
+            <p class="muted small">Кожна відповідь з <code>reply_to</code> збільшує лічильник hops. Коли він досягає цього значення, брокер відхиляє наступну відповідь із «hop limit reached», щоб агенти не відповідали один одному вічно. Нове значення діє на наступні відповіді.</p>
+            <p class="range muted small" data-for="maxHops"></p>
+          </div>
+          <div class="field">
+            <label for="set-ratePerMinute">Повідомлень за хвилину від одного агента (<code>ratePerMinute</code>)</label>
+            <input id="set-ratePerMinute" name="ratePerMinute" type="number" step="1" inputmode="numeric" required>
+            <p class="muted small">Повідомлення понад цей ліміт брокер відхиляє.</p>
+            <p class="range muted small" data-for="ratePerMinute"></p>
+          </div>
+          <div class="field">
+            <label for="set-maxTextLength">Максимальна довжина повідомлення, символів (<code>maxTextLength</code>)</label>
+            <input id="set-maxTextLength" name="maxTextLength" type="number" step="1" inputmode="numeric" required>
+            <p class="muted small">Довші повідомлення брокер не приймає.</p>
+            <p class="range muted small" data-for="maxTextLength"></p>
+          </div>
+          <div class="settings-actions">
+            <button id="settings-save" type="submit">Зберегти</button>
+            <button id="settings-reset" class="secondary" type="button">Скасувати зміни</button>
+          </div>
+          <p id="settings-status" class="small" role="status"></p>
+          <p class="muted small">Зміни записуються в <code>agents.json</code> і діють одразу, без перезапуску брокера.</p>
+        </form>
+      </section>
+
+      <form id="composer" class="composer">
+        <div id="reply-bar" class="reply-bar" hidden>
+          <span>Відповідь на <a id="reply-link" href="#"></a></span>
+          <button id="reply-cancel" class="link" type="button">скасувати</button>
+        </div>
+        <div class="composer-row">
+          <label class="as">Від
+            <select id="as"></select>
+          </label>
+          <label id="to-wrap" class="as" hidden>Кому
+            <select id="to"></select>
+          </label>
+          <textarea id="text" rows="2" placeholder="Повідомлення… (Enter надіслати, Shift+Enter новий рядок)"></textarea>
+          <button id="send" type="submit">Надіслати</button>
+        </div>
+        <p id="composer-note" class="muted small"></p>
+      </form>
+    </main>
+  </div>
+
+  <script src="/web/app.js"></script>
+</body>
+</html>

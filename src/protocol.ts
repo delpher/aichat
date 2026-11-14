@@ -39,7 +39,7 @@ export type ClientFrame =
 
 // ---- broker -> client ----
 export type ServerFrame =
-  | { type: "welcome"; agent: string; rooms: string[]; ref?: string }
+  | { type: "welcome"; agent: string; rooms: string[]; observer?: boolean; ref?: string }
   | { type: "message"; message: ChatMessage }
   | { type: "ack"; id?: number; ref?: string }
   | { type: "error"; error: string; ref?: string }

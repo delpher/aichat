@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { dirname, extname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store.js";
-import type { AgentConfig, BrokerConfig } from "./config.js";
+import { SETTING_LIMITS, checkSettingsPatch, settingsOf, type AgentConfig, type BrokerConfig, type Settings } from "./config.js";
 import { NAME_RE, ROOM_RE, type AgentInfo, type ChatMessage, type ClientFrame, type ServerFrame } from "../protocol.js";
 
 export class BrokerError extends Error {
@@ -19,7 +22,23 @@ export interface BrokerOptions {
   config: () => BrokerConfig;
   store?: Store;
   log?: (msg: string) => void;
+  /** Saves settings changed from the web UI and returns the new config. Without it settings are read-only. */
+  updateSettings?: (patch: Partial<Settings>) => BrokerConfig;
+  /** Folder with the web UI (index.html, app.js, ...). Defaults to `web/` in the package root. */
+  webDir?: string;
 }
+
+const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web");
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+};
 
 interface SendArgs {
   to?: string;
@@ -44,6 +63,8 @@ function safeEqual(a: string, b: string) {
 export class Broker {
   readonly store: Store;
   private sockets = new Map<string, Set<WebSocket>>();
+  /** Admin sockets (web UI) that see every message and presence change. */
+  private observers = new Set<WebSocket>();
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -70,6 +91,11 @@ export class Broker {
     const agent = this.cfg.agents.find((a) => safeEqual(a.token, token));
     if (agent) for (const r of agent.rooms ?? []) this.store.join(agent.name, r);
     return agent;
+  }
+
+  isAdmin(token: string | undefined): boolean {
+    const admin = this.cfg.adminToken;
+    return !!token && !!admin && safeEqual(admin, token);
   }
 
   // ---------------- core operations ----------------
@@ -170,6 +196,7 @@ export class Broker {
   }
 
   private deliver(m: ChatMessage) {
+    for (const ws of this.observers) this.sendFrame(ws, { type: "message", message: m });
     for (const name of this.recipients(m)) {
       const socks = this.sockets.get(name);
       if (socks?.size) {
@@ -216,14 +243,17 @@ export class Broker {
   }
 
   private broadcastPresence(agent: string, online: boolean) {
-    for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, { type: "presence", agent, online });
+    const f: ServerFrame = { type: "presence", agent, online };
+    for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, f);
+    for (const ws of this.observers) this.sendFrame(ws, f);
   }
 
   // ---------------- WebSocket ----------------
 
   private onConnection(ws: WebSocket) {
     let agent: AgentConfig | undefined;
-    const authTimer = setTimeout(() => !agent && ws.close(4001, "auth timeout"), 10_000);
+    let observer = false;
+    const authTimer = setTimeout(() => !agent && !observer && ws.close(4001, "auth timeout"), 10_000);
     let alive = true;
     ws.on("pong", () => (alive = true));
     const heartbeat = setInterval(() => {
@@ -240,8 +270,20 @@ export class Broker {
         return this.sendFrame(ws, { type: "error", error: "invalid JSON" });
       }
       const ref = f.ref;
+      if (observer) {
+        if (f.type === "ping") return this.sendFrame(ws, { type: "pong", ref });
+        return this.sendFrame(ws, { type: "error", error: "admin sockets are read-only; use POST /admin/api/messages", ref });
+      }
       if (!agent) {
         if (f.type !== "auth") return this.sendFrame(ws, { type: "error", error: "authenticate first", ref });
+        if (this.isAdmin(f.token)) {
+          observer = true;
+          clearTimeout(authTimer);
+          this.observers.add(ws);
+          this.sendFrame(ws, { type: "welcome", agent: "admin", rooms: [], observer: true, ref });
+          this.log("admin observer connected");
+          return;
+        }
         agent = this.authenticate(f.token);
         if (!agent) {
           this.sendFrame(ws, { type: "error", error: "invalid token", ref });
@@ -270,6 +312,7 @@ export class Broker {
     ws.on("close", () => {
       clearTimeout(authTimer);
       clearInterval(heartbeat);
+      this.observers.delete(ws);
       if (!agent) return;
       const set = this.sockets.get(agent.name);
       set?.delete(ws);
@@ -315,24 +358,16 @@ export class Broker {
     };
     try {
       if (url.pathname === "/health") return reply(200, { ok: true });
+      if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
+        return await this.serveStatic(url.pathname, res);
+      if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, url, reply);
       if (!url.pathname.startsWith("/api/")) return reply(404, { error: "not found" });
       const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
       const agent = this.authenticate(token);
       if (!agent) return reply(401, { error: "invalid or missing bearer token" });
       const me = agent.name;
 
-      const body = async (): Promise<Record<string, unknown>> => {
-        let raw = "";
-        for await (const chunk of req) {
-          raw += chunk;
-          if (raw.length > 1_000_000) throw new BrokerError("body too large", 413);
-        }
-        try {
-          return raw ? JSON.parse(raw) : {};
-        } catch {
-          throw new BrokerError("invalid JSON body");
-        }
-      };
+      const body = () => readJson(req);
 
       const route = `${req.method} ${url.pathname}`;
       const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave)$/);
@@ -361,6 +396,86 @@ export class Broker {
     }
   }
 
+  // ---------------- web UI and admin API ----------------
+
+  private async serveStatic(pathname: string, res: ServerResponse) {
+    const root = resolve(this.opts.webDir ?? DEFAULT_WEB_DIR);
+    const notFound = () => {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    };
+    let rel: string;
+    try {
+      rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice("/web/".length));
+    } catch {
+      return notFound();
+    }
+    const file = resolve(join(root, rel));
+    if (!file.startsWith(root + sep)) return notFound();
+    let data: Buffer;
+    try {
+      data = await readFile(file);
+    } catch {
+      return notFound();
+    }
+    res.writeHead(200, {
+      "content-type": CONTENT_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream",
+      "cache-control": "no-cache",
+      "x-content-type-options": "nosniff",
+      "content-security-policy":
+        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'",
+    });
+    res.end(data);
+  }
+
+  private async onAdminRequest(req: IncomingMessage, url: URL, reply: (status: number, body: unknown) => void) {
+    if (!this.cfg.adminToken)
+      return reply(403, { error: "admin access is off: run `npm run admin-token` to create a token" });
+    if (!this.isAdmin(req.headers.authorization?.replace(/^Bearer\s+/i, "")))
+      return reply(401, { error: "invalid or missing admin token" });
+    const route = `${req.method} ${url.pathname}`;
+    if (route === "GET /admin/api/overview")
+      return reply(200, { agents: this.agents(), rooms: this.store.rooms(), dms: this.store.dms() });
+    if (route === "GET /admin/api/settings")
+      return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.updateSettings });
+    if (route === "PATCH /admin/api/settings") {
+      if (!this.opts.updateSettings) throw new BrokerError("settings are read-only in this broker", 403);
+      let patch: Partial<Settings>;
+      try {
+        patch = checkSettingsPatch(await readJson(req));
+      } catch (e) {
+        throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
+      }
+      const cfg = this.opts.updateSettings(patch);
+      this.log(`settings changed: ${JSON.stringify(patch)}`);
+      return reply(200, { settings: settingsOf(cfg) });
+    }
+    if (route === "GET /admin/api/messages") {
+      const q = Object.fromEntries(url.searchParams);
+      if (!!q.a !== !!q.b) throw new BrokerError("set both `a` and `b` for a direct conversation");
+      if (q.room && q.a) throw new BrokerError("set either `room` or `a`+`b`, not both");
+      const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
+      const before = q.before ? Number(q.before) : undefined;
+      if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
+      return reply(200, { messages: this.store.allMessages({ room: q.room, a: q.a, b: q.b, before, limit }) });
+    }
+    if (route === "POST /admin/api/messages") {
+      const b = await readJson(req);
+      const as = this.cfg.agents.find((a) => a.name === b.as);
+      if (!as) throw new BrokerError(`unknown agent: ${String(b.as)}`, 404);
+      if (as.kind !== "human")
+        throw new BrokerError(`the web UI may only post as agents of kind "human"; ${as.name} is "${as.kind}"`, 403);
+      const m = this.send(as.name, {
+        to: b.to as string | undefined,
+        room: b.room as string | undefined,
+        text: b.text as string,
+        reply_to: b.reply_to as number | undefined,
+      });
+      return reply(201, { message: m });
+    }
+    return reply(404, { error: "not found" });
+  }
+
   // ---------------- lifecycle ----------------
 
   listen(port = this.cfg.port, host = this.cfg.host): Promise<number> {
@@ -385,9 +500,30 @@ export class Broker {
   async close() {
     clearInterval(this.retryTimer);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
+    for (const ws of this.observers) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));
     await new Promise<void>((r) => (this.http ? this.http.close(() => r()) : r()));
     await Promise.all(this.webhookChains.values());
     this.store.close();
   }
+}
+
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length;
+    if (size > 1_000_000) throw new BrokerError("body too large", 413);
+    chunks.push(chunk);
+  }
+  // decode once, so a multi-byte UTF-8 character split across chunks stays intact
+  const raw = Buffer.concat(chunks).toString("utf8");
+  let v: unknown;
+  try {
+    v = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new BrokerError("invalid JSON body");
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) throw new BrokerError("JSON body must be an object");
+  return v as Record<string, unknown>;
 }

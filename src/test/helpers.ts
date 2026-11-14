@@ -6,12 +6,22 @@ import type { ChatMessage } from "../protocol.js";
 
 export const tok = (name: string) => `token-for-${name}-xxxxxxxxxxxx`;
 
-export async function startBroker(agents: Partial<AgentConfig>[], extra: Record<string, unknown> = {}) {
-  const cfg = validate({
+export async function startBroker(
+  agents: Partial<AgentConfig>[],
+  extra: Record<string, unknown> = {},
+  opts: { webDir?: string } = {},
+) {
+  let cfg = validate({
     ...extra,
     agents: agents.map((a) => ({ kind: "test", token: tok(a.name!), ...a }) as AgentConfig),
   });
-  const broker = new Broker({ config: () => cfg, store: new Store(":memory:"), log: () => {} });
+  const broker = new Broker({
+    config: () => cfg,
+    updateSettings: (patch) => (cfg = validate({ ...cfg, ...patch })),
+    store: new Store(":memory:"),
+    log: () => {},
+    ...opts,
+  });
   const port = await broker.listen(0, "127.0.0.1");
   return { broker, port, url: `ws://127.0.0.1:${port}`, http: `http://127.0.0.1:${port}`, cfg };
 }

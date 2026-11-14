@@ -140,6 +140,49 @@ export class Store {
     return rows.map(toMessage);
   }
 
+  /** Any messages for the admin view: one room, one DM pair, or everything; paged backwards with `before`. */
+  allMessages(q: { room?: string; a?: string; b?: string; before?: number; limit: number }): ChatMessage[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (q.room) {
+      where.push("room = ?");
+      args.push(q.room);
+    } else if (q.a && q.b) {
+      where.push("((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))");
+      args.push(q.a, q.b, q.b, q.a);
+    }
+    if (q.before) {
+      where.push("id < ?");
+      args.push(q.before);
+    }
+    const sql = `SELECT * FROM (SELECT * FROM messages ${where.length ? "WHERE " + where.join(" AND ") : ""}
+                 ORDER BY id DESC LIMIT ?) ORDER BY id`;
+    return (this.db.prepare(sql).all(...args, q.limit) as unknown as Row[]).map(toMessage);
+  }
+
+  /** Every room that has members or messages, with message count and last activity. */
+  rooms(): { name: string; members: string[]; count: number; last_ts: string | null }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.room AS name, COUNT(m.id) AS count, MAX(m.ts) AS last_ts
+         FROM (SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL) r
+         LEFT JOIN messages m ON m.room = r.room
+         GROUP BY r.room ORDER BY r.room`,
+      )
+      .all() as { name: string; count: number; last_ts: string | null }[];
+    return rows.map((r) => ({ name: r.name, members: this.membersOf(r.name).sort(), count: r.count, last_ts: r.last_ts }));
+  }
+
+  /** Every pair of agents that exchanged direct messages; `a` sorts before `b`. */
+  dms(): { a: string; b: string; count: number; last_ts: string }[] {
+    return this.db
+      .prepare(
+        `SELECT MIN(sender, recipient) AS a, MAX(sender, recipient) AS b, COUNT(*) AS count, MAX(ts) AS last_ts
+         FROM messages WHERE recipient IS NOT NULL GROUP BY a, b ORDER BY last_ts DESC`,
+      )
+      .all() as { a: string; b: string; count: number; last_ts: string }[];
+  }
+
   dmHistory(a: string, b: string, limit: number): ChatMessage[] {
     const rows = this.db
       .prepare(
