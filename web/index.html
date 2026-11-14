@@ -11,8 +11,8 @@
   <section id="login" class="login" hidden>
     <form id="login-form" class="login-card">
       <h1>AIChat</h1>
-      <p class="muted">Вхід адміністратора. Токен створює <code>npm run admin-token</code>.</p>
-      <label for="login-token">Адмін-токен</label>
+      <p class="muted">Вставте свій особистий токен (його дає адміністратор) або адмін-токен.</p>
+      <label for="login-token">Токен</label>
       <input id="login-token" type="password" autocomplete="current-password" required>
       <label class="check"><input id="login-remember" type="checkbox" checked> Запам'ятати в цьому браузері</label>
       <button type="submit">Увійти</button>
@@ -28,26 +28,39 @@
         <span id="conn" class="conn" title="З'єднання з брокером">●</span>
         <button id="logout" class="link" type="button">Вийти</button>
       </header>
+      <p id="whoami" class="whoami muted small"></p>
       <nav class="nav">
-        <button class="nav-item" data-view="all" type="button"><span class="nav-name">Усі повідомлення</span></button>
+        <button class="nav-item admin-only" data-view="all" type="button"><span class="nav-name">Усі повідомлення</span></button>
         <h2>Кімнати</h2>
         <ul id="rooms" class="list"></ul>
+        <div class="user-only">
+          <h2>Інші кімнати</h2>
+          <ul id="other-rooms" class="list"></ul>
+          <form id="join-form" class="join-form">
+            <input id="join-name" placeholder="нова-кімната" pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" aria-label="Назва кімнати">
+            <button type="submit" title="Приєднатися до кімнати або створити її">+</button>
+          </form>
+        </div>
         <h2>Особисті</h2>
         <ul id="dms" class="list"></ul>
-        <h2>Агенти</h2>
-        <ul id="agents" class="list agents"></ul>
-        <h2>Адмін</h2>
-        <button class="nav-item" data-view="settings" type="button"><span class="nav-name">⚙ Налаштування</span></button>
+        <h2>Агенти й люди</h2>
+        <ul id="agents" class="list"></ul>
+        <div class="admin-only">
+          <h2>Адмін</h2>
+          <button class="nav-item" data-view="people" type="button"><span class="nav-name">👥 Люди</span></button>
+          <button class="nav-item" data-view="settings" type="button"><span class="nav-name">⚙ Налаштування</span></button>
+        </div>
       </nav>
     </aside>
 
     <main class="main">
       <header class="main-head">
         <button id="menu" class="menu" type="button" aria-label="Меню">☰</button>
-        <div>
+        <div class="main-title">
           <h1 id="title">Усі повідомлення</h1>
           <p id="subtitle" class="muted"></p>
         </div>
+        <button id="leave-room" class="secondary" type="button" hidden>Вийти з кімнати</button>
       </header>
 
       <div id="feed" class="feed" aria-live="polite">
@@ -56,7 +69,8 @@
         <p id="empty" class="muted empty" hidden>Повідомлень поки немає.</p>
       </div>
 
-      <section id="settings" class="settings" hidden>
+      <!-- Admin: settings -->
+      <section id="settings" class="panel" hidden>
         <form id="settings-form" class="settings-form" novalidate>
           <div class="field">
             <label for="set-maxHops">Максимальна довжина ланцюжка (<code>maxHops</code>)</label>
@@ -76,13 +90,44 @@
             <p class="muted small">Довші повідомлення брокер не приймає.</p>
             <p class="range muted small" data-for="maxTextLength"></p>
           </div>
-          <div class="settings-actions">
+          <div class="actions">
             <button id="settings-save" type="submit">Зберегти</button>
             <button id="settings-reset" class="secondary" type="button">Скасувати зміни</button>
           </div>
-          <p id="settings-status" class="small" role="status"></p>
+          <p id="settings-status" class="small status" role="status"></p>
           <p class="muted small">Зміни записуються в <code>agents.json</code> і діють одразу, без перезапуску брокера.</p>
         </form>
+      </section>
+
+      <!-- Admin: people -->
+      <section id="people" class="panel" hidden>
+        <div id="people-token" class="token-box" hidden>
+          <h2 id="people-token-title"></h2>
+          <p class="small">Токен показується <strong>лише один раз</strong>. Передайте його людині особисто. З ним вона входить на цю сторінку: <code id="people-url"></code></p>
+          <div class="token-row">
+            <input id="people-token-value" readonly aria-label="Токен">
+            <button id="people-token-copy" type="button">Копіювати</button>
+          </div>
+          <button id="people-token-close" class="link" type="button">Я зберіг токен, сховати</button>
+        </div>
+
+        <h2 class="section-title">Додати людину</h2>
+        <form id="people-form" class="people-form">
+          <label>Ім'я <input id="people-name" required pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" placeholder="olena"></label>
+          <label>Опис <input id="people-desc" maxlength="200" placeholder="необов'язково"></label>
+          <label>Кімнати <input id="people-rooms" placeholder="lobby, team"></label>
+          <button id="people-add" type="submit">Додати</button>
+        </form>
+        <p class="muted small">Ім'я: латиниця, цифри, <code>-</code> і <code>_</code>. Кімнати через кому. Через веб можна додавати лише людей. Агентів (Claude, OpenAI) додають командою <code>npm run add-agent</code>, бо їм потрібні ще налаштування підключення.</p>
+        <p id="people-status" class="small status" role="status"></p>
+
+        <h2 class="section-title">Усі учасники</h2>
+        <div class="table-wrap">
+          <table class="people-table">
+            <thead><tr><th>Ім'я</th><th>Тип</th><th>Кімнати</th><th>Статус</th><th></th></tr></thead>
+            <tbody id="people-rows"></tbody>
+          </table>
+        </div>
       </section>
 
       <form id="composer" class="composer">
@@ -91,7 +136,7 @@
           <button id="reply-cancel" class="link" type="button">скасувати</button>
         </div>
         <div class="composer-row">
-          <label class="as">Від
+          <label id="as-wrap" class="as">Від
             <select id="as"></select>
           </label>
           <label id="to-wrap" class="as" hidden>Кому

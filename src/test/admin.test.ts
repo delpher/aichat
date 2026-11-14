@@ -191,11 +191,120 @@ test("ConfigFile.updateSettings persists settings and keeps the rest of the file
   writeFileSync(path, JSON.stringify({ port: 9000, agents }));
   const file = new ConfigFile(path);
   assert.equal(file.get().maxHops, 8);
-  assert.equal(file.updateSettings({ maxHops: 20 }).maxHops, 20);
+  assert.equal(file.edit((raw) => (raw.maxHops = 20)).maxHops, 20);
+  assert.throws(() => file.edit((raw) => (raw.maxHops = 0)), /maxHops/);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).maxHops, 20);
   assert.equal(file.get().maxHops, 20);
   const saved = JSON.parse(readFileSync(path, "utf8"));
   assert.equal(saved.maxHops, 20);
   assert.equal(saved.port, 9000);
   assert.deepEqual(saved.agents, agents);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("personal web login: overview and history show only the agent's own conversations", async () => {
+  const { broker, url, http } = await startBroker(
+    [{ name: "olena", kind: "human", rooms: ["lobby"] }, { name: "bot", rooms: ["lobby", "lab"] }, { name: "c" }],
+    { adminToken: ADMIN },
+  );
+  const bot = await connect(url, "bot");
+  const c = await connect(url, "c");
+  const ids: number[] = [];
+  for (let i = 0; i < 3; i++) ids.push(await bot.send({ room: "lobby", text: `lobby ${i}` }));
+  await bot.send({ room: "lab", text: "lab only" });
+  await bot.send({ to: "olena", text: "hi olena" });
+  await bot.send({ to: "c", text: "not for olena" });
+  const h = { authorization: "Bearer token-for-olena-xxxxxxxxxxxx" };
+
+  let r = await fetch(`${http}/api/overview`, { headers: h });
+  assert.equal(r.status, 200);
+  const o = (await r.json()) as {
+    me: { name: string; kind: string };
+    rooms: { name: string }[];
+    dms: { a: string; b: string }[];
+    all_rooms: string[];
+    agents: unknown[];
+  };
+  assert.deepEqual(o.me, { name: "olena", kind: "human" });
+  assert.deepEqual(o.rooms.map((x) => x.name), ["lobby"]);
+  assert.deepEqual(o.dms.map((d) => [d.a, d.b]), [["bot", "olena"]]);
+  assert.deepEqual(o.all_rooms, ["lab", "lobby"]);
+  assert.equal(o.agents.length, 3);
+
+  r = await fetch(`${http}/api/history?room=lobby&before=${ids[2]}&limit=1`, { headers: h });
+  assert.deepEqual(((await r.json()) as { messages: ChatMessage[] }).messages.map((m) => m.id), [ids[1]]);
+  r = await fetch(`${http}/api/history?room=lab`, { headers: h });
+  assert.equal(r.status, 403);
+  r = await fetch(`${http}/api/history?with=c`, { headers: h });
+  assert.equal(((await r.json()) as { messages: unknown[] }).messages.length, 0);
+  r = await fetch(`${http}/api/history?room=lobby&before=abc`, { headers: h });
+  assert.equal(r.status, 400);
+  // a personal token is not an admin token
+  r = await fetch(`${http}/admin/api/overview`, { headers: h });
+  assert.equal(r.status, 401);
+  bot.close(); c.close();
+  await broker.close();
+});
+
+test("admin manages people: add, new token, remove; only kind human", async () => {
+  const { broker, url, http, cfg } = await startBroker([{ name: "bot", kind: "claude", rooms: ["lobby"] }], { adminToken: ADMIN });
+  const post = (path: string, body?: unknown) =>
+    fetch(`${http}${path}`, { method: "POST", headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
+
+  let r = await post("/admin/api/agents", { name: "olena", description: "Тестувальниця", rooms: ["lobby", "qa"] });
+  assert.equal(r.status, 201);
+  const added = (await r.json()) as { agent: { name: string; kind: string; rooms: string[]; token?: string }; token: string };
+  assert.equal(added.agent.kind, "human");
+  assert.deepEqual(added.agent.rooms, ["lobby", "qa"]);
+  assert.equal(added.agent.token, undefined);
+  assert.ok(added.token.length >= 16);
+  assert.equal(cfg().agents.find((a) => a.name === "olena")?.token, added.token);
+
+  for (const [body, status] of [
+    [{ name: "olena" }, 400],
+    [{ name: "bad name!" }, 400],
+    [{ name: "x", kind: "claude" }, 403],
+    [{ name: "y", rooms: ["no spaces"] }, 400],
+    [{ name: "z", rooms: "lobby" }, 400],
+  ] as const)
+    assert.equal((await post("/admin/api/agents", body)).status, status, JSON.stringify(body));
+
+  r = await fetch(`${http}/admin/api/agents`, { headers: auth() });
+  const list = (await r.json()) as { agents: { name: string; webhook: boolean; token?: string }[] };
+  assert.deepEqual(list.agents.map((a) => a.name), ["bot", "olena"]);
+  assert.ok(list.agents.every((a) => a.token === undefined && a.webhook === false));
+
+  // the new person can log in and receives room messages
+  const olena = new BrokerClient({ url, token: added.token, reconnect: false, log: () => {} });
+  await olena.connect();
+  const bot = await connect(url, "bot");
+  const got = nextMessage(olena);
+  await bot.send({ room: "lobby", text: "welcome" });
+  assert.equal((await got).text, "welcome");
+
+  // a new token drops the old connection and the old token stops working
+  const closed = new Promise((res) => olena.once("disconnected", res));
+  r = await post("/admin/api/agents/olena/token");
+  assert.equal(r.status, 200);
+  const { token: fresh } = (await r.json()) as { token: string };
+  assert.notEqual(fresh, added.token);
+  await closed;
+  assert.equal((await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${added.token}` } })).status, 401);
+  assert.equal((await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${fresh}` } })).status, 200);
+
+  assert.equal((await post("/admin/api/agents/bot/token")).status, 403);
+  assert.equal((await fetch(`${http}/admin/api/agents/bot`, { method: "DELETE", headers: auth() })).status, 403);
+  assert.equal((await fetch(`${http}/admin/api/agents/nobody`, { method: "DELETE", headers: auth() })).status, 404);
+
+  r = await fetch(`${http}/admin/api/agents/olena`, { method: "DELETE", headers: auth() });
+  assert.equal(r.status, 200);
+  assert.equal(cfg().agents.some((a) => a.name === "olena"), false);
+  assert.equal((await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${fresh}` } })).status, 401);
+  // history stays, membership goes
+  r = await fetch(`${http}/admin/api/overview`, { headers: auth() });
+  const o = (await r.json()) as { rooms: { name: string; members: string[]; count: number }[] };
+  assert.deepEqual(o.rooms.find((x) => x.name === "lobby")?.members, ["bot"]);
+  assert.equal(o.rooms.find((x) => x.name === "lobby")?.count, 1);
+  bot.close();
+  await broker.close();
 });

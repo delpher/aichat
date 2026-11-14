@@ -17,13 +17,17 @@ export async function startBroker(
   });
   const broker = new Broker({
     config: () => cfg,
-    updateSettings: (patch) => (cfg = validate({ ...cfg, ...patch })),
+    editConfig: (fn) => {
+      const raw = structuredClone(cfg);
+      fn(raw);
+      return (cfg = validate(raw));
+    },
     store: new Store(":memory:"),
     log: () => {},
     ...opts,
   });
   const port = await broker.listen(0, "127.0.0.1");
-  return { broker, port, url: `ws://127.0.0.1:${port}`, http: `http://127.0.0.1:${port}`, cfg };
+  return { broker, port, url: `ws://127.0.0.1:${port}`, http: `http://127.0.0.1:${port}`, cfg: () => cfg };
 }
 
 export async function connect(url: string, name: string) {

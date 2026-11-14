@@ -5,7 +5,14 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store.js";
-import { SETTING_LIMITS, checkSettingsPatch, settingsOf, type AgentConfig, type BrokerConfig, type Settings } from "./config.js";
+import {
+  SETTING_LIMITS,
+  checkSettingsPatch,
+  newToken,
+  settingsOf,
+  type AgentConfig,
+  type BrokerConfig,
+} from "./config.js";
 import { NAME_RE, ROOM_RE, type AgentInfo, type ChatMessage, type ClientFrame, type ServerFrame } from "../protocol.js";
 
 export class BrokerError extends Error {
@@ -22,8 +29,11 @@ export interface BrokerOptions {
   config: () => BrokerConfig;
   store?: Store;
   log?: (msg: string) => void;
-  /** Saves settings changed from the web UI and returns the new config. Without it settings are read-only. */
-  updateSettings?: (patch: Partial<Settings>) => BrokerConfig;
+  /**
+   * Applies `fn` to the raw config, saves it and returns the new config. Used by the web UI to change
+   * settings and manage people. Without it those admin endpoints answer 403.
+   */
+  editConfig?: (fn: (raw: Partial<BrokerConfig>) => void) => BrokerConfig;
   /** Folder with the web UI (index.html, app.js, ...). Defaults to `web/` in the package root. */
   webDir?: string;
 }
@@ -168,17 +178,35 @@ export class Broker {
     }));
   }
 
-  history(agent: string, q: { room?: string; with?: string; limit?: number }): ChatMessage[] {
+  history(agent: string, q: { room?: string; with?: string; limit?: number; before?: number }): ChatMessage[] {
     const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 500);
+    const before = q.before != null && String(q.before) !== "" ? Number(q.before) : undefined;
+    if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
     if (q.room) {
       if (!this.store.isMember(agent, q.room)) throw new BrokerError(`you are not in room ${q.room}`, 403);
-      return this.store.roomHistory(q.room, limit);
+      return this.store.allMessages({ room: q.room, before, limit });
     }
     if (q.with) {
       if (!NAME_RE.test(q.with)) throw new BrokerError(`invalid agent name: ${q.with}`);
-      return this.store.dmHistory(agent, q.with, limit);
+      return this.store.allMessages({ a: agent, b: q.with, before, limit });
     }
     throw new BrokerError("set `room` or `with`");
+  }
+
+  /** What one agent may see: its rooms, its direct conversations, everyone's presence. */
+  overview(agent: AgentConfig) {
+    return {
+      me: { name: agent.name, kind: agent.kind },
+      agents: this.agents(),
+      rooms: this.store.rooms(agent.name),
+      dms: this.store.dms(agent.name),
+      all_rooms: this.store.allRoomNames(),
+    };
+  }
+
+  /** Drops every live connection of an agent (after its token changed or it was removed). */
+  private disconnect(name: string, reason: string) {
+    for (const ws of this.sockets.get(name) ?? []) ws.close(4003, reason);
   }
 
   /** Pending messages for a polling agent; marks them delivered. */
@@ -372,6 +400,7 @@ export class Broker {
       const route = `${req.method} ${url.pathname}`;
       const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave)$/);
       if (route === "GET /api/me") return reply(200, { name: me, kind: agent.kind, rooms: this.store.roomsOf(me) });
+      if (route === "GET /api/overview") return reply(200, this.overview(agent));
       if (route === "GET /api/agents") return reply(200, { agents: this.agents() });
       if (route === "POST /api/messages") {
         const b = await body();
@@ -381,7 +410,9 @@ export class Broker {
       if (route === "GET /api/inbox") return reply(200, { messages: this.inbox(me) });
       if (route === "GET /api/history") {
         const q = Object.fromEntries(url.searchParams);
-        return reply(200, { messages: this.history(me, { room: q.room, with: q.with, limit: Number(q.limit) || 50 }) });
+        return reply(200, {
+          messages: this.history(me, { room: q.room, with: q.with, limit: Number(q.limit) || 50, before: q.before as unknown as number }),
+        });
       }
       if (req.method === "POST" && roomMatch) {
         const room = decodeURIComponent(roomMatch[1]);
@@ -436,19 +467,93 @@ export class Broker {
     const route = `${req.method} ${url.pathname}`;
     if (route === "GET /admin/api/overview")
       return reply(200, { agents: this.agents(), rooms: this.store.rooms(), dms: this.store.dms() });
+    const edit = (fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig => {
+      if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
+      try {
+        return this.opts.editConfig(fn);
+      } catch (e) {
+        throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
+      }
+    };
     if (route === "GET /admin/api/settings")
-      return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.updateSettings });
+      return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.editConfig });
     if (route === "PATCH /admin/api/settings") {
-      if (!this.opts.updateSettings) throw new BrokerError("settings are read-only in this broker", 403);
-      let patch: Partial<Settings>;
+      let patch: ReturnType<typeof checkSettingsPatch>;
       try {
         patch = checkSettingsPatch(await readJson(req));
       } catch (e) {
         throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
       }
-      const cfg = this.opts.updateSettings(patch);
+      const cfg = edit((raw) => Object.assign(raw, patch));
       this.log(`settings changed: ${JSON.stringify(patch)}`);
       return reply(200, { settings: settingsOf(cfg) });
+    }
+
+    // ---- people ----
+    if (route === "GET /admin/api/agents")
+      return reply(200, {
+        agents: this.agents().map((a) => ({ ...a, webhook: !!this.cfg.agents.find((c) => c.name === a.name)?.webhook })),
+      });
+    if (route === "POST /admin/api/agents") {
+      const b = await readJson(req);
+      const name = b.name;
+      const kind = b.kind ?? "human";
+      if (typeof name !== "string" || !NAME_RE.test(name))
+        throw new BrokerError("name must be 1-64 characters: letters, digits, _ or -");
+      if (kind !== "human") throw new BrokerError('the web UI may only add agents of kind "human"', 403);
+      if (b.description != null && typeof b.description !== "string") throw new BrokerError("description must be a string");
+      const rooms = b.rooms ?? [];
+      if (!Array.isArray(rooms) || !rooms.every((r) => typeof r === "string" && ROOM_RE.test(r)))
+        throw new BrokerError("rooms must be a list of room names (letters, digits, _ or -)");
+      if (this.cfg.agents.some((a) => a.name === name)) throw new BrokerError(`agent ${name} already exists`);
+      const agent: AgentConfig = {
+        name,
+        kind,
+        token: newToken(),
+        ...(typeof b.description === "string" && b.description.trim() ? { description: b.description.trim() } : {}),
+        ...(rooms.length ? { rooms: [...new Set(rooms as string[])] } : {}),
+      };
+      edit((raw) => {
+        raw.agents ??= [];
+        if (raw.agents.some((a) => a.name === name)) throw new BrokerError(`agent ${name} already exists`);
+        raw.agents.push(agent);
+      });
+      for (const r of agent.rooms ?? []) this.store.join(name, r);
+      this.log(`admin added ${name} (${kind})`);
+      const { token, ...info } = agent;
+      return reply(201, { agent: { ...info, rooms: this.store.roomsOf(name), online: false }, token });
+    }
+    const agentMatch = url.pathname.match(/^\/admin\/api\/agents\/([^/]+)(\/token)?$/);
+    if (agentMatch) {
+      const name = decodeURIComponent(agentMatch[1]);
+      const target = this.cfg.agents.find((a) => a.name === name);
+      if (!target) throw new BrokerError(`unknown agent: ${name}`, 404);
+      const humanOnly = () => {
+        if (target.kind !== "human")
+          throw new BrokerError(`the web UI may only manage agents of kind "human"; ${name} is "${target.kind}"`, 403);
+      };
+      if (req.method === "POST" && agentMatch[2]) {
+        humanOnly();
+        const token = newToken();
+        edit((raw) => {
+          const a = raw.agents?.find((x) => x.name === name);
+          if (!a) throw new BrokerError(`unknown agent: ${name}`, 404);
+          a.token = token;
+        });
+        this.disconnect(name, "token changed");
+        this.log(`admin issued a new token for ${name}`);
+        return reply(200, { token });
+      }
+      if (req.method === "DELETE" && !agentMatch[2]) {
+        humanOnly();
+        edit((raw) => {
+          raw.agents = (raw.agents ?? []).filter((x) => x.name !== name);
+        });
+        this.disconnect(name, "agent removed");
+        this.store.forgetAgent(name);
+        this.log(`admin removed ${name}`);
+        return reply(200, { ok: true });
+      }
     }
     if (route === "GET /admin/api/messages") {
       const q = Object.fromEntries(url.searchParams);

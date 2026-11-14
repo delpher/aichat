@@ -19,7 +19,7 @@ const withEnv = (c: BrokerConfig): BrokerConfig => ({
 });
 const broker = new Broker({
   config: () => withEnv(config.get()),
-  updateSettings: (patch) => withEnv(config.updateSettings(patch)),
+  editConfig: (fn) => withEnv(config.edit(fn)),
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();

@@ -114,10 +114,13 @@ export class ConfigFile {
     return this.cfg;
   }
 
-  /** Writes changed settings into the file (keeping everything else) and applies them at once. */
-  updateSettings(patch: Partial<Settings>): BrokerConfig {
+  /**
+   * Changes the file on disk with `fn` (keeping every field it does not touch), validates the result,
+   * writes it and applies it at once. Nothing is written if `fn` or validation throws.
+   */
+  edit(fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig {
     const raw = JSON.parse(readFileSync(this.path, "utf8")) as Partial<BrokerConfig>;
-    Object.assign(raw, patch);
+    fn(raw);
     validate(structuredClone(raw));
     writeFileSync(this.path, JSON.stringify(raw, null, 2) + "\n");
     this.cfg = this.load();

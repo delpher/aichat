@@ -160,27 +160,44 @@ export class Store {
     return (this.db.prepare(sql).all(...args, q.limit) as unknown as Row[]).map(toMessage);
   }
 
-  /** Every room that has members or messages, with message count and last activity. */
-  rooms(): { name: string; members: string[]; count: number; last_ts: string | null }[] {
+  /** Rooms with members or messages (only `agent`'s rooms if given), with message count and last activity. */
+  rooms(agent?: string): { name: string; members: string[]; count: number; last_ts: string | null }[] {
     const rows = this.db
       .prepare(
         `SELECT r.room AS name, COUNT(m.id) AS count, MAX(m.ts) AS last_ts
          FROM (SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL) r
          LEFT JOIN messages m ON m.room = r.room
+         ${agent ? "WHERE r.room IN (SELECT room FROM memberships WHERE agent = ?)" : ""}
          GROUP BY r.room ORDER BY r.room`,
       )
-      .all() as { name: string; count: number; last_ts: string | null }[];
+      .all(...(agent ? [agent] : [])) as { name: string; count: number; last_ts: string | null }[];
     return rows.map((r) => ({ name: r.name, members: this.membersOf(r.name).sort(), count: r.count, last_ts: r.last_ts }));
   }
 
-  /** Every pair of agents that exchanged direct messages; `a` sorts before `b`. */
-  dms(): { a: string; b: string; count: number; last_ts: string }[] {
+  /** Names of every room that has members or messages. */
+  allRoomNames(): string[] {
+    return (
+      this.db
+        .prepare("SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL ORDER BY room")
+        .all() as { room: string }[]
+    ).map((r) => r.room);
+  }
+
+  /** Pairs of agents that exchanged direct messages (only pairs with `agent` if given); `a` sorts before `b`. */
+  dms(agent?: string): { a: string; b: string; count: number; last_ts: string }[] {
     return this.db
       .prepare(
         `SELECT MIN(sender, recipient) AS a, MAX(sender, recipient) AS b, COUNT(*) AS count, MAX(ts) AS last_ts
-         FROM messages WHERE recipient IS NOT NULL GROUP BY a, b ORDER BY last_ts DESC`,
+         FROM messages WHERE recipient IS NOT NULL ${agent ? "AND (sender = ? OR recipient = ?)" : ""}
+         GROUP BY a, b ORDER BY last_ts DESC`,
       )
-      .all() as { a: string; b: string; count: number; last_ts: string }[];
+      .all(...(agent ? [agent, agent] : [])) as { a: string; b: string; count: number; last_ts: string }[];
+  }
+
+  /** Drops a removed agent's memberships and delivery cursor; its messages stay in the history. */
+  forgetAgent(agent: string) {
+    this.db.prepare("DELETE FROM memberships WHERE agent = ?").run(agent);
+    this.db.prepare("DELETE FROM cursors WHERE agent = ?").run(agent);
   }
 
   dmHistory(a: string, b: string, limit: number): ChatMessage[] {
