@@ -46,6 +46,10 @@ export type ServerFrame =
   | { type: "agents"; agents: AgentInfo[]; ref?: string }
   | { type: "history"; messages: ChatMessage[]; ref?: string }
   | { type: "presence"; agent: string; online: boolean }
+  /** Sent to an agent when an admin changed its room memberships. */
+  | { type: "rooms"; rooms: string[] }
+  /** Sent to admin observers when rooms or memberships changed; re-read the lists. */
+  | { type: "rooms_changed" }
   | { type: "pong"; ref?: string };
 
 export const ROOM_RE = /^[A-Za-z0-9_\-]{1,64}$/;

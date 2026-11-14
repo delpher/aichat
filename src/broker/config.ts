@@ -25,6 +25,10 @@ export interface BrokerConfig {
   maxTextLength: number;
   /** Bearer token for the web UI and /admin/api: sees every message, may post as `human` agents. */
   adminToken?: string;
+  /** Broker address as agents on other machines see it (http://host:port); used in setup instructions. */
+  publicUrl?: string;
+  /** Folder of the AIChat project on agents' machines; used in setup instructions. */
+  projectDir?: string;
   agents: AgentConfig[];
 }
 
@@ -44,10 +48,36 @@ export const SETTING_LIMITS = {
   maxTextLength: { min: 100, max: 1_000_000 },
 } as const;
 export type SettingName = keyof typeof SETTING_LIMITS;
-export type Settings = Pick<BrokerConfig, SettingName>;
+/** Free-text settings; an empty string means "not set". */
+export const TEXT_SETTINGS = ["publicUrl", "projectDir"] as const;
+export type TextSettingName = (typeof TEXT_SETTINGS)[number];
+export type Settings = Pick<BrokerConfig, SettingName> & Record<TextSettingName, string>;
 
 export function settingsOf(cfg: BrokerConfig): Settings {
-  return { maxHops: cfg.maxHops, ratePerMinute: cfg.ratePerMinute, maxTextLength: cfg.maxTextLength };
+  return {
+    maxHops: cfg.maxHops,
+    ratePerMinute: cfg.ratePerMinute,
+    maxTextLength: cfg.maxTextLength,
+    publicUrl: cfg.publicUrl ?? "",
+    projectDir: cfg.projectDir ?? "",
+  };
+}
+
+function checkTextSetting(k: TextSettingName, v: unknown): string {
+  if (typeof v !== "string") throw new Error(`${k} must be a string`);
+  const t = v.trim();
+  if (t.length > 500) throw new Error(`${k} is longer than 500 characters`);
+  if (k === "publicUrl" && t) {
+    let u: URL;
+    try {
+      u = new URL(t);
+    } catch {
+      throw new Error("publicUrl must be an http(s) address like http://aichat.lan:8787");
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("publicUrl must start with http:// or https://");
+    return t.replace(/\/+$/, "");
+  }
+  return t;
 }
 
 /** Checks a partial settings object from an untrusted source; returns it typed or throws with a readable message. */
@@ -57,6 +87,10 @@ export function checkSettingsPatch(patch: unknown): Partial<Settings> {
   if (!entries.length) throw new Error("nothing to change");
   const out: Partial<Settings> = {};
   for (const [k, v] of entries) {
+    if ((TEXT_SETTINGS as readonly string[]).includes(k)) {
+      (out as Record<string, unknown>)[k] = checkTextSetting(k as TextSettingName, v);
+      continue;
+    }
     if (!(k in SETTING_LIMITS)) throw new Error(`unknown setting: ${k}`);
     const { min, max } = SETTING_LIMITS[k as SettingName];
     if (typeof v !== "number" || !Number.isInteger(v)) throw new Error(`${k} must be an integer`);
@@ -72,6 +106,7 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     const v = cfg[k];
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
+  for (const k of TEXT_SETTINGS) if (cfg[k] != null) checkTextSetting(k, cfg[k]);
   const names = new Set<string>();
   const tokens = new Set<string>();
   for (const a of cfg.agents) {

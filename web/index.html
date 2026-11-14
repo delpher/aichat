@@ -47,7 +47,8 @@
         <ul id="agents" class="list"></ul>
         <div class="admin-only">
           <h2>Адмін</h2>
-          <button class="nav-item" data-view="people" type="button"><span class="nav-name">👥 Люди</span></button>
+          <button class="nav-item" data-view="people" type="button"><span class="nav-name">👥 Агенти й люди</span></button>
+          <button class="nav-item" data-view="rooms" type="button"><span class="nav-name"># Кімнати</span></button>
           <button class="nav-item" data-view="settings" type="button"><span class="nav-name">⚙ Налаштування</span></button>
         </div>
       </nav>
@@ -90,6 +91,16 @@
             <p class="muted small">Довші повідомлення брокер не приймає.</p>
             <p class="range muted small" data-for="maxTextLength"></p>
           </div>
+          <div class="field">
+            <label for="set-publicUrl">Публічна адреса брокера (<code>publicUrl</code>)</label>
+            <input id="set-publicUrl" name="publicUrl" type="url" class="wide" placeholder="http://aichat.lan:8787">
+            <p class="muted small">Адреса, за якою брокер доступний з інших комп'ютерів. Її підставляють у команди запуску агентів. Якщо поле порожнє, береться адреса, з якої відкрито цю сторінку.</p>
+          </div>
+          <div class="field">
+            <label for="set-projectDir">Папка AIChat на комп'ютері агента (<code>projectDir</code>)</label>
+            <input id="set-projectDir" name="projectDir" class="wide" placeholder="D:/Programming/My Projects/AIChat">
+            <p class="muted small">Шлях, який підставляється в <code>.mcp.json</code> для Claude Code (туди, де лежить <code>dist/adapters/claude-channel.js</code>). Якщо брокер працює в Docker, сам він цього шляху не знає.</p>
+          </div>
           <div class="actions">
             <button id="settings-save" type="submit">Зберегти</button>
             <button id="settings-reset" class="secondary" type="button">Скасувати зміни</button>
@@ -99,26 +110,36 @@
         </form>
       </section>
 
-      <!-- Admin: people -->
+      <!-- Admin: agents & people -->
       <section id="people" class="panel" hidden>
-        <div id="people-token" class="token-box" hidden>
-          <h2 id="people-token-title"></h2>
-          <p class="small">Токен показується <strong>лише один раз</strong>. Передайте його людині особисто. З ним вона входить на цю сторінку: <code id="people-url"></code></p>
-          <div class="token-row">
-            <input id="people-token-value" readonly aria-label="Токен">
-            <button id="people-token-copy" type="button">Копіювати</button>
-          </div>
-          <button id="people-token-close" class="link" type="button">Я зберіг токен, сховати</button>
+        <div id="setup-box" class="token-box" hidden>
+          <h2 id="setup-title"></h2>
+          <p id="setup-warning" class="small">Токен показується <strong>лише один раз</strong>. Скопіюйте потрібне зараз і передайте тому, хто запускатиме агента. Пізніше інструкцію можна відкрити знову, але вже без токена.</p>
+          <label id="setup-dir-wrap" class="setup-dir" hidden>Папка AIChat на комп'ютері агента (підставиться замість <code>&lt;AICHAT_DIR&gt;</code>)
+            <input id="setup-dir" placeholder="D:/Programming/My Projects/AIChat">
+          </label>
+          <ol id="setup-steps" class="setup-steps"></ol>
+          <button id="setup-close" class="link" type="button">Сховати</button>
         </div>
 
-        <h2 class="section-title">Додати людину</h2>
+        <h2 class="section-title">Додати агента або людину</h2>
         <form id="people-form" class="people-form">
-          <label>Ім'я <input id="people-name" required pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" placeholder="olena"></label>
+          <label>Ім'я <input id="people-name" required pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" placeholder="olena або claude-c"></label>
+          <label>Тип
+            <select id="people-kind">
+              <option value="human">людина (вхід у веб)</option>
+              <option value="claude">Claude Code</option>
+              <option value="openai">OpenAI-сумісна модель</option>
+              <option value="other">інший (REST / webhook)</option>
+            </select>
+          </label>
+          <label id="people-custom-wrap" hidden>Назва типу <input id="people-custom" pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" placeholder="bot" value="bot"></label>
+          <label id="people-webhook-wrap" hidden>Webhook URL <input id="people-webhook" type="url" placeholder="необов'язково, https://…"></label>
           <label>Опис <input id="people-desc" maxlength="200" placeholder="необов'язково"></label>
           <label>Кімнати <input id="people-rooms" placeholder="lobby, team"></label>
           <button id="people-add" type="submit">Додати</button>
         </form>
-        <p class="muted small">Ім'я: латиниця, цифри, <code>-</code> і <code>_</code>. Кімнати через кому. Через веб можна додавати лише людей. Агентів (Claude, OpenAI) додають командою <code>npm run add-agent</code>, бо їм потрібні ще налаштування підключення.</p>
+        <p class="muted small">Ім'я: латиниця, цифри, <code>-</code> і <code>_</code>. Кімнати через кому. Після додавання одразу з'являться токен і команда запуску.</p>
         <p id="people-status" class="small status" role="status"></p>
 
         <h2 class="section-title">Усі учасники</h2>
@@ -128,6 +149,23 @@
             <tbody id="people-rows"></tbody>
           </table>
         </div>
+      </section>
+
+      <!-- Admin: rooms -->
+      <section id="manage-rooms" class="panel" hidden>
+        <h2 class="section-title">Створити кімнату</h2>
+        <form id="room-form" class="people-form">
+          <label>Назва <input id="room-name" required pattern="[A-Za-z0-9_\-]{1,64}" maxlength="64" placeholder="team"></label>
+          <button id="room-add" type="submit">Створити</button>
+          <fieldset class="pick">
+            <legend>Учасники (необов'язково)</legend>
+            <div id="room-members-pick" class="pick-list"></div>
+          </fieldset>
+        </form>
+        <p class="muted small">Назва: латиниця, цифри, <code>-</code> і <code>_</code>. Учасників можна додати й пізніше.</p>
+        <p id="rooms-status" class="small status" role="status"></p>
+        <h2 class="section-title">Усі кімнати</h2>
+        <div id="room-cards" class="room-cards"></div>
       </section>
 
       <form id="composer" class="composer">

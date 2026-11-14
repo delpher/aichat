@@ -13,6 +13,7 @@ import {
   type AgentConfig,
   type BrokerConfig,
 } from "./config.js";
+import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { NAME_RE, ROOM_RE, type AgentInfo, type ChatMessage, type ClientFrame, type ServerFrame } from "../protocol.js";
 
 export class BrokerError extends Error {
@@ -34,6 +35,8 @@ export interface BrokerOptions {
    * settings and manage people. Without it those admin endpoints answer 403.
    */
   editConfig?: (fn: (raw: Partial<BrokerConfig>) => void) => BrokerConfig;
+  /** AIChat folder used in setup instructions when the `projectDir` setting is empty. */
+  defaultProjectDir?: string;
   /** Folder with the web UI (index.html, app.js, ...). Defaults to `web/` in the package root. */
   webDir?: string;
 }
@@ -162,10 +165,20 @@ export class Broker {
   join(agent: string, room: string) {
     if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
     this.store.join(agent, room);
+    this.notifyObservers({ type: "rooms_changed" });
   }
 
   leave(agent: string, room: string) {
     this.store.leave(agent, room);
+    // otherwise the configured room would put the agent back on its next connection
+    if (this.opts.editConfig && this.cfg.agents.find((a) => a.name === agent)?.rooms?.includes(room))
+      this.opts.editConfig((raw) => {
+        const a = raw.agents?.find((x) => x.name === agent);
+        if (!a?.rooms) return;
+        a.rooms = a.rooms.filter((r) => r !== room);
+        if (!a.rooms.length) delete a.rooms;
+      });
+    this.notifyObservers({ type: "rooms_changed" });
   }
 
   agents(): AgentInfo[] {
@@ -202,6 +215,17 @@ export class Broker {
       dms: this.store.dms(agent.name),
       all_rooms: this.store.allRoomNames(),
     };
+  }
+
+  /** Tells an agent's live connections its new room list (and, by default, admin observers that rooms changed). */
+  private notifyRooms(agent: string, observers = true) {
+    const f: ServerFrame = { type: "rooms", rooms: this.store.roomsOf(agent) };
+    for (const ws of this.sockets.get(agent) ?? []) this.sendFrame(ws, f);
+    if (observers) this.notifyObservers({ type: "rooms_changed" });
+  }
+
+  private notifyObservers(f: ServerFrame) {
+    for (const ws of this.observers) this.sendFrame(ws, f);
   }
 
   /** Drops every live connection of an agent (after its token changed or it was removed). */
@@ -489,7 +513,16 @@ export class Broker {
       return reply(200, { settings: settingsOf(cfg) });
     }
 
-    // ---- people ----
+    // ---- people and agents ----
+    const setupFor = (a: AgentConfig, token: string) =>
+      buildSetup({
+        name: a.name,
+        kind: a.kind,
+        token,
+        webhook: a.webhook,
+        httpUrl: this.cfg.publicUrl || `http://${req.headers.host ?? `127.0.0.1:${this.cfg.port}`}`,
+        projectDir: this.cfg.projectDir || this.opts.defaultProjectDir || "",
+      });
     if (route === "GET /admin/api/agents")
       return reply(200, {
         agents: this.agents().map((a) => ({ ...a, webhook: !!this.cfg.agents.find((c) => c.name === a.name)?.webhook })),
@@ -500,7 +533,19 @@ export class Broker {
       const kind = b.kind ?? "human";
       if (typeof name !== "string" || !NAME_RE.test(name))
         throw new BrokerError("name must be 1-64 characters: letters, digits, _ or -");
-      if (kind !== "human") throw new BrokerError('the web UI may only add agents of kind "human"', 403);
+      if (typeof kind !== "string" || !NAME_RE.test(kind))
+        throw new BrokerError("kind must be 1-64 characters: letters, digits, _ or -");
+      let webhook: string | undefined;
+      if (b.webhook != null && b.webhook !== "") {
+        if (typeof b.webhook !== "string") throw new BrokerError("webhook must be a URL");
+        try {
+          const u = new URL(b.webhook);
+          if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
+        } catch {
+          throw new BrokerError("webhook must be an http(s) URL");
+        }
+        webhook = b.webhook;
+      }
       if (b.description != null && typeof b.description !== "string") throw new BrokerError("description must be a string");
       const rooms = b.rooms ?? [];
       if (!Array.isArray(rooms) || !rooms.every((r) => typeof r === "string" && ROOM_RE.test(r)))
@@ -511,6 +556,7 @@ export class Broker {
         kind,
         token: newToken(),
         ...(typeof b.description === "string" && b.description.trim() ? { description: b.description.trim() } : {}),
+        ...(webhook ? { webhook } : {}),
         ...(rooms.length ? { rooms: [...new Set(rooms as string[])] } : {}),
       };
       edit((raw) => {
@@ -521,19 +567,20 @@ export class Broker {
       for (const r of agent.rooms ?? []) this.store.join(name, r);
       this.log(`admin added ${name} (${kind})`);
       const { token, ...info } = agent;
-      return reply(201, { agent: { ...info, rooms: this.store.roomsOf(name), online: false }, token });
+      this.notifyRooms(name);
+      return reply(201, {
+        agent: { ...info, webhook: !!webhook, rooms: this.store.roomsOf(name), online: !!webhook },
+        token,
+        setup: setupFor(agent, token),
+      });
     }
-    const agentMatch = url.pathname.match(/^\/admin\/api\/agents\/([^/]+)(\/token)?$/);
+    const agentMatch = url.pathname.match(/^\/admin\/api\/agents\/([^/]+)(\/token|\/setup)?$/);
     if (agentMatch) {
       const name = decodeURIComponent(agentMatch[1]);
       const target = this.cfg.agents.find((a) => a.name === name);
       if (!target) throw new BrokerError(`unknown agent: ${name}`, 404);
-      const humanOnly = () => {
-        if (target.kind !== "human")
-          throw new BrokerError(`the web UI may only manage agents of kind "human"; ${name} is "${target.kind}"`, 403);
-      };
-      if (req.method === "POST" && agentMatch[2]) {
-        humanOnly();
+      if (req.method === "GET" && agentMatch[2] === "/setup") return reply(200, { setup: setupFor(target, TOKEN_PLACEHOLDER) });
+      if (req.method === "POST" && agentMatch[2] === "/token") {
         const token = newToken();
         edit((raw) => {
           const a = raw.agents?.find((x) => x.name === name);
@@ -542,18 +589,93 @@ export class Broker {
         });
         this.disconnect(name, "token changed");
         this.log(`admin issued a new token for ${name}`);
-        return reply(200, { token });
+        return reply(200, { token, setup: setupFor(target, token) });
       }
       if (req.method === "DELETE" && !agentMatch[2]) {
-        humanOnly();
         edit((raw) => {
           raw.agents = (raw.agents ?? []).filter((x) => x.name !== name);
         });
         this.disconnect(name, "agent removed");
         this.store.forgetAgent(name);
         this.log(`admin removed ${name}`);
+        this.notifyObservers({ type: "rooms_changed" });
         return reply(200, { ok: true });
       }
+      return reply(404, { error: "not found" });
+    }
+
+    // ---- rooms ----
+    const roomInfo = (room: string) =>
+      this.store.rooms().find((r) => r.name === room) ?? { name: room, members: [], count: 0, last_ts: null };
+    /** Adds/removes `room` in an agent's configured rooms so the change survives reconnects and restarts. */
+    const setConfiguredRoom = (agents: string[], room: string, member: boolean) =>
+      edit((raw) => {
+        for (const a of raw.agents ?? []) {
+          if (!agents.includes(a.name)) continue;
+          const rooms = (a.rooms ?? []).filter((r) => r !== room);
+          if (member) rooms.push(room);
+          if (rooms.length) a.rooms = rooms;
+          else delete a.rooms;
+        }
+      });
+    const memberName = (b: Record<string, unknown>) => {
+      const n = b.name ?? b.agent;
+      if (typeof n !== "string" || !this.cfg.agents.some((a) => a.name === n))
+        throw new BrokerError(`unknown agent: ${String(n)}`, 404);
+      return n;
+    };
+    if (route === "GET /admin/api/rooms") return reply(200, { rooms: this.store.rooms() });
+    if (route === "POST /admin/api/rooms") {
+      const b = await readJson(req);
+      const room = b.name;
+      if (typeof room !== "string" || !ROOM_RE.test(room))
+        throw new BrokerError("room name must be 1-64 characters: letters, digits, _ or -");
+      if (this.store.roomExists(room)) throw new BrokerError(`room ${room} already exists`);
+      const members = b.members ?? [];
+      if (!Array.isArray(members)) throw new BrokerError("members must be a list of agent names");
+      const names = [...new Set(members.map((m) => memberName({ name: m })))];
+      if (names.length) setConfiguredRoom(names, room, true);
+      this.store.createRoom(room);
+      for (const n of names) this.store.join(n, room);
+      for (const n of names) this.notifyRooms(n, false);
+      this.notifyObservers({ type: "rooms_changed" });
+      this.log(`admin created room ${room}`);
+      return reply(201, { room: roomInfo(room) });
+    }
+    const roomMatch = url.pathname.match(/^\/admin\/api\/rooms\/([^/]+)(?:\/members(?:\/([^/]+))?)?$/);
+    if (roomMatch) {
+      const room = decodeURIComponent(roomMatch[1]);
+      const isMembers = url.pathname.includes("/members");
+      if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
+      if (!this.store.roomExists(room)) throw new BrokerError(`unknown room: ${room}`, 404);
+      if (req.method === "DELETE" && !isMembers) {
+        const members = this.store.membersOf(room);
+        const configured = this.cfg.agents.filter((a) => a.rooms?.includes(room)).map((a) => a.name);
+        if (configured.length) setConfiguredRoom(configured, room, false);
+        const purge = url.searchParams.get("messages") === "1";
+        this.store.deleteRoom(room, purge);
+        for (const n of members) this.notifyRooms(n, false);
+        this.notifyObservers({ type: "rooms_changed" });
+        this.log(`admin deleted room ${room}${purge ? " with its messages" : ""}`);
+        return reply(200, { ok: true });
+      }
+      if (req.method === "POST" && isMembers && !roomMatch[2]) {
+        const n = memberName(await readJson(req));
+        setConfiguredRoom([n], room, true);
+        this.store.join(n, room);
+        this.notifyRooms(n);
+        this.log(`admin added ${n} to ${room}`);
+        return reply(200, { room: roomInfo(room) });
+      }
+      if (req.method === "DELETE" && roomMatch[2]) {
+        const n = memberName({ name: decodeURIComponent(roomMatch[2]) });
+        setConfiguredRoom([n], room, false);
+        this.store.leave(n, room);
+        this.notifyRooms(n);
+        this.log(`admin removed ${n} from ${room}`);
+        return reply(200, { room: roomInfo(room) });
+      }
+      return reply(404, { error: "not found" });
     }
     if (route === "GET /admin/api/messages") {
       const q = Object.fromEntries(url.searchParams);

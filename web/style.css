@@ -207,6 +207,45 @@ button.danger { background: var(--bad); color: #fff; }
 .token-row input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 .token-box .link { align-self: flex-start; }
 
+/* Setup instructions */
+.setup-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
+.setup-steps h3 { font-size: 14px; margin: 0 0 4px; }
+.setup-steps p { margin: 0 0 6px; }
+.code-wrap { position: relative; }
+.code-wrap pre {
+  margin: 0; padding: 10px 12px; padding-right: 96px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  overflow-x: auto; white-space: pre; font: 12.5px/1.45 ui-monospace, Consolas, monospace;
+}
+.code-wrap .copy { position: absolute; top: 6px; right: 6px; padding: 3px 10px; font-size: 12px; }
+.code-lang { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.setup-dir { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.setup-dir input { max-width: 520px; }
+input.wide { max-width: 520px; width: 100%; }
+
+/* Room management */
+.pick { flex: 1 1 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px 8px; margin: 0; }
+.pick legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.pick-list { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.people-form .pick-list label { display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 13px; color: var(--text); flex: none; }
+.room-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.room-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.room-card-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.room-card-head a { font-weight: 700; font-size: 15px; color: var(--accent); text-decoration: none; }
+.room-card-head a:hover { text-decoration: underline; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--hover); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 13px;
+}
+.chip .kind { font-size: 10px; }
+.chip button { background: none; color: var(--muted); padding: 0 6px; font-size: 14px; line-height: 1; }
+.chip button:hover { color: var(--bad); }
+.room-add { display: flex; gap: 6px; }
+.room-add select { flex: 1; min-width: 0; padding: 4px 8px; }
+.room-add button, .room-card .actions button { padding: 4px 10px; font-size: 13px; }
+.confirm-box { border: 1px solid var(--bad); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+
 /* Settings */
 .settings-form { max-width: 620px; display: flex; flex-direction: column; gap: 18px; }
 .field { display: flex; flex-direction: column; gap: 4px; }

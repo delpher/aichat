@@ -31,6 +31,9 @@
   const viewKey = (v) => (v.kind === "room" ? `r:${v.room}` : v.kind === "dm" ? `d:${pairKey(v.a, v.b)}` : v.kind);
   const msgKey = (m) => (m.room ? `r:${m.room}` : `d:${pairKey(m.from, m.to)}`);
   const byName = (x, y) => x.name.localeCompare(y.name);
+  // Admin-only panels: view kind -> section id
+  const PANELS = { settings: "settings", people: "people", rooms: "manage-rooms" };
+  const ADMIN_VIEWS = Object.keys(PANELS);
   const ROOM_RE = /^[A-Za-z0-9_\-]{1,64}$/;
 
   function fmtTime(iso) {
@@ -55,6 +58,7 @@
     unread: new Map(),     // viewKey -> count
     seenLive: new Set(),   // ids already applied by addLiveMessage
     replyTo: null,         // ChatMessage
+    flash: null,           // note to show once the next view is applied
     ws: null,
     wsRetry: 0,
     wsTimer: null,
@@ -147,7 +151,7 @@
     clearTimeout(state.wsTimer);
     if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
     state.messages = []; state.ids.clear(); state.unread.clear(); state.seenLive.clear();
-    hideToken();
+    hideSetup();
     showLogin(message);
   }
 
@@ -194,7 +198,7 @@
 
   function renderSidebar() {
     const cur = viewKey(state.view);
-    for (const name of ["all", "settings", "people"]) {
+    for (const name of ADMIN_VIEWS.concat("all")) {
       document.querySelector(`[data-view="${name}"]`).classList.toggle("active", cur === name);
     }
 
@@ -285,13 +289,13 @@
   function hashFor(v) {
     if (v.kind === "room") return `#room/${encodeURIComponent(v.room)}`;
     if (v.kind === "dm") return `#dm/${encodeURIComponent(v.a)}/${encodeURIComponent(v.b)}`;
-    if (v.kind === "settings" || v.kind === "people") return `#${v.kind}`;
+    if (ADMIN_VIEWS.includes(v.kind)) return `#${v.kind}`;
     return "#all";
   }
 
   function parseHash() {
     const parts = location.hash.replace(/^#/, "").split("/").map((p) => { try { return decodeURIComponent(p); } catch { return ""; } });
-    if (parts[0] === "settings" || parts[0] === "people") return { kind: parts[0] };
+    if (ADMIN_VIEWS.includes(parts[0])) return { kind: parts[0] };
     if (parts[0] === "room" && parts[1]) return { kind: "room", room: parts[1] };
     if (parts[0] === "dm" && parts[1] && parts[2]) {
       const [a, b] = [parts[1], parts[2]].sort();
@@ -335,28 +339,31 @@
     renderHeader();
     renderSidebar();
 
-    const panel = v.kind === "settings" || v.kind === "people";
-    $("settings").hidden = v.kind !== "settings";
-    $("people").hidden = v.kind !== "people";
+    const panel = ADMIN_VIEWS.includes(v.kind);
+    for (const [kind, id] of Object.entries(PANELS)) $(id).hidden = v.kind !== kind;
     $("feed").hidden = panel;
     $("composer").hidden = panel || v.kind === "none";
-    if (v.kind !== "people") hideToken();
+    if (v.kind !== "people") hideSetup();
 
     if (panel || v.kind === "none") {
       state.loadSeq++; // drop any in-flight message load
       state.messages = []; state.ids.clear();
       if (v.kind === "none") {
         renderMessages();
-        $("empty").textContent = "Ви ще не в жодній кімнаті. Приєднайтеся до кімнати зліва або напишіть комусь зі списку «Агенти й люди».";
+        // the composer (and its note line) is hidden here, so put any pending notice into the empty-state text
+        $("empty").textContent = `${state.flash ? state.flash + " " : ""}Ви ще не в жодній кімнаті. Приєднайтеся до кімнати зліва або напишіть комусь зі списку «Агенти й люди».`;
+        state.flash = null;
         $("older").hidden = true;
       }
       if (v.kind === "settings") loadSettings();
       if (v.kind === "people") loadPeople();
+      if (v.kind === "rooms") loadRoomsAdmin();
     } else {
       $("empty").textContent = "Повідомлень поки немає.";
       renderComposer();
       loadMessages(false);
     }
+    if (state.flash) { note(state.flash); state.flash = null; }
   }
 
   function renderHeader() {
@@ -373,14 +380,16 @@
     } else if (v.kind === "settings") {
       title = "Налаштування"; sub = "Ліміти брокера";
     } else if (v.kind === "people") {
-      title = "Люди"; sub = "Хто може входити в чат";
+      title = "Агенти й люди"; sub = "Хто може підключатися до брокера";
+    } else if (v.kind === "rooms") {
+      title = "Кімнати"; sub = "Створення кімнат і учасники";
     } else if (v.kind === "none") {
       title = "AIChat"; sub = "";
     }
     $("title").textContent = title;
     $("subtitle").textContent = sub;
     $("leave-room").hidden = isAdmin() || v.kind !== "room";
-    document.title = `${title} · AIChat`;
+    document.title = title === "AIChat" ? title : `${title} · AIChat`;
   }
 
   // ---------- messages ----------
@@ -593,8 +602,13 @@
           if (a) { a.online = !!frame.online; renderSidebar(); }
           else loadOverview().catch((e) => handleError(e, "Оновлення агентів"));
           if (state.view.kind === "people") renderPeople();
+          if (state.view.kind === "rooms") renderRoomsAdmin();
           break;
         }
+        case "rooms": // user: the admin changed my room membership
+        case "rooms_changed": // admin observer: rooms or members changed somewhere
+          onRoomsChanged();
+          break;
         case "error":
           if (!welcomed) { ws.onclose = null; ws.close(); logout(`Брокер відхилив токен: ${frame.error}`); }
           else note(`Брокер: ${frame.error}`, true);
@@ -615,6 +629,23 @@
       setConn("", `Немає з'єднання, повтор через ${Math.round(delay / 1000)} с`);
       state.wsTimer = setTimeout(connectWs, delay);
     };
+  }
+
+  async function onRoomsChanged() {
+    try {
+      await loadOverview();
+    } catch (err) {
+      handleError(err, "Оновлення кімнат");
+      return;
+    }
+    const v = state.view;
+    if (!isAdmin() && v.kind === "room" && !myRooms().includes(v.room)) {
+      state.flash = `Вас прибрали з кімнати #${v.room}.`; // shown after the view switches
+      go({ kind: "home" });
+      return;
+    }
+    if (v.kind === "rooms") loadRoomsAdmin(true);
+    if (v.kind === "people") loadPeopleQuiet();
   }
 
   // ---------- composer ----------
@@ -713,8 +744,11 @@
   }
 
   // ---------- settings (admin) ----------
-  const SETTINGS_FIELDS = ["maxHops", "ratePerMinute", "maxTextLength"];
+  const SETTINGS_FIELDS = ["maxHops", "ratePerMinute", "maxTextLength"]; // integers with limits
+  const TEXT_FIELDS = ["publicUrl", "projectDir"];                        // strings, "" = not set
+  const ALL_FIELDS = SETTINGS_FIELDS.concat(TEXT_FIELDS);
   const settingsState = { saved: null, limits: {}, seq: 0, editable: true };
+  const savedValue = (name) => String(settingsState.saved[name] ?? "");
 
   function setStatus(id, text, kind) {
     const s = $(id);
@@ -727,14 +761,14 @@
 
   function setSettingsBusy(busy) {
     const locked = busy || !settingsState.editable;
-    for (const name of SETTINGS_FIELDS) fieldInput(name).readOnly = locked;
+    for (const name of ALL_FIELDS) fieldInput(name).readOnly = locked;
     $("settings-save").disabled = locked;
     $("settings-reset").disabled = locked;
   }
 
   function fillSettings(settings) {
     settingsState.saved = { ...settings };
-    for (const name of SETTINGS_FIELDS) {
+    for (const name of ALL_FIELDS) {
       const input = fieldInput(name);
       input.value = settings[name] ?? "";
       input.classList.remove("changed", "bad");
@@ -777,6 +811,10 @@
   // Validates one field; returns { value } or { error }.
   function readField(name) {
     const raw = fieldInput(name).value.trim();
+    if (TEXT_FIELDS.includes(name)) {
+      if (name === "publicUrl" && raw && !/^https?:\/\/[^\s/]+/.test(raw)) return { error: "publicUrl: адреса має починатися з http:// або https://" };
+      return { value: raw };
+    }
     const lim = settingsState.limits[name];
     if (!/^-?\d+$/.test(raw)) return { error: `${name}: потрібне ціле число` };
     const value = Number(raw);
@@ -786,11 +824,11 @@
 
   function markChanged() {
     if (!settingsState.saved) return;
-    for (const name of SETTINGS_FIELDS) {
+    for (const name of ALL_FIELDS) {
       const input = fieldInput(name);
       const r = readField(name);
       input.classList.toggle("bad", !!r.error && input.value.trim() !== "");
-      input.classList.toggle("changed", String(settingsState.saved[name]) !== input.value.trim());
+      input.classList.toggle("changed", savedValue(name) !== input.value.trim());
     }
     settingsStatus("");
   }
@@ -799,10 +837,10 @@
     if (!settingsState.saved) return;
     const patch = {};
     const errors = [];
-    for (const name of SETTINGS_FIELDS) {
+    for (const name of ALL_FIELDS) {
       const r = readField(name);
       if (r.error) { errors.push(r.error); fieldInput(name).classList.add("bad"); continue; }
-      if (r.value !== settingsState.saved[name]) patch[name] = r.value;
+      if (String(r.value) !== savedValue(name)) patch[name] = r.value;
     }
     if (errors.length) { settingsStatus(errors.join("; "), "error"); return; }
     if (!Object.keys(patch).length) { settingsStatus("Змін немає."); return; }
@@ -812,7 +850,9 @@
     try {
       const data = await api("/admin/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
       fillSettings(data.settings || { ...settingsState.saved, ...patch });
-      const changed = Object.entries(patch).map(([k, v]) => `${k} = ${v}`).join(", ");
+      const changed = Object.entries(patch)
+        .map(([k, v]) => (typeof v === "string" ? `${k} = ${v ? `«${v}»` : "(не задано)"}` : `${k} = ${v}`))
+        .join(", ");
       settingsStatus(`Збережено: ${changed}.`, "ok");
     } catch (err) {
       if (err instanceof AuthError) { handleError(err); return; }
@@ -822,9 +862,11 @@
     }
   }
 
-  // ---------- people (admin) ----------
+  // ---------- agents & people (admin) ----------
+  const DIR_KEY = "aichat.projectDir";
   const people = { list: [], editable: true, confirm: null, busy: false, seq: 0 };
   const peopleStatus = (text, kind) => setStatus("people-status", text, kind);
+  const KIND_LABEL = { human: "людина", claude: "Claude Code", openai: "OpenAI" };
 
   async function loadPeople() {
     const seq = ++people.seq;
@@ -835,7 +877,7 @@
       if (seq !== people.seq) return;
       people.list = agents.agents || [];
       people.editable = settings.editable !== false;
-      peopleStatus(people.editable ? "" : "Цей брокер запущено без файлу конфігурації, тому людей змінювати не можна.");
+      peopleStatus(people.editable ? "" : "Цей брокер запущено без файлу конфігурації, тому список змінювати не можна.");
       renderPeople();
     } catch (err) {
       if (seq !== people.seq) return;
@@ -844,19 +886,37 @@
     }
   }
 
+  async function loadPeopleQuiet() {
+    try {
+      const data = await api("/admin/api/agents");
+      people.list = data.agents || [];
+    } catch { /* keep the old list */ }
+    renderPeople();
+  }
+
+  function smallButton(text, cls, onClick, disabled) {
+    const b = el("button", cls, text);
+    b.type = "button";
+    b.disabled = !!disabled;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
   function renderPeople() {
     // keep online status in sync with presence frames
     const online = new Map(state.overview.agents.map((a) => [a.name, a.online]));
     const rows = $("people-rows");
     rows.replaceChildren();
     const list = [...people.list].sort((x, y) => ((x.kind === "human") === (y.kind === "human") ? byName(x, y) : x.kind === "human" ? -1 : 1));
+    const locked = !people.editable || people.busy;
     for (const a of list) {
       const tr = el("tr");
       const nameCell = el("td");
       nameCell.append(el("strong", null, a.name));
       if (a.description) nameCell.append(el("span", "desc", a.description));
+      if (a.webhook) nameCell.append(el("span", "desc", "webhook"));
       tr.append(nameCell);
-      tr.append(el("td", "muted", a.kind));
+      tr.append(el("td", "muted", KIND_LABEL[a.kind] || a.kind));
       tr.append(el("td", null, (a.rooms || []).map((r) => "#" + r).join(", ") || "—"));
       const isOn = online.has(a.name) ? online.get(a.name) : a.online;
       const st = el("td");
@@ -864,61 +924,112 @@
       tr.append(st);
 
       const actions = el("td", "row-actions");
-      if (a.kind !== "human") {
-        actions.append(el("span", "muted small", "через npm run add-agent"));
-      } else if (people.confirm && people.confirm.name === a.name) {
-        const what = people.confirm.action === "delete"
-          ? `Видалити ${a.name}? Історія лишиться, але увійти буде неможливо.`
-          : `Перевидати токен ${a.name}? Старий перестане працювати, відкриті сесії закриються.`;
+      if (people.confirm && people.confirm.name === a.name) {
+        const del = people.confirm.action === "delete";
+        const what = del
+          ? `Видалити ${a.name}? Історія лишиться, але підключитися буде неможливо.`
+          : `Перевидати токен ${a.name}? Старий перестане працювати, відкриті з'єднання закриються${a.kind === "human" ? "" : ", агента треба буде перезапустити з новим токеном"}.`;
         actions.append(el("span", "small", what + " "));
-        const yes = el("button", people.confirm.action === "delete" ? "danger" : "", "Так");
-        yes.type = "button";
-        yes.disabled = people.busy;
-        yes.addEventListener("click", () => (people.confirm.action === "delete" ? removePerson(a.name) : rotateToken(a.name)));
-        const no = el("button", "secondary", "Ні");
-        no.type = "button";
-        no.addEventListener("click", () => { people.confirm = null; renderPeople(); });
-        actions.append(yes, no);
+        actions.append(
+          smallButton("Так", del ? "danger" : "", () => (del ? removePerson(a.name) : rotateToken(a.name)), people.busy),
+          smallButton("Ні", "secondary", () => { people.confirm = null; renderPeople(); }),
+        );
       } else {
-        const rot = el("button", "secondary", "Новий токен");
-        rot.type = "button";
-        rot.disabled = !people.editable || people.busy;
-        rot.addEventListener("click", () => { people.confirm = { name: a.name, action: "rotate" }; renderPeople(); });
-        const del = el("button", "danger", "Видалити");
-        del.type = "button";
-        del.disabled = !people.editable || people.busy;
-        del.addEventListener("click", () => { people.confirm = { name: a.name, action: "delete" }; renderPeople(); });
-        actions.append(rot, del);
+        actions.append(
+          smallButton("Інструкція", "secondary", () => showSavedSetup(a.name)),
+          smallButton("Новий токен", "secondary", () => { people.confirm = { name: a.name, action: "rotate" }; renderPeople(); }, locked),
+          smallButton("Видалити", "danger", () => { people.confirm = { name: a.name, action: "delete" }; renderPeople(); }, locked),
+        );
       }
       tr.append(actions);
       rows.append(tr);
     }
-    for (const id of ["people-name", "people-desc", "people-rooms", "people-add"]) $(id).disabled = !people.editable || people.busy;
+    for (const id of ["people-name", "people-kind", "people-custom", "people-webhook", "people-desc", "people-rooms", "people-add"]) {
+      $(id).disabled = locked;
+    }
   }
 
-  function showToken(title, token) {
-    $("people-token-title").textContent = title;
-    $("people-token-value").value = token;
-    $("people-url").textContent = `${location.origin}/`;
-    $("people-token").hidden = false;
-    $("people-token-copy").textContent = "Копіювати";
+  function syncKindFields() {
+    const kind = $("people-kind").value;
+    $("people-custom-wrap").hidden = kind !== "other";
+    $("people-webhook-wrap").hidden = kind === "human" || kind === "claude";
+  }
+
+  // ---- setup instructions ----
+  let currentSetup = null; // { title, setup, fresh }
+
+  function showSetup(title, setup, fresh) {
+    currentSetup = { title, setup, fresh };
+    $("setup-title").textContent = title;
+    $("setup-warning").hidden = !fresh;
+    const needsDir = (setup.steps || []).some((s) => (s.code || "").includes("<AICHAT_DIR>") || (s.text || "").includes("<AICHAT_DIR>"));
+    $("setup-dir-wrap").hidden = !needsDir;
+    if (needsDir && !$("setup-dir").value) $("setup-dir").value = store.get(DIR_KEY) || "";
+    renderSetupSteps();
+    $("setup-box").hidden = false;
     $("people").scrollTop = 0;
   }
 
-  function hideToken() {
-    $("people-token").hidden = true;
-    $("people-token-value").value = "";
+  // Replace <AICHAT_DIR> with the folder typed in the browser. JSON needs forward slashes.
+  function withDir(text) {
+    const dir = $("setup-dir").value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    return dir ? text.split("<AICHAT_DIR>").join(dir) : text;
   }
 
-  async function copyToken() {
-    const input = $("people-token-value");
-    try {
-      await navigator.clipboard.writeText(input.value);
-    } catch {
-      input.select();
-      try { document.execCommand("copy"); } catch { /* user can copy manually */ }
+  function renderSetupSteps() {
+    const list = $("setup-steps");
+    list.replaceChildren();
+    if (!currentSetup) return;
+    for (const step of currentSetup.setup.steps || []) {
+      const li = el("li");
+      if (step.title) li.append(el("h3", null, step.title));
+      if (step.text) li.append(el("p", "small", withDir(step.text)));
+      if (step.code) {
+        const code = withDir(step.code);
+        if (step.lang) li.append(el("div", "code-lang", step.lang));
+        const wrap = el("div", "code-wrap");
+        const pre = el("pre");
+        pre.append(el("code", null, code));
+        const copy = smallButton("Копіювати", "copy", () => copyText(code, copy));
+        wrap.append(pre, copy);
+        li.append(wrap);
+      }
+      list.append(li);
     }
-    $("people-token-copy").textContent = "Скопійовано ✓";
+  }
+
+  function hideSetup() {
+    currentSetup = null;
+    $("setup-box").hidden = true;
+    $("setup-steps").replaceChildren();
+  }
+
+  async function copyText(text, button) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = el("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.append(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch { /* user can copy manually */ }
+      ta.remove();
+    }
+    const old = button.textContent;
+    button.textContent = "Скопійовано ✓";
+    setTimeout(() => { button.textContent = old; }, 1500);
+  }
+
+  async function showSavedSetup(name) {
+    try {
+      const data = await api(`/admin/api/agents/${encodeURIComponent(name)}/setup`);
+      showSetup(`Як підключити ${name}`, data.setup || { steps: [] }, false);
+      peopleStatus("Токен тут замінено на <TOKEN>. Якщо токен загубився, натисніть «Новий токен».");
+    } catch (err) {
+      if (err instanceof AuthError) { handleError(err); return; }
+      peopleStatus(`Не вдалося отримати інструкцію: ${err.message}`, "error");
+    }
   }
 
   async function peopleAction(fn, okText) {
@@ -938,42 +1049,205 @@
     }
   }
 
-  async function loadPeopleQuiet() {
-    try {
-      const data = await api("/admin/api/agents");
-      people.list = data.agents || [];
-    } catch { /* keep the old list */ }
-    renderPeople();
+  function parseRooms(text) {
+    return text.split(/[\s,]+/).map((r) => r.replace(/^#/, "")).filter(Boolean);
   }
 
   function addPerson() {
     const name = $("people-name").value.trim();
+    const sel = $("people-kind").value;
+    const kind = sel === "other" ? $("people-custom").value.trim() : sel;
     const description = $("people-desc").value.trim();
-    const rooms = $("people-rooms").value.split(/[\s,]+/).map((r) => r.replace(/^#/, "")).filter(Boolean);
+    const webhook = $("people-webhook-wrap").hidden ? "" : $("people-webhook").value.trim();
+    const rooms = parseRooms($("people-rooms").value);
     if (!ROOM_RE.test(name)) { peopleStatus("Ім'я: латиниця, цифри, - і _ (до 64 символів).", "error"); return; }
+    if (!ROOM_RE.test(kind)) { peopleStatus("Назва типу: латиниця, цифри, - і _.", "error"); return; }
+    if (webhook && !/^https?:\/\/\S+$/.test(webhook)) { peopleStatus("Webhook має бути адресою http:// або https://", "error"); return; }
     const badRoom = rooms.find((r) => !ROOM_RE.test(r));
     if (badRoom) { peopleStatus(`Погана назва кімнати: ${badRoom}`, "error"); return; }
-    const body = { name, kind: "human", rooms };
+    const body = { name, kind, rooms };
     if (description) body.description = description;
+    if (webhook) body.webhook = webhook;
     return peopleAction(async () => {
       const data = await api("/admin/api/agents", { method: "POST", body: JSON.stringify(body) });
       $("people-form").reset();
-      showToken(`Токен для ${data.agent ? data.agent.name : name}`, data.token);
+      syncKindFields();
+      const who = data.agent ? data.agent.name : name;
+      showSetup(kind === "human" ? `Вхід для ${who}` : `Як запустити ${who}`, data.setup || { steps: [] }, true);
     }, `Додано: ${name}.`);
   }
 
   function rotateToken(name) {
     return peopleAction(async () => {
       const data = await api(`/admin/api/agents/${encodeURIComponent(name)}/token`, { method: "POST" });
-      showToken(`Новий токен для ${name}`, data.token);
+      showSetup(`Новий токен для ${name}`, data.setup || { steps: [{ title: "Токен", code: data.token }] }, true);
     }, `Токен ${name} перевидано.`);
   }
 
   function removePerson(name) {
     return peopleAction(async () => {
       await api(`/admin/api/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
-      hideToken();
+      hideSetup();
     }, `Видалено: ${name}.`);
+  }
+
+  // ---------- rooms (admin) ----------
+  const roomsAdmin = { list: [], agents: [], confirm: null, busy: false, seq: 0 };
+  const roomsStatus = (text, kind) => setStatus("rooms-status", text, kind);
+
+  async function loadRoomsAdmin(quiet) {
+    const seq = ++roomsAdmin.seq;
+    if (!quiet) { roomsAdmin.confirm = null; roomsStatus("Завантаження…"); }
+    try {
+      const [rooms, agents] = await Promise.all([api("/admin/api/rooms"), api("/admin/api/agents")]);
+      if (seq !== roomsAdmin.seq) return;
+      roomsAdmin.list = rooms.rooms || [];
+      roomsAdmin.agents = agents.agents || [];
+      if (!quiet) roomsStatus("");
+      renderRoomsAdmin();
+    } catch (err) {
+      if (seq !== roomsAdmin.seq) return;
+      if (err instanceof AuthError) { handleError(err); return; }
+      roomsStatus(`Не вдалося завантажити кімнати: ${err.message}`, "error");
+    }
+  }
+
+  function agentKind(name) {
+    const a = roomsAdmin.agents.find((x) => x.name === name);
+    return a ? KIND_LABEL[a.kind] || a.kind : "";
+  }
+
+  function renderMemberPicker() {
+    const box = $("room-members-pick");
+    const checked = new Set([...box.querySelectorAll("input:checked")].map((i) => i.value));
+    box.replaceChildren();
+    for (const a of [...roomsAdmin.agents].sort(byName)) {
+      const label = el("label");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.value = a.name;
+      cb.checked = checked.has(a.name);
+      label.append(cb, document.createTextNode(a.name), el("span", "kind", KIND_LABEL[a.kind] || a.kind));
+      box.append(label);
+    }
+    if (!roomsAdmin.agents.length) box.append(el("span", "muted small", "немає агентів"));
+  }
+
+  function renderRoomsAdmin() {
+    renderMemberPicker();
+    const cards = $("room-cards");
+    cards.replaceChildren();
+    const busy = roomsAdmin.busy;
+    for (const r of [...roomsAdmin.list].sort(byName)) {
+      const card = el("div", "room-card");
+      const head = el("div", "room-card-head");
+      const link = el("a", null, `#${r.name}`);
+      link.href = hashFor({ kind: "room", room: r.name });
+      head.append(link, el("span", "muted small", `${r.count || 0} повідомл.${r.last_ts ? ` · останнє ${fmtTime(r.last_ts)}` : ""}`));
+      card.append(head);
+
+      const chips = el("div", "chips");
+      for (const m of [...(r.members || [])].sort()) {
+        const chip = el("span", "chip");
+        chip.append(document.createTextNode(m));
+        const k = agentKind(m);
+        if (k) chip.append(el("span", "kind", k));
+        const x = smallButton("×", "", () => removeMember(r.name, m), busy);
+        x.title = `Прибрати ${m} з #${r.name}`;
+        x.setAttribute("aria-label", x.title);
+        chip.append(x);
+        chips.append(chip);
+      }
+      if (!(r.members || []).length) chips.append(el("span", "muted small", "учасників немає"));
+      card.append(chips);
+
+      const notIn = roomsAdmin.agents.map((a) => a.name).filter((n) => !(r.members || []).includes(n)).sort();
+      if (notIn.length) {
+        const add = el("div", "room-add");
+        const sel = el("select");
+        sel.setAttribute("aria-label", `Додати до #${r.name}`);
+        for (const n of notIn) {
+          const o = el("option", null, `${n} (${agentKind(n)})`);
+          o.value = n;
+          sel.append(o);
+        }
+        add.append(sel, smallButton("Додати", "", () => addMember(r.name, sel.value), busy));
+        card.append(add);
+      }
+
+      if (roomsAdmin.confirm === r.name) {
+        const box = el("div", "confirm-box");
+        box.append(el("span", null, `Що зробити з #${r.name}?`));
+        const acts = el("div", "actions");
+        acts.append(
+          smallButton("Прибрати всіх учасників (історія лишиться)", "secondary", () => deleteRoom(r.name, false), busy),
+          smallButton("Видалити разом з повідомленнями", "danger", () => deleteRoom(r.name, true), busy),
+          smallButton("Скасувати", "link", () => { roomsAdmin.confirm = null; renderRoomsAdmin(); }),
+        );
+        box.append(acts);
+        card.append(box);
+      } else {
+        const acts = el("div", "actions");
+        acts.append(smallButton("Видалити кімнату…", "danger", () => { roomsAdmin.confirm = r.name; renderRoomsAdmin(); }, busy));
+        card.append(acts);
+      }
+      cards.append(card);
+    }
+    if (!roomsAdmin.list.length) cards.append(el("p", "muted", "Кімнат поки немає."));
+    $("room-name").disabled = busy;
+    $("room-add").disabled = busy;
+  }
+
+  async function roomsAction(fn, okText) {
+    roomsAdmin.busy = true;
+    renderRoomsAdmin();
+    try {
+      await fn();
+      roomsStatus(okText, "ok");
+    } catch (err) {
+      if (err instanceof AuthError) { handleError(err); return; }
+      roomsStatus(`Помилка: ${err.message}`, "error");
+    } finally {
+      roomsAdmin.busy = false;
+      roomsAdmin.confirm = null;
+      await loadRoomsAdmin(true);
+      loadOverview().catch(() => { /* sidebar refresh is best effort */ });
+    }
+  }
+
+  function createRoom() {
+    const name = $("room-name").value.trim().replace(/^#/, "");
+    if (!ROOM_RE.test(name)) { roomsStatus("Назва: латиниця, цифри, - і _ (до 64 символів).", "error"); return; }
+    const members = [...$("room-members-pick").querySelectorAll("input:checked")].map((i) => i.value);
+    return roomsAction(async () => {
+      await api("/admin/api/rooms", { method: "POST", body: JSON.stringify(members.length ? { name, members } : { name }) });
+      $("room-name").value = "";
+      for (const cb of $("room-members-pick").querySelectorAll("input:checked")) cb.checked = false;
+    }, `Кімнату #${name} створено${members.length ? ` з учасниками: ${members.join(", ")}` : ""}.`);
+  }
+
+  const memberPath = (room, name) => `/admin/api/rooms/${encodeURIComponent(room)}/members${name ? `/${encodeURIComponent(name)}` : ""}`;
+
+  function addMember(room, name) {
+    if (!name) return;
+    return roomsAction(
+      () => api(memberPath(room), { method: "POST", body: JSON.stringify({ name }) }),
+      `${name} додано до #${room}.`,
+    );
+  }
+
+  function removeMember(room, name) {
+    return roomsAction(
+      () => api(memberPath(room, name), { method: "DELETE" }),
+      `${name} прибрано з #${room}.`,
+    );
+  }
+
+  function deleteRoom(room, withMessages) {
+    return roomsAction(
+      () => api(`/admin/api/rooms/${encodeURIComponent(room)}${withMessages ? "?messages=1" : ""}`, { method: "DELETE" }),
+      withMessages ? `Кімнату #${room} видалено разом з повідомленнями.` : `З #${room} прибрано всіх учасників, історія лишилась.`,
+    );
   }
 
   // ---------- wiring ----------
@@ -983,7 +1257,7 @@
     if (token) login(token, $("login-remember").checked);
   });
   $("logout").addEventListener("click", () => logout(""));
-  for (const name of ["all", "settings", "people"]) {
+  for (const name of ADMIN_VIEWS.concat("all")) {
     document.querySelector(`[data-view="${name}"]`).addEventListener("click", () => go({ kind: name }));
   }
   $("menu").addEventListener("click", () => $("sidebar").classList.toggle("open"));
@@ -1006,8 +1280,10 @@
     if (settingsState.saved) { fillSettings(settingsState.saved); settingsStatus(""); }
   });
   $("people-form").addEventListener("submit", (e) => { e.preventDefault(); addPerson(); });
-  $("people-token-copy").addEventListener("click", copyToken);
-  $("people-token-close").addEventListener("click", hideToken);
+  $("people-kind").addEventListener("change", syncKindFields);
+  $("setup-close").addEventListener("click", hideSetup);
+  $("setup-dir").addEventListener("input", () => { store.set(DIR_KEY, $("setup-dir").value.trim()); renderSetupSteps(); });
+  $("room-form").addEventListener("submit", (e) => { e.preventDefault(); createRoom(); });
   window.addEventListener("hashchange", applyHash);
 
   const saved = store.get(TOKEN_KEY) || store.get(OLD_TOKEN_KEY);

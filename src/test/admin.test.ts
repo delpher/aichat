@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startBroker, connect, nextMessage } from "./helpers.js";
+import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { BrokerClient } from "../client/broker-client.js";
 import { ConfigFile, ensureAdminToken, validate } from "../broker/config.js";
 import type { ChatMessage } from "../protocol.js";
@@ -173,7 +173,7 @@ test("admin settings: read, change maxHops at runtime, reject bad values", async
     fetch(`${http}/admin/api/settings`, { method: "PATCH", headers: auth(), body: JSON.stringify(body) });
   r = await patch({ maxHops: 3 });
   assert.equal(r.status, 200);
-  assert.deepEqual(((await r.json()) as { settings: unknown }).settings, { maxHops: 3, ratePerMinute: 30, maxTextLength: 20000 });
+  assert.deepEqual(((await r.json()) as { settings: unknown }).settings, { maxHops: 3, ratePerMinute: 30, maxTextLength: 20000, publicUrl: "", projectDir: "" });
   await a.send({ to: "b", text: "2", reply_to: second });
 
   for (const bad of [{}, { maxHops: 0 }, { maxHops: 101 }, { maxHops: 2.5 }, { maxHops: "5" }, { port: 1 }, [1]])
@@ -246,7 +246,7 @@ test("personal web login: overview and history show only the agent's own convers
   await broker.close();
 });
 
-test("admin manages people: add, new token, remove; only kind human", async () => {
+test("admin manages people: add, new token, remove", async () => {
   const { broker, url, http, cfg } = await startBroker([{ name: "bot", kind: "claude", rooms: ["lobby"] }], { adminToken: ADMIN });
   const post = (path: string, body?: unknown) =>
     fetch(`${http}${path}`, { method: "POST", headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -263,7 +263,8 @@ test("admin manages people: add, new token, remove; only kind human", async () =
   for (const [body, status] of [
     [{ name: "olena" }, 400],
     [{ name: "bad name!" }, 400],
-    [{ name: "x", kind: "claude" }, 403],
+    [{ name: "x", kind: "bad kind" }, 400],
+    [{ name: "w", webhook: "ftp://x" }, 400],
     [{ name: "y", rooms: ["no spaces"] }, 400],
     [{ name: "z", rooms: "lobby" }, 400],
   ] as const)
@@ -292,8 +293,6 @@ test("admin manages people: add, new token, remove; only kind human", async () =
   assert.equal((await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${added.token}` } })).status, 401);
   assert.equal((await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${fresh}` } })).status, 200);
 
-  assert.equal((await post("/admin/api/agents/bot/token")).status, 403);
-  assert.equal((await fetch(`${http}/admin/api/agents/bot`, { method: "DELETE", headers: auth() })).status, 403);
   assert.equal((await fetch(`${http}/admin/api/agents/nobody`, { method: "DELETE", headers: auth() })).status, 404);
 
   r = await fetch(`${http}/admin/api/agents/olena`, { method: "DELETE", headers: auth() });
@@ -306,5 +305,140 @@ test("admin manages people: add, new token, remove; only kind human", async () =
   assert.deepEqual(o.rooms.find((x) => x.name === "lobby")?.members, ["bot"]);
   assert.equal(o.rooms.find((x) => x.name === "lobby")?.count, 1);
   bot.close();
+  await broker.close();
+});
+
+test("admin adds AI agents with ready-made setup steps; tokens and removal work for any kind", async () => {
+  const { broker, http, cfg } = await startBroker([{ name: "me", kind: "human" }], { adminToken: ADMIN });
+  const post = (path: string, body?: unknown) =>
+    fetch(`${http}${path}`, { method: "POST", headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
+  type SetupRes = { token: string; setup: { kind: string; steps: { title: string; code?: string; lang?: string }[] } };
+
+  let r = await post("/admin/api/agents", { name: "claude-c", kind: "claude", rooms: ["lobby"] });
+  assert.equal(r.status, 201);
+  const c = (await r.json()) as SetupRes;
+  const mcp = JSON.parse(c.setup.steps.find((s) => s.lang === "json")!.code!);
+  assert.equal(mcp.mcpServers.aichat.env.AICHAT_TOKEN, c.token);
+  assert.match(mcp.mcpServers.aichat.env.AICHAT_URL, /^ws:\/\/127\.0\.0\.1:\d+$/);
+  assert.match(mcp.mcpServers.aichat.args[0], /<AICHAT_DIR>\/dist\/adapters\/claude-channel\.js$/);
+  assert.ok(c.setup.steps.some((s) => s.code?.includes("--dangerously-load-development-channels server:aichat")));
+
+  // publicUrl and projectDir from settings go into the instructions
+  r = await fetch(`${http}/admin/api/settings`, {
+    method: "PATCH", headers: auth(), body: JSON.stringify({ publicUrl: "http://aichat.lan:8787/", projectDir: "D:\\AIChat" }),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(
+    (((await r.json()) as { settings: Record<string, unknown> }).settings),
+    { maxHops: 8, ratePerMinute: 30, maxTextLength: 20000, publicUrl: "http://aichat.lan:8787", projectDir: "D:\\AIChat" },
+  );
+  for (const bad of [{ publicUrl: "aichat.lan" }, { publicUrl: "ftp://x" }, { projectDir: 5 }])
+    assert.equal((await fetch(`${http}/admin/api/settings`, { method: "PATCH", headers: auth(), body: JSON.stringify(bad) })).status, 400);
+
+  r = await post("/admin/api/agents", { name: "gpt", kind: "openai" });
+  const o = (await r.json()) as SetupRes;
+  const bash = o.setup.steps.find((s) => s.lang === "bash")!.code!;
+  assert.match(bash, /cd 'D:\/AIChat'/);
+  assert.match(bash, /AICHAT_URL='ws:\/\/aichat\.lan:8787'/);
+  assert.ok(bash.includes(o.token));
+  assert.ok(o.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("npm run openai-agent")));
+
+  r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
+  assert.equal(r.status, 201);
+  const h = (await r.json()) as SetupRes & { agent: { webhook: boolean } };
+  assert.equal(h.agent.webhook, true);
+  assert.equal(cfg().agents.find((a) => a.name === "hook")?.webhook, "http://127.0.0.1:9/hook");
+
+  // instructions again, without revealing the token
+  r = await fetch(`${http}/admin/api/agents/claude-c/setup`, { headers: auth() });
+  const again = JSON.stringify(await r.json());
+  assert.ok(again.includes("<TOKEN>"));
+  assert.ok(!again.includes(c.token));
+  assert.ok(again.includes("D:/AIChat/dist/adapters/claude-channel.js"));
+
+  r = await post("/admin/api/agents/claude-c/token");
+  const t = (await r.json()) as SetupRes;
+  assert.notEqual(t.token, c.token);
+  assert.ok(JSON.stringify(t.setup).includes(t.token));
+  assert.equal((await fetch(`${http}/admin/api/agents/claude-c`, { method: "DELETE", headers: auth() })).status, 200);
+  assert.equal(cfg().agents.some((a) => a.name === "claude-c"), false);
+  // posting as an AI agent from the web is still not allowed
+  r = await post("/admin/api/messages", { as: "gpt", room: "lobby", text: "x" });
+  assert.equal(r.status, 403);
+  await broker.close();
+});
+
+test("admin manages rooms: create, members, delete; changes persist and reach live agents", async () => {
+  const { broker, url, http, cfg } = await startBroker(
+    [{ name: "a", rooms: ["lobby"] }, { name: "b" }, { name: "me", kind: "human" }],
+    { adminToken: ADMIN },
+  );
+  const call = (method: string, path: string, body?: unknown) =>
+    fetch(`${http}${path}`, { method, headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
+  const obs = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
+  await obs.connect();
+  const frames: { type: string; rooms?: string[] }[] = [];
+  const b = await connect(url, "b");
+  // BrokerClient ignores unknown frames, so listen on the raw socket
+  (b as unknown as { ws: { on: (e: string, f: (d: unknown) => void) => void } }).ws.on("message", (d) => frames.push(JSON.parse(String(d))));
+  const obsFrames: string[] = [];
+  (obs as unknown as { ws: { on: (e: string, f: (d: unknown) => void) => void } }).ws.on("message", (d) => obsFrames.push(JSON.parse(String(d)).type));
+
+  let r = await call("POST", "/admin/api/rooms", { name: "design", members: ["a", "b"] });
+  assert.equal(r.status, 201);
+  assert.deepEqual(((await r.json()) as { room: { members: string[] } }).room.members, ["a", "b"]);
+  assert.deepEqual(cfg().agents.find((x) => x.name === "b")?.rooms, ["design"]);
+  assert.equal((await call("POST", "/admin/api/rooms", { name: "design" })).status, 400);
+  assert.equal((await call("POST", "/admin/api/rooms", { name: "bad name" })).status, 400);
+  assert.equal((await call("POST", "/admin/api/rooms", { name: "x", members: ["ghost"] })).status, 404);
+
+  r = await call("POST", "/admin/api/rooms", { name: "empty" });
+  assert.equal(r.status, 201);
+  r = await call("GET", "/admin/api/rooms");
+  const names = ((await r.json()) as { rooms: { name: string }[] }).rooms.map((x) => x.name);
+  assert.deepEqual(names, ["design", "empty", "lobby"]);
+
+  r = await call("POST", "/admin/api/rooms/empty/members", { name: "me" });
+  assert.deepEqual(((await r.json()) as { room: { members: string[] } }).room.members, ["me"]);
+  r = await call("DELETE", "/admin/api/rooms/design/members/b");
+  assert.deepEqual(((await r.json()) as { room: { members: string[] } }).room.members, ["a"]);
+  assert.equal(cfg().agents.find((x) => x.name === "b")?.rooms, undefined);
+  assert.equal((await call("DELETE", "/admin/api/rooms/nope/members/b")).status, 404);
+  assert.equal((await call("POST", "/admin/api/rooms/empty/members", { name: "ghost" })).status, 404);
+  await new Promise((res) => setTimeout(res, 50));
+  assert.deepEqual(frames.filter((f) => f.type === "rooms").map((f) => f.rooms), [["design"], []]);
+  assert.ok(obsFrames.includes("rooms_changed"));
+
+  // removed member does not come back on reconnect
+  b.close();
+  const b2 = await connect(url, "b");
+  assert.deepEqual((await (await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${tok("b")}` } })).json() as { rooms: string[] }).rooms, []);
+
+  // delete keeps messages unless ?messages=1
+  const a = await connect(url, "a");
+  await a.send({ room: "design", text: "keep me" });
+  assert.equal((await call("DELETE", "/admin/api/rooms/design")).status, 200);
+  assert.equal(cfg().agents.find((x) => x.name === "a")?.rooms?.includes("design"), false);
+  r = await call("GET", "/admin/api/rooms");
+  const design = ((await r.json()) as { rooms: { name: string; members: string[]; count: number }[] }).rooms.find((x) => x.name === "design");
+  assert.deepEqual(design && { members: design.members, count: design.count }, { members: [], count: 1 });
+  assert.equal((await call("DELETE", "/admin/api/rooms/design?messages=1")).status, 200);
+  r = await call("GET", "/admin/api/rooms");
+  assert.equal(((await r.json()) as { rooms: { name: string }[] }).rooms.some((x) => x.name === "design"), false);
+  assert.equal((await call("DELETE", "/admin/api/rooms/design")).status, 404);
+  a.close(); b2.close(); obs.close();
+  await broker.close();
+});
+
+test("an agent that leaves a configured room stays out after reconnecting", async () => {
+  const { broker, url, http, cfg } = await startBroker([{ name: "a", rooms: ["lobby", "lab"] }]);
+  const a = await connect(url, "a");
+  await a.request({ type: "leave", room: "lab" });
+  a.close();
+  const a2 = await connect(url, "a");
+  const me = (await (await fetch(`${http}/api/me`, { headers: { authorization: `Bearer ${tok("a")}` } })).json()) as { rooms: string[] };
+  assert.deepEqual(me.rooms, ["lobby"]);
+  assert.deepEqual(cfg().agents[0].rooms, ["lobby"]);
+  a2.close();
   await broker.close();
 });

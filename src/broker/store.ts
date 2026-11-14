@@ -49,6 +49,10 @@ export class Store {
         joined_after INTEGER NOT NULL,
         PRIMARY KEY (agent, room)
       );
+      CREATE TABLE IF NOT EXISTS rooms (
+        name TEXT PRIMARY KEY,
+        created TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS cursors (
         agent TEXT PRIMARY KEY,
         last_id INTEGER NOT NULL
@@ -165,7 +169,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT r.room AS name, COUNT(m.id) AS count, MAX(m.ts) AS last_ts
-         FROM (SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL) r
+         FROM (SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL UNION SELECT name FROM rooms) r
          LEFT JOIN messages m ON m.room = r.room
          ${agent ? "WHERE r.room IN (SELECT room FROM memberships WHERE agent = ?)" : ""}
          GROUP BY r.room ORDER BY r.room`,
@@ -178,7 +182,9 @@ export class Store {
   allRoomNames(): string[] {
     return (
       this.db
-        .prepare("SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL ORDER BY room")
+        .prepare(
+          "SELECT room FROM memberships UNION SELECT room FROM messages WHERE room IS NOT NULL UNION SELECT name FROM rooms ORDER BY room",
+        )
         .all() as { room: string }[]
     ).map((r) => r.room);
   }
@@ -192,6 +198,27 @@ export class Store {
          GROUP BY a, b ORDER BY last_ts DESC`,
       )
       .all(...(agent ? [agent, agent] : [])) as { a: string; b: string; count: number; last_ts: string }[];
+  }
+
+  roomExists(room: string): boolean {
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM rooms WHERE name = ? UNION SELECT 1 FROM memberships WHERE room = ?
+         UNION SELECT 1 FROM messages WHERE room = ? LIMIT 1`,
+      )
+      .get(room, room, room);
+  }
+
+  /** Records an (possibly empty) room so it shows up in lists before anyone joins. */
+  createRoom(room: string) {
+    this.db.prepare("INSERT OR IGNORE INTO rooms (name, created) VALUES (?, ?)").run(room, new Date().toISOString());
+  }
+
+  /** Removes a room's members and its record; with `messages` also its history. */
+  deleteRoom(room: string, messages: boolean) {
+    this.db.prepare("DELETE FROM memberships WHERE room = ?").run(room);
+    this.db.prepare("DELETE FROM rooms WHERE name = ?").run(room);
+    if (messages) this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
   }
 
   /** Drops a removed agent's memberships and delivery cursor; its messages stay in the history. */

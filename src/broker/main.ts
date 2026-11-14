@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Broker } from "./broker.js";
 import { ConfigFile, type BrokerConfig } from "./config.js";
 
@@ -20,6 +21,10 @@ const withEnv = (c: BrokerConfig): BrokerConfig => ({
 const broker = new Broker({
   config: () => withEnv(config.get()),
   editConfig: (fn) => withEnv(config.edit(fn)),
+  // Inside Docker the broker cannot know the project's path on the host; set projectDir in the web UI instead.
+  defaultProjectDir:
+    process.env.AICHAT_PROJECT_DIR ??
+    (existsSync("/.dockerenv") ? "" : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")),
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();
