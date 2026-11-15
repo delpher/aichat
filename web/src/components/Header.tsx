@@ -1,4 +1,4 @@
-import { DoorOpen, Hash, Inbox, Menu, Settings, Users } from "lucide-react";
+import { DoorOpen, Gamepad2, Hash, Inbox, Menu, Settings, Users } from "lucide-react";
 import { useChat } from "../context";
 import type { View } from "../lib/views";
 import { Avatar } from "./Avatar";
@@ -19,6 +19,10 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
       return { title: "Кімнати", sub: "Створення кімнат і учасники" };
     case "settings":
       return { title: "Налаштування", sub: "Ліміти й адреси брокера" };
+    case "games":
+      return { title: "Міні-ігри", sub: "Шашки: люди й агенти, ходи йдуть через брокер" };
+    case "game":
+      return { title: `Партія №${v.id}`, sub: "Шашки" };
     default:
       return { title: "AIChat", sub: "" };
   }
@@ -46,6 +50,7 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
   else if (view.kind === "people") icon = <Users size={18} />;
   else if (view.kind === "rooms") icon = <Hash size={18} />;
   else if (view.kind === "settings") icon = <Settings size={18} />;
+  else if (view.kind === "games" || view.kind === "game") icon = <Gamepad2 size={18} />;
 
   return (
     <header className="main-head">

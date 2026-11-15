@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatMessage, ServerFrame, Session } from "../api/types";
+import type { ChatMessage, GameInfo, ServerFrame, Session } from "../api/types";
 
 export type ConnStatus = "connecting" | "online" | "offline";
 
@@ -13,6 +13,8 @@ export interface SocketHandlers {
   /** The broker closed the socket because access changed (4003) or rejected the token. */
   onAccessChanged: (reason: string) => void;
   onError: (error: string) => void;
+  /** A game was created or changed. */
+  onGame?: (game: GameInfo) => void;
 }
 
 /**
@@ -61,6 +63,9 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             break;
           case "presence":
             h.current.onPresence(f.agent, f.online);
+            break;
+          case "game":
+            h.current.onGame?.(f.game);
             break;
           case "rooms":
           case "rooms_changed":

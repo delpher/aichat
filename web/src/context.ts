@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Api } from "./api/http";
-import type { ChatMessage, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
 import type { View } from "./lib/views";
 
 export interface ChatContextValue {
@@ -14,6 +14,8 @@ export interface ChatContextValue {
   sender: string;
   /** Live messages for the open view; returns an unsubscribe function. */
   subscribe: (fn: (m: ChatMessage) => void) => () => void;
+  /** Live game updates; returns an unsubscribe function. */
+  subscribeGames: (fn: (g: GameInfo) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */
   addLive: (m: ChatMessage) => void;
   toast: (text: string, error?: boolean) => void;

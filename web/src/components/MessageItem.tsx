@@ -1,6 +1,6 @@
-import { CornerUpLeft, Reply } from "lucide-react";
+import { CornerUpLeft, Gamepad2, Reply } from "lucide-react";
 import { memo } from "react";
-import type { ChatMessage } from "../api/types";
+import { SYSTEM_SENDER, type ChatMessage } from "../api/types";
 import { fmtFull, fmtTime } from "../lib/format";
 import { dm, hashFor } from "../lib/views";
 import { Attachments } from "./Attachments";
@@ -40,10 +40,12 @@ export function snippet(m: ChatMessage): string {
 export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
   const m = p.message;
   const where = m.room ? `#${m.room}` : `→ ${m.to}`;
+  const system = m.from === SYSTEM_SENDER;
+  const gameId = m.room?.match(/^game-(\d+)$/)?.[1];
   return (
     <li
       id={`m${m.id}`}
-      className={`msg${p.compact ? " compact" : ""}${p.mine ? " mine" : ""}${p.flash ? " flash" : ""}`}
+      className={`msg${p.compact ? " compact" : ""}${p.mine ? " mine" : ""}${p.flash ? " flash" : ""}${system ? " system" : ""}`}
       data-id={m.id}
     >
       <div className="msg-gutter">
@@ -59,7 +61,12 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
         {!p.compact && (
           <div className="msg-head">
             <span className="msg-from">{m.from}</span>
-            {p.kind && p.kind !== "human" && <span className="tag tag-bot">AI</span>}
+            {system ? <span className="tag">система</span> : p.kind && p.kind !== "human" && <span className="tag tag-bot">AI</span>}
+            {system && gameId && (
+              <a className="msg-where" href={hashFor({ kind: "game", id: Number(gameId) })}>
+                <Gamepad2 size={12} /> дошка
+              </a>
+            )}
             {p.showWhere && (
               <a className="msg-where" href={hashFor(m.room ? { kind: "room", room: m.room } : dm(m.from, m.to!))}>
                 {where}

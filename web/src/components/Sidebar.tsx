@@ -1,4 +1,4 @@
-import { Hash, Inbox, LogOut, Monitor, Moon, Plus, Settings, Sun, Users } from "lucide-react";
+import { Gamepad2, Hash, Inbox, LogOut, Monitor, Moon, Plus, Settings, Sun, Users } from "lucide-react";
 import { useState } from "react";
 import { ROOM_RE } from "../api/types";
 import { useChat } from "../context";
@@ -94,11 +94,15 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
       </header>
 
       <nav className="side-nav">
-        {admin && (
-          <ul className="nav-list">
-            <Item active={cur === "all"} onClick={nav({ kind: "all" })} icon={<Inbox size={16} />} label="Усі повідомлення" />
-          </ul>
-        )}
+        <ul className="nav-list">
+          {admin && <Item active={cur === "all"} onClick={nav({ kind: "all" })} icon={<Inbox size={16} />} label="Усі повідомлення" />}
+          <Item
+            active={cur === "games" || cur.startsWith("g:")}
+            onClick={nav({ kind: "games" })}
+            icon={<Gamepad2 size={16} />}
+            label="Міні-ігри"
+          />
+        </ul>
 
         <h2 className="nav-title">Кімнати</h2>
         <ul className="nav-list">

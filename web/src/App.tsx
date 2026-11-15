@@ -1,8 +1,10 @@
 import { LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthError, detectSession, makeApi } from "./api/http";
-import type { ChatMessage, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
 import { ChatView } from "./components/ChatView";
+import { GameView } from "./components/games/GameView";
+import { GamesPanel } from "./components/games/GamesPanel";
 import { Header } from "./components/Header";
 import { Login } from "./components/Login";
 import { PeoplePanel } from "./components/panels/PeoplePanel";
@@ -224,6 +226,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribers.current.add(fn);
     return () => void subscribers.current.delete(fn);
   }, []);
+  const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
+  const subscribeGames = useCallback((fn: (g: GameInfo) => void) => {
+    gameSubscribers.current.add(fn);
+    return () => void gameSubscribers.current.delete(fn);
+  }, []);
 
   const conn = useSocket(session, {
     onMessage: addLive,
@@ -252,6 +259,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     },
     onAccessChanged: () => void onRelogin(),
     onError: (e) => toast(`Брокер: ${e}`, true),
+    onGame: (g) => {
+      for (const fn of gameSubscribers.current) fn(g);
+    },
   });
 
   // ---- rooms (people) ----
@@ -283,6 +293,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     go,
     sender,
     subscribe,
+    subscribeGames,
     addLive,
     toast,
     fail,
@@ -293,6 +304,8 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "people") main = <PeoplePanel onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
+  else if (view.kind === "games") main = <GamesPanel key={epoch} />;
+  else if (view.kind === "game") main = <GameView key={`${view.id}:${epoch}`} id={view.id} />;
   else
     main = (
       <div className="empty big">
