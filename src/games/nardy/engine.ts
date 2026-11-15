@@ -296,7 +296,7 @@ export function play(state: NardyState, text: string): NardyState {
     if (!want) throw new Error(`не розумію крок "${tok}": пишіть "24-18", зняття "3-off"`);
     if (!s.dice.length) throw new Error(`зайвий крок ${tok}: кубики вже зіграні`);
     const path = findPath(s, want[0], want[1]);
-    if (!path) throw new Error(`крок ${tok} неможливий`);
+    if (!path) throw new Error(`крок ${tok} неможливий: ${whyNot(s, want[0], want[1])}`);
     for (const st of path) {
       apply(s, st.from, st.to);
       s.dice.splice(s.dice.indexOf(st.die), 1);
@@ -310,6 +310,34 @@ export function play(state: NardyState, text: string): NardyState {
   const next = clone(state);
   replayEntry(next, entry);
   return next;
+}
+
+/** Why a step the player wrote is not legal, in words for the room. */
+function whyNot(state: NardyState, from: number, to: number): string {
+  const s = clone(state);
+  const c = s.turn;
+  const left = `лишилось: ${s.dice.join(", ")}`;
+  if (!count(s, c, from)) return `на пункті ${from} немає ваших шашок`;
+  if (from === HEAD && s.headUsed >= headLimit(s)) return "з голови за хід можна взяти лише одну шашку";
+  if (to === 0) {
+    if (!allHome(s, c)) return "знімати можна, лише коли всі шашки в домі (пункти 1-6)";
+    if (!s.dice.some((d) => d >= from)) return `немає кубика, яким зняти з ${from} (${left})`;
+    for (let p = from + 1; p <= 6; p++) if (count(s, c, p) && !s.dice.includes(from)) return `спершу знімайте з вищих пунктів (є шашки на ${p})`;
+  } else {
+    if (blocked(s, c, to)) return `пункт ${to} зайнятий суперником`;
+    const d = from - to;
+    // a step across several dice that findPath could not walk: the points on the way are held or the dice do not add up
+    if (!s.dice.includes(d)) return s.dice.length > 1 ? `немає кубика на ${d}, а кількома кубиками туди не дійти (${left})` : `немає кубика на ${d} (${left})`;
+    apply(s, from, to);
+    const block = illegalBlock(s, c, to);
+    undo(s, from, to);
+    if (block) return "вийде шість пунктів поспіль, а попереду цього блоку немає жодної шашки суперника";
+  }
+  const steps = legalSteps(s);
+  const big = Math.max(...s.dice);
+  if (steps.length && steps.every((st) => st.die === big) && s.dice.length === 2 && s.dice[0] !== s.dice[1])
+    return `зіграти можна лише один кубик, і тоді треба грати більшим (${big})`;
+  return "тоді не вийде зіграти всі кубики, а якщо можна, грати треба всіма";
 }
 
 /** Legal steps of one checker from `from` that end on `to`: one step, or several with one checker. */

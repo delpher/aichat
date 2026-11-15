@@ -153,3 +153,16 @@ test("the game module and the broker roll the dice", async () => {
   olena.close();
   await b.broker.close();
 });
+
+test("a refused step says why", () => {
+  const start = replay(["first 5-3", "roll 6-3"]);
+  assert.throws(() => play(start, "20-14"), /немає ваших шашок/);
+  assert.throws(() => play(start, "24-18 24-21"), /лише одну шашку/);
+  assert.throws(() => play(start, "24-20"), /немає кубика на 4/);
+  const held = position({ 20: 1, 1: 14 }, { 2: 1, 24: 14 }, "w", [6, 5]);
+  assert.throws(() => play(held, "20-14"), /пункт 14 зайнятий суперником/);
+  const block = position({ 22: 1, 21: 1, 20: 1, 19: 1, 18: 1, 24: 10 }, { 24: 15 }, "w", [1, 2]);
+  assert.throws(() => play(block, "24-23"), /шість пунктів поспіль/);
+  assert.throws(() => play(position({ 7: 1, 3: 14 }, { 24: 15 }, "w", [6, 3]), "3-off"), /всі шашки в домі/);
+  assert.throws(() => play(position({ 5: 1, 2: 1 }, { 24: 15 }, "w", [3, 1], { off: [13, 0] }), "2-off"), /немає кубика|вищих пунктів/);
+});
