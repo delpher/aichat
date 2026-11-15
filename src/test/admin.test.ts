@@ -567,3 +567,47 @@ test("a human admin's observer feed counts as that human being online", async ()
   bot.close();
   await broker.close();
 });
+
+test("connections close when agents.json changes behind the broker: new token, removed agent, lost admin rights", async () => {
+  const { broker, url, replaceConfig } = await startBroker([{ name: "a" }, { name: "b" }, { name: "keep" }, { name: "olena", kind: "human", admin: true }, BOSS]);
+  const closedWith = (c: BrokerClient) =>
+    new Promise<string>((res) =>
+      (c as unknown as { ws: { on: (e: string, f: (code: number, r: Buffer) => void) => void } }).ws.on("close", (code, r) => res(`${code} ${r}`)),
+    );
+  const a = await connect(url, "a");
+  const b = await connect(url, "b");
+  const keep = await connect(url, "keep");
+  const obs = feed(url, tok("olena"));
+  await obs.connect();
+  const [aClosed, bClosed, obsClosed] = [closedWith(a), closedWith(b), closedWith(obs)];
+  let keepClosed = false;
+  closedWith(keep).then(() => (keepClosed = true));
+
+  replaceConfig((raw) => {
+    raw.agents.find((x) => x.name === "a")!.token = "a-brand-new-token-xxxxxxxx";
+    raw.agents = raw.agents.filter((x) => x.name !== "b");
+    delete raw.agents.find((x) => x.name === "olena")!.admin;
+  });
+  broker.checkConnections(); // the broker also notices on its own within seconds, or on the next request
+  assert.equal(await aClosed, "4003 token changed");
+  assert.equal(await bClosed, "4003 agent removed");
+  assert.equal(await obsClosed, "4003 admin rights removed");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(keepClosed, false);
+  // the new token works
+  const a2 = new BrokerClient({ url, token: "a-brand-new-token-xxxxxxxx", reconnect: false, log: () => {} });
+  await a2.connect();
+  assert.equal(a2.agent, "a");
+  a2.close(); keep.close();
+  await broker.close();
+});
+
+test("the broker notices a config change on the next request without being told", async () => {
+  const { broker, url, http, replaceConfig } = await startBroker([{ name: "a" }, { name: "b" }]);
+  const a = await connect(url, "a");
+  const closed = new Promise<number>((res) => (a as unknown as { ws: { on: (e: string, f: (c: number) => void) => void } }).ws.on("close", res));
+  replaceConfig((raw) => void (raw.agents[0].token = "rotated-token-xxxxxxxxxxxx"));
+  await fetch(`${http}/api/agents`, { headers: { authorization: `Bearer ${tok("b")}` } });
+  assert.equal(await closed, 4003);
+  await broker.close();
+});

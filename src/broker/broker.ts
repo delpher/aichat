@@ -135,6 +135,10 @@ export class Broker {
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
   private cleanupTimer?: NodeJS.Timeout;
+  private configTimer?: NodeJS.Timeout;
+  /** The token each live socket authenticated with, to notice when it is no longer valid. */
+  private socketTokens = new WeakMap<WebSocket, string>();
+  private seenAgents?: AgentConfig[];
   private filesRoot?: string;
   private http?: Server;
   private wss?: WebSocketServer;
@@ -147,7 +151,35 @@ export class Broker {
   }
 
   private get cfg() {
-    return this.opts.config();
+    const cfg = this.opts.config();
+    // The config can change behind our back (agents.json edited, `npm run admin -- x --token`):
+    // drop connections whose token or rights are gone.
+    if (cfg.agents !== this.seenAgents) {
+      this.seenAgents = cfg.agents;
+      this.checkConnections(cfg.agents);
+    }
+    return cfg;
+  }
+
+  /** Closes live sockets whose agent was removed, whose token changed, or (admin feeds) who lost admin rights. */
+  checkConnections(agents = this.cfg.agents) {
+    const byName = new Map(agents.map((a) => [a.name, a]));
+    const why = (ws: WebSocket, name: string, admin: boolean) => {
+      const a = byName.get(name);
+      if (!a) return "agent removed";
+      if (!safeEqual(a.token, this.socketTokens.get(ws) ?? "")) return "token changed";
+      if (admin && !(a.admin && a.kind === "human")) return "admin rights removed";
+      return null;
+    };
+    for (const [name, set] of this.sockets)
+      for (const ws of set) {
+        const reason = why(ws, name, false);
+        if (reason) ws.close(4003, reason);
+      }
+    for (const [ws, name] of this.observers) {
+      const reason = why(ws, name, true);
+      if (reason) ws.close(4003, reason);
+    }
   }
 
   private syncConfiguredRooms() {
@@ -532,6 +564,7 @@ export class Broker {
           observer = true;
           clearTimeout(authTimer);
           this.sendFrame(ws, { type: "welcome", agent: admin.name, rooms: [], observer: true, ref });
+          this.socketTokens.set(ws, f.token);
           this.trackPresence(admin.name, () => this.observers.set(ws, admin.name));
           this.log(`admin observer ${admin.name} connected`);
           return;
@@ -554,6 +587,7 @@ export class Broker {
         this.trackPresence(name, () => {
           if (!this.sockets.has(name)) this.sockets.set(name, new Set());
           this.sockets.get(name)!.add(ws);
+          this.socketTokens.set(ws, f.token);
         });
         this.log(`${name} connected`);
         return;
@@ -992,6 +1026,9 @@ export class Broker {
       this.wss!.handleUpgrade(req, socket, head, (ws) => this.wss!.emit("connection", ws, req));
     });
     this.retryTimer = setInterval(() => void this.flushWebhooks(), 30_000);
+    // re-read the config now and then even when nobody calls the broker, so stale sockets close soon
+    this.configTimer = setInterval(() => void this.cfg, 5_000);
+    this.configTimer.unref();
     this.retryTimer.unref();
     void this.flushWebhooks();
     const clean = () => this.cleanFiles().catch((e) => this.log(`file cleanup failed: ${(e as Error).message}`));
@@ -1009,6 +1046,7 @@ export class Broker {
   async close() {
     clearInterval(this.retryTimer);
     clearInterval(this.cleanupTimer);
+    clearInterval(this.configTimer);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
     for (const ws of this.observers.keys()) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));

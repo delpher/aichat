@@ -27,7 +27,13 @@ export async function startBroker(
     ...opts,
   });
   const port = await broker.listen(0, "127.0.0.1");
-  return { broker, port, url: `ws://127.0.0.1:${port}`, http: `http://127.0.0.1:${port}`, cfg: () => cfg };
+  /** Changes the config the way an edit of agents.json on disk would: the broker is not told. */
+  const replaceConfig = (fn: (raw: ReturnType<typeof validate>) => void) => {
+    const raw = structuredClone(cfg);
+    fn(raw);
+    cfg = validate(raw);
+  };
+  return { broker, port, url: `ws://127.0.0.1:${port}`, http: `http://127.0.0.1:${port}`, cfg: () => cfg, replaceConfig };
 }
 
 export async function connect(url: string, name: string) {
