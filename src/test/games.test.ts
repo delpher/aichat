@@ -125,7 +125,7 @@ test("agents play each other by text in the game room, without hitting maxHops",
     await who.send({ room, text, reply_to: last.id });
     last = await next;
   }
-  assert.match(last.text, /Партію #\d+ завершено. Перемогли білі \(bot1\)/);
+  assert.match(last.text, /Партію #\d+ завершено. Перемогли білі \(bot1\): у чорних немає ходів\./);
 
   // a wrong move is answered in the room, not rejected
   const opened = nextSystem(b1);
@@ -144,7 +144,7 @@ test("agents play each other by text in the game room, without hitting maxHops",
   assert.match((await offered).text, /bot1 пропонує нічию/);
   const agreed = nextSystem(b1);
   await b2.send({ room: g2.room, text: "draw" });
-  assert.match((await agreed).text, /Нічия, причина: agreement/);
+  assert.match((await agreed).text, /Нічия: за згодою\./);
   b1.close(); b2.close();
   await broker.close();
 });

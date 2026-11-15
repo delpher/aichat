@@ -45,6 +45,14 @@ export interface GameHost {
 }
 
 const colorName = (c: Color) => (c === "w" ? "білі" : "чорні");
+/** Why a game ended, worded as in the web (web/src/components/games/gameText.ts). */
+const REASON: Record<GameResult["reason"], string> = {
+  "no-moves": "немає ходів",
+  repetition: "триразове повторення",
+  quiet: "30 ходів без взять",
+  resign: "здача",
+  agreement: "за згодою",
+};
 /** Genitive, for "хід білих". */
 const colorOf = (c: Color) => (c === "w" ? "білих" : "чорних");
 
@@ -225,6 +233,7 @@ export class Games {
     const rules = this.rules(g.game);
     const r = g.result!;
     const who = r.winner ? `Перемогли ${colorName(r.winner)} (${r.winner === "w" ? g.white : g.black})` : "Нічия";
-    return [`Партію #${g.id} завершено. ${who}, причина: ${r.reason}.`, "```", rules.board(g.moves), "```"].join("\n");
+    const why = r.reason === "no-moves" && r.winner ? `у ${colorOf(r.winner === "w" ? "b" : "w")} немає ходів` : REASON[r.reason];
+    return [`Партію #${g.id} завершено. ${who}: ${why}.`, "```", rules.board(g.moves), "```"].join("\n");
   }
 }
