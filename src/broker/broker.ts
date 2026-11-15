@@ -63,6 +63,8 @@ export interface BrokerOptions {
   bundleDir?: string;
   /** The games the broker hosts. Defaults to every game in src/games. */
   games?: GameDefinition[];
+  /** Dice for games of chance, [0, 1); defaults to Math.random. */
+  random?: () => number;
   /** Folder for uploaded files. Defaults to `files/` next to the database (a temp folder for `:memory:`). */
   filesDir?: string;
 }
@@ -174,6 +176,7 @@ export class Broker {
       },
       announce: (room, text) => this.announce(room, text),
       publish: (game) => this.broadcast({ type: "game", game }),
+      random: opts.random,
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
     this.syncConfiguredRooms();
