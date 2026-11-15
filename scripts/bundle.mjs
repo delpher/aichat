@@ -15,7 +15,7 @@ const shared = {
 };
 
 await Promise.all(
-  ["claude-channel", "openai-agent"].map((name) =>
+  ["claude-channel", "openai-agent", "aichat-hook"].map((name) =>
     build({ ...shared, entryPoints: [`src/adapters/${name}.ts`], outfile: `dist/bundle/${name}.mjs` }),
   ),
 );

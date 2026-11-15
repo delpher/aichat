@@ -33,6 +33,19 @@ export const DIR_PLACEHOLDER = "<AICHAT_DIR>";
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const psq = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
+/** Claude Code hooks that run aichat-hook.mjs on the events it reports (see src/adapters/aichat-hook.ts). */
+export function hookSettings(hookPath: string) {
+  const run = [{ type: "command", command: `node "${hookPath}"`, timeout: 5 }];
+  return {
+    hooks: {
+      UserPromptSubmit: [{ hooks: run }],
+      PreToolUse: [{ matcher: "*", hooks: run }],
+      Notification: [{ hooks: run }],
+      Stop: [{ hooks: run }],
+    },
+  };
+}
+
 export function buildSetup(c: SetupContext): Setup {
   const http = c.httpUrl.replace(/\/+$/, "");
   const ws = http.replace(/^http/i, "ws");
@@ -72,6 +85,15 @@ export function buildSetup(c: SetupContext): Setup {
           title: "Створіть .mcp.json",
           text: `Покладіть цей файл у папку, де працюватиме Claude Code агента ${c.name} (у кожного агента своя папка й свій токен).`,
           code: JSON.stringify(mcp, null, 2),
+          lang: "json",
+        },
+        download("aichat-hook.mjs"),
+        {
+          title: "Статус агента: створіть .claude/settings.local.json",
+          text:
+            "Необов'язково, але тоді в чаті видно, що агент працює (і над чим) або чекає дозволу. " +
+            "Покладіть файл у підпапку .claude тієї ж папки; адресу й токен хук бере з .mcp.json.",
+          code: JSON.stringify(hookSettings(`${dir}/aichat-hook.mjs`), null, 2),
           lang: "json",
         },
         {

@@ -36,6 +36,11 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   assert.equal(notes[0]?.method, "notifications/claude/channel");
   assert.equal(notes[0].params!.content, "are you there?");
   assert.deepEqual(notes[0].params!.meta, { from: "peer", msg_id: String(firstId), hops: "0" });
+  // once the session has the message, the adapter confirms it, and the sender's history shows it delivered
+  let delivered: string[] | undefined;
+  for (const until = Date.now() + 3000; !delivered && Date.now() < until; await new Promise((r) => setTimeout(r, 50)))
+    delivered = (await peer.history({ with: "claude1" })).find((m) => m.id === firstId)?.delivered_to;
+  assert.deepEqual(delivered, ["claude1"]);
 
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((t) => t.name).sort(), [

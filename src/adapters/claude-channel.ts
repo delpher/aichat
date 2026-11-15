@@ -261,6 +261,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             .map(
               (g) =>
                 `${g.name}${g.name === client.agent ? " (you)" : ""} [${g.kind}] ${g.online ? "online" : "offline"}` +
+                (g.activity && g.activity.state !== "idle" ? `, ${g.activity.state}${g.activity.detail ? ` (${g.activity.detail})` : ""}` : "") +
                 (g.rooms.length ? ` rooms: ${g.rooms.join(", ")}` : "") +
                 (g.description ? ` - ${g.description}` : ""),
             )
@@ -300,7 +301,10 @@ client.on("message", async (m: ChatMessage) => {
     await mcp.notification({ method: "notifications/claude/channel", params: { content: textWithAttachments(m), meta } });
   } catch (e) {
     console.error(`[aichat-channel] could not push message #${m.id}: ${(e as Error).message}`);
+    return;
   }
+  // the session has it: the sender sees "delivered" (best effort; a lost receipt is no reason to fail)
+  client.delivered(m.id).catch((e) => console.error(`[aichat-channel] could not confirm #${m.id}: ${(e as Error).message}`));
 });
 
 // Only connect to the broker once Claude Code has finished the MCP handshake,
