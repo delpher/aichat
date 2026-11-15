@@ -28,4 +28,5 @@ export const KEYS = {
   oldToken: "aichat.adminToken", // pre-multi-user key, read once for migration
   projectDir: "aichat.projectDir",
   theme: "aichat.theme",
+  navCollapsed: "aichat.navCollapsed",
 };

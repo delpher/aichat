@@ -1,8 +1,10 @@
 import { LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthError, detectSession, makeApi } from "./api/http";
-import type { ChatMessage, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
 import { ChatView } from "./components/ChatView";
+import { GameView } from "./components/games/GameView";
+import { GamesPanel } from "./components/games/GamesPanel";
 import { Header } from "./components/Header";
 import { Login } from "./components/Login";
 import { PeoplePanel } from "./components/panels/PeoplePanel";
@@ -167,9 +169,10 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     const want = hashFor(view);
     if (want !== location.hash && (want || location.hash)) history.replaceState(null, "", want || location.pathname);
     setUnread((u) => {
-      if (!u.has(key)) return u;
+      if (!u.has(key) && !(view.kind === "game" && u.has(`r:game-${view.id}`))) return u;
       const n = new Map(u);
       n.delete(key);
+      if (view.kind === "game") n.delete(`r:game-${view.id}`);
       return n;
     });
     const { title } = viewTitle(view, session.mode === "user" ? session.me.name : null);
@@ -224,6 +227,16 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribers.current.add(fn);
     return () => void subscribers.current.delete(fn);
   }, []);
+  const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
+  const gameDeletedSubscribers = useRef(new Set<(id: number) => void>());
+  const subscribeGames = useCallback((fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => {
+    gameSubscribers.current.add(fn);
+    if (onDeleted) gameDeletedSubscribers.current.add(onDeleted);
+    return () => {
+      gameSubscribers.current.delete(fn);
+      if (onDeleted) gameDeletedSubscribers.current.delete(onDeleted);
+    };
+  }, []);
 
   const conn = useSocket(session, {
     onMessage: addLive,
@@ -252,6 +265,19 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     },
     onAccessChanged: () => void onRelogin(),
     onError: (e) => toast(`Брокер: ${e}`, true),
+    onGame: (g) => {
+      for (const fn of gameSubscribers.current) fn(g);
+    },
+    onGameDeleted: (id) => {
+      for (const fn of gameDeletedSubscribers.current) fn(id);
+      // The game's room went with it: drop its unread count.
+      setUnread((u) => {
+        if (!u.has(`r:game-${id}`)) return u;
+        const n = new Map(u);
+        n.delete(`r:game-${id}`);
+        return n;
+      });
+    },
   });
 
   // ---- rooms (people) ----
@@ -283,6 +309,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     go,
     sender,
     subscribe,
+    subscribeGames,
     addLive,
     toast,
     fail,
@@ -293,6 +320,8 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "people") main = <PeoplePanel onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
+  else if (view.kind === "games") main = <GamesPanel key={epoch} />;
+  else if (view.kind === "game") main = <GameView key={`${view.id}:${epoch}`} id={view.id} />;
   else
     main = (
       <div className="empty big">

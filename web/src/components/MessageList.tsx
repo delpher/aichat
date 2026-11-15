@@ -15,11 +15,13 @@ interface Props {
   olderLoads: number;
   onLoadOlder: () => void;
   onReply?: (m: ChatMessage) => void;
+  /** Click on a sender's name: mention them in the composer. */
+  onMention?: (name: string) => void;
   showWhere: boolean;
   emptyText: string;
 }
 
-export function MessageList({ messages, loading, hasOlder, olderLoads, onLoadOlder, onReply, showWhere, emptyText }: Props) {
+export function MessageList({ messages, loading, hasOlder, olderLoads, onLoadOlder, onReply, onMention, showWhere, emptyText }: Props) {
   const { overview, session, sender, toast } = useChat();
   const box = useRef<HTMLDivElement>(null);
   const [flash, setFlash] = useState<number | null>(null);
@@ -122,6 +124,7 @@ export function MessageList({ messages, loading, hasOlder, olderLoads, onLoadOld
                   names={names}
                   flash={flash === m.id}
                   onReply={onReply}
+                  onMention={onMention}
                   onJump={jump}
                 />
               </Fragment>

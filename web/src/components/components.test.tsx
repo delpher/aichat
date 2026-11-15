@@ -193,7 +193,7 @@ describe("Sidebar", () => {
 
   it("lists rooms with unread badges, people with presence, and rooms to join", async () => {
     const { ctx, container } = renderWithChat(<Sidebar {...props} />);
-    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(container.querySelector(".nav-item .badge")).toHaveTextContent("3");
     expect(screen.getByText("olena (ви)")).toBeInTheDocument();
     expect(container.querySelectorAll(".presence.on")).toHaveLength(2);
     expect(screen.queryByText("Налаштування")).toBeNull();
@@ -201,6 +201,33 @@ describe("Sidebar", () => {
     expect(props.onJoin).toHaveBeenCalledWith("random");
     await userEvent.click(screen.getByText("claude"));
     expect(ctx.go).toHaveBeenCalledWith({ kind: "dm", a: "claude", b: "olena" });
+  });
+
+  it("folds a group, keeps its unread count visible and remembers the choice", async () => {
+    localStorage.clear();
+    const { container, unmount } = renderWithChat(<Sidebar {...props} />);
+    const head = screen.getByRole("button", { name: /Кімнати/ });
+    expect(head).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(head);
+    expect(head).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("lobby")).toBeNull();
+    expect(container.querySelector(".nav-title .badge")).toHaveTextContent("3");
+    unmount();
+    renderWithChat(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: /Кімнати/ })).toHaveAttribute("aria-expanded", "false");
+    localStorage.clear();
+  });
+
+  it("keeps game rooms out of the room lists and counts their unread on the games tab", () => {
+    const withGame = {
+      ...overview,
+      rooms: [...overview.rooms, { name: "game-4", members: ["olena", "claude"], count: 3, last_ts: null }],
+      all_rooms: [...overview.all_rooms, "game-4", "game-5"],
+    };
+    renderWithChat(<Sidebar {...props} unread={new Map([["r:game-4", 2]])} />, { overview: withGame });
+    expect(screen.queryByText("game-4")).toBeNull();
+    expect(screen.queryByText("game-5")).toBeNull();
+    expect(screen.getByRole("button", { name: /Міні-ігри/ })).toHaveTextContent("2");
   });
 
   it("shows admin sections to admins", () => {

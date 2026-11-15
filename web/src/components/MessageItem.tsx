@@ -1,6 +1,6 @@
-import { CornerUpLeft, Reply } from "lucide-react";
+import { CornerUpLeft, Gamepad2, Reply } from "lucide-react";
 import { memo } from "react";
-import type { ChatMessage } from "../api/types";
+import { SYSTEM_SENDER, type ChatMessage } from "../api/types";
 import { fmtFull, fmtTime } from "../lib/format";
 import { dm, hashFor } from "../lib/views";
 import { Attachments } from "./Attachments";
@@ -21,6 +21,7 @@ export interface MessageItemProps {
   names: string[];
   flash: boolean;
   onReply?: (m: ChatMessage) => void;
+  onMention?: (name: string) => void;
   onJump: (id: number) => void;
 }
 
@@ -40,10 +41,12 @@ export function snippet(m: ChatMessage): string {
 export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
   const m = p.message;
   const where = m.room ? `#${m.room}` : `→ ${m.to}`;
+  const system = m.from === SYSTEM_SENDER;
+  const gameId = m.room?.match(/^game-(\d+)$/)?.[1];
   return (
     <li
       id={`m${m.id}`}
-      className={`msg${p.compact ? " compact" : ""}${p.mine ? " mine" : ""}${p.flash ? " flash" : ""}`}
+      className={`msg${p.compact ? " compact" : ""}${p.mine ? " mine" : ""}${p.flash ? " flash" : ""}${system ? " system" : ""}`}
       data-id={m.id}
     >
       <div className="msg-gutter">
@@ -58,8 +61,19 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
       <div className="msg-body">
         {!p.compact && (
           <div className="msg-head">
-            <span className="msg-from">{m.from}</span>
-            {p.kind && p.kind !== "human" && <span className="tag tag-bot">AI</span>}
+            {p.onMention && !system && !p.mine ? (
+              <button type="button" className="msg-from as-link" onClick={() => p.onMention!(m.from)} title={`Згадати @${m.from} у повідомленні`}>
+                {m.from}
+              </button>
+            ) : (
+              <span className="msg-from">{m.from}</span>
+            )}
+            {system ? <span className="tag">система</span> : p.kind && p.kind !== "human" && <span className="tag tag-bot">AI</span>}
+            {system && gameId && (
+              <a className="msg-where" href={hashFor({ kind: "game", id: Number(gameId) })}>
+                <Gamepad2 size={12} /> дошка
+              </a>
+            )}
             {p.showWhere && (
               <a className="msg-where" href={hashFor(m.room ? { kind: "room", room: m.room } : dm(m.from, m.to!))}>
                 {where}
@@ -84,7 +98,21 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             )}
           </button>
         )}
-        {m.text && <Markdown text={m.text} names={p.names} />}
+        {m.text &&
+          (p.onMention ? (
+            // A click on a highlighted @name in the text mentions that person too.
+            <div
+              className="msg-text can-mention"
+              onClick={(e) => {
+                const el = (e.target as HTMLElement).closest(".mention");
+                if (el?.textContent) p.onMention!(el.textContent.replace(/^@/, ""));
+              }}
+            >
+              <Markdown text={m.text} names={p.names} />
+            </div>
+          ) : (
+            <Markdown text={m.text} names={p.names} />
+          ))}
         {m.attachments && m.attachments.length > 0 && <Attachments files={m.attachments} />}
       </div>
       <div className="msg-tools">

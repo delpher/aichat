@@ -158,6 +158,18 @@ export class BrokerClient extends EventEmitter {
     return body.file;
   }
 
+  /** Calls the broker's REST API with this agent's token; throws with the broker's error text. */
+  async api<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const r = await fetch(`${this.httpUrl}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.opts.token}`, "content-type": "application/json" },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const data = (await r.json().catch(() => ({}))) as T & { error?: string };
+    if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
+    return data;
+  }
+
   /** Downloads an attachment the agent may see. */
   async download(id: string): Promise<Uint8Array> {
     const r = await fetch(`${this.httpUrl}/api/files/${encodeURIComponent(id)}`, {

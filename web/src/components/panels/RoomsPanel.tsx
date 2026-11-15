@@ -4,7 +4,7 @@ import { AuthError } from "../../api/http";
 import { ROOM_RE, type Agent, type RoomInfo } from "../../api/types";
 import { useChat } from "../../context";
 import { fmtShort, kindLabel } from "../../lib/format";
-import { hashFor } from "../../lib/views";
+import { hashFor, isGameRoom } from "../../lib/views";
 import { Status, type StatusValue } from "./Status";
 
 const enc = encodeURIComponent;
@@ -117,7 +117,8 @@ export function RoomsPanel() {
   const load = useCallback(async () => {
     try {
       const [r, a] = await Promise.all([api.get<{ rooms: RoomInfo[] }>("/admin/api/rooms"), api.get<{ agents: Agent[] }>("/admin/api/agents")]);
-      setRooms(r.rooms ?? []);
+      // Game rooms belong to their game: they go away when the game is deleted (games tab).
+      setRooms((r.rooms ?? []).filter((x) => !isGameRoom(x.name)));
       setAgents(a.agents ?? []);
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
@@ -143,6 +144,7 @@ export function RoomsPanel() {
   const create = () => {
     const n = name.trim().replace(/^#/, "");
     if (!ROOM_RE.test(n)) return setStatus({ text: "Назва: латиниця, цифри, - і _ (до 64 символів).", error: true });
+    if (isGameRoom(n)) return setStatus({ text: "Назви game-<число> зайняті кімнатами партій.", error: true });
     const members = [...picked];
     run(async () => {
       await api.send("POST", "/admin/api/rooms", members.length ? { name: n, members } : { name: n });

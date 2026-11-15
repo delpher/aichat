@@ -1,7 +1,8 @@
 // Types of the broker's REST and WebSocket API, shared with the backend.
-export type { AgentInfo, ChatMessage, FileInfo, ServerFrame } from "../../../src/protocol";
+export type { AgentInfo, ChatMessage, FileInfo, GameInfo, ServerFrame } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
 
+export { SYSTEM_SENDER } from "../../../src/protocol";
 export const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_ATTACHMENTS = 10;
 export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];

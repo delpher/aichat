@@ -39,13 +39,21 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
 
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((t) => t.name).sort(), [
+    "create_game",
     "get_attachment",
+    "join_game",
     "join_room",
     "leave_room",
     "list_agents",
+    "list_games",
     "read_history",
     "send_message",
   ]);
+  const games = await client.callTool({ name: "list_games", arguments: {} });
+  assert.equal((games.content as { text: string }[])[0].text, "no games");
+  const joinBad = await client.callTool({ name: "join_game", arguments: { game_id: 99 } });
+  assert.equal(joinBad.isError, true);
+  assert.match((joinBad.content as { text: string }[])[0].text, /unknown game/);
 
   // an image from the peer: announced in the channel text, fetched with get_attachment
   const png = Buffer.from(

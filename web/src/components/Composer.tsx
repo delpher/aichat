@@ -17,10 +17,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MAX_ATTACHMENTS, type ChatMessage } from "../api/types";
 import { useChat } from "../context";
-import { fmtSize } from "../lib/format";
-import { applyFormat, type FormatKind } from "../lib/markdownEdit";
+import { fmtSize, kindLabel } from "../lib/format";
+import { applyFormat, insertMention, mentionQuery, type FormatKind } from "../lib/markdownEdit";
 import type { View } from "../lib/views";
 import { isImage } from "./Attachments";
+import { Avatar } from "./Avatar";
 import { snippet } from "./MessageItem";
 
 const TOOLS: { kind: FormatKind; icon: typeof Bold; label: string; key?: string }[] = [
@@ -48,11 +49,25 @@ interface Props {
   /** Files dropped on the chat area. */
   dropped: File[];
   onDroppedTaken: () => void;
+  /** A name to insert as @name at the caret (a new seq inserts again). */
+  mention?: { name: string; seq: number } | null;
 }
 
 let pendingSeq = 0;
 
-export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken }: Props) {
+/**
+ * Touch keyboards have no Shift+Enter, so there Enter makes a new line and the send button sends.
+ * A coarse pointer without hover is a phone or tablet; a laptop with a touchscreen keeps Enter-to-send.
+ */
+export const enterSends = () => {
+  try {
+    return !window.matchMedia("(pointer: coarse) and (hover: none)").matches;
+  } catch {
+    return true;
+  }
+};
+
+export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken, mention }: Props) {
   const { session, api, overview, sender, addLive, fail, toast } = useChat();
   const admin = session.mode === "admin";
   const [text, setText] = useState("");
@@ -60,6 +75,53 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
   const [busy, setBusy] = useState<string | null>(null);
   const [to, setTo] = useState("");
   const area = useRef<HTMLTextAreaElement>(null);
+
+  // ---- @mentions: a clicked name is inserted; typing "@" offers names ----
+  const [caret, setCaret] = useState(0);
+  const [pickIdx, setPickIdx] = useState(0);
+  const [pickClosed, setPickClosed] = useState(false);
+  const placeCaret = (pos: number) =>
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+      setCaret(pos);
+    });
+  useEffect(() => {
+    if (!mention) return;
+    const el = area.current;
+    const focused = el && document.activeElement === el;
+    const start = focused ? el.selectionStart : text.length;
+    const end = focused ? el.selectionEnd : text.length;
+    const r = insertMention(text, start, end, mention.name);
+    setText(r.text);
+    placeCaret(r.caret);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mention?.seq]);
+  const query = mentionQuery(text, caret);
+  const q = query ? query.query.toLowerCase() : null;
+  const candidates = useMemo(
+    () =>
+      q === null
+        ? []
+        : overview.agents
+            .filter((a) => a.name !== sender && a.name.toLowerCase().startsWith(q))
+            .sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name))
+            .slice(0, 8),
+    [q, overview.agents, sender],
+  );
+  const picking = !pickClosed && candidates.length > 0;
+  useEffect(() => {
+    setPickIdx(0);
+    setPickClosed(false);
+  }, [query?.start, q]);
+  const pick = (name: string) => {
+    if (!query) return;
+    const r = insertMention(text, query.start, caret, name);
+    setText(r.text);
+    placeCaret(r.caret);
+  };
   const picker = useRef<HTMLInputElement>(null);
 
   // "All messages" (admin): pick the conversation to write to
@@ -170,7 +232,25 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (picking) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const d = e.key === "ArrowDown" ? 1 : -1;
+        setPickIdx((i) => (i + d + candidates.length) % candidates.length);
+        return;
+      }
+      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+        e.preventDefault();
+        pick(candidates[Math.min(pickIdx, candidates.length - 1)].name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPickClosed(true);
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && enterSends()) {
       e.preventDefault();
       void send();
       return;
@@ -258,15 +338,47 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
             ))}
           </ul>
         )}
+        {picking && (
+          <ul className="mentions" id="mention-list" role="listbox" aria-label="Кого згадати">
+            {candidates.map((a, i) => (
+              <li key={a.name} role="option" aria-selected={i === pickIdx}>
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  className={i === pickIdx ? "on" : ""}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(a.name);
+                  }}
+                  onMouseEnter={() => setPickIdx(i)}
+                >
+                  <Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />
+                  <span>{a.name}</span>
+                  {a.kind !== "human" && <span className="muted small">{kindLabel(a.kind)}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={area}
           rows={1}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setCaret(e.target.selectionStart);
+          }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+          onBlur={() => setPickClosed(true)}
+          onFocus={() => setPickClosed(false)}
           onKeyDown={onKeyDown}
+          aria-autocomplete="list"
+          aria-expanded={picking}
+          aria-controls={picking ? "mention-list" : undefined}
           onPaste={onPaste}
           disabled={disabled}
-          placeholder={blocked || "Повідомлення… Enter надіслати, Shift+Enter новий рядок"}
+          placeholder={blocked || (enterSends() ? "Повідомлення… Enter надіслати, Shift+Enter новий рядок" : "Повідомлення…")}
+          enterKeyHint={enterSends() ? "send" : "enter"}
           aria-label="Повідомлення"
         />
         <div className="composer-bar">
