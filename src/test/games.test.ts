@@ -199,3 +199,48 @@ test("checkers through the broker: real rules, text moves, errors with legal mov
   bot.close();
   await b.broker.close();
 });
+
+test("deleting a game takes its room and messages; game rooms are not managed as rooms", async () => {
+  const b = await startBroker(
+    [{ name: "boss", kind: "human", admin: true }, { name: "olena", kind: "human" }, { name: "bot1", kind: "claude" }],
+    {},
+    { gameRules: { nim } },
+  );
+  const call = async (who: string, method: string, path: string, body?: unknown) => {
+    const r = await fetch(`${b.http}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: r.status, body: (await r.json()) as { game: GameInfo; games: GameInfo[]; error: string; messages: ChatMessage[] } };
+  };
+  const bot = await connect(b.url, "bot1");
+  const started = nextSystem(bot);
+  const g = (await call("olena", "POST", "/api/games", { game: "nim", white: "olena", black: "bot1" })).body.game;
+  await started;
+  await bot.send({ room: g.room, text: "hi" });
+
+  // the room of a game is managed through the game
+  let r = await call("boss", "DELETE", `/admin/api/rooms/${g.room}?messages=1`);
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /DELETE \/admin\/api\/games\//);
+  assert.equal((await call("boss", "POST", `/admin/api/rooms/${g.room}/members`, { name: "olena" })).status, 409);
+  assert.equal((await call("boss", "POST", "/admin/api/rooms", { name: "game-99" })).status, 409);
+
+  // only admins delete games
+  assert.equal((await call("olena", "DELETE", `/admin/api/games/${g.id}`)).status, 401);
+  const frames: unknown[] = [];
+  (bot as unknown as { ws: { on: (e: string, f: (d: unknown) => void) => void } }).ws.on("message", (d) => frames.push(JSON.parse(String(d))));
+  r = await call("boss", "DELETE", `/admin/api/games/${g.id}`);
+  assert.equal(r.status, 200);
+  assert.equal((await call("olena", "GET", `/api/games/${g.id}`)).status, 404);
+  assert.equal((await call("boss", "DELETE", `/admin/api/games/${g.id}`)).status, 404);
+  r = await call("boss", "GET", `/admin/api/messages?room=${g.room}`);
+  assert.deepEqual(r.body.messages, []);
+  await new Promise((res) => setTimeout(res, 50));
+  assert.ok(frames.some((f) => (f as { type: string; id?: number }).type === "game_deleted" && (f as { id: number }).id === g.id));
+  // nobody can bring the room of a deleted game back
+  await assert.rejects(bot.send({ room: g.room, text: "anyone?" }), /no game/);
+  bot.close();
+  await b.broker.close();
+});

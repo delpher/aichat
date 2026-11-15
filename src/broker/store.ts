@@ -189,6 +189,11 @@ export class Store {
     return r && toGame(r);
   }
 
+  /** Forgets a game record (its room is deleted separately, with deleteRoom). Ids are never reused. */
+  deleteGame(id: number) {
+    this.db.prepare("DELETE FROM games WHERE id = ?").run(id);
+  }
+
   games(q: { status?: string; limit?: number } = {}): GameRecord[] {
     const rows = this.db
       .prepare(`SELECT * FROM games ${q.status ? "WHERE status = ?" : ""} ORDER BY id DESC LIMIT ?`)

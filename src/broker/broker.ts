@@ -242,6 +242,7 @@ export class Broker {
     }
     if (args.room) {
       if (!ROOM_RE.test(args.room)) throw new BrokerError(`invalid room name: ${args.room}`);
+      this.checkGameRoom(args.room);
       this.store.join(from, args.room);
     }
 
@@ -408,8 +409,15 @@ export class Broker {
 
   join(agent: string, room: string) {
     if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
+    this.checkGameRoom(room);
     this.store.join(agent, room);
     this.notifyObservers({ type: "rooms_changed" });
+  }
+
+  /** A game room exists only while its game does: no one may bring back the room of a deleted game. */
+  private checkGameRoom(room: string) {
+    const m = room.match(GAME_ROOM_RE);
+    if (m && !this.store.game(Number(m[1]))) throw new BrokerError(`no game ${m[1]}, so no room ${room}`, 404);
   }
 
   leave(agent: string, room: string) {
@@ -987,12 +995,32 @@ export class Broker {
         throw new BrokerError(`unknown agent: ${String(n)}`, 404);
       return n;
     };
+    // ---- games: deleting a game takes its room and every message there with it ----
+    const gameDelete = url.pathname.match(/^\/admin\/api\/games\/(\d+)$/);
+    if (gameDelete && req.method === "DELETE") {
+      const id = Number(gameDelete[1]);
+      if (!this.store.game(id)) throw new BrokerError(`unknown game: ${id}`, 404);
+      const room = gameRoom(id);
+      const members = this.store.membersOf(room);
+      const configured = this.cfg.agents.filter((a) => a.rooms?.includes(room)).map((a) => a.name);
+      if (configured.length) setConfiguredRoom(configured, room, false);
+      this.store.deleteGame(id);
+      this.store.deleteRoom(room, true);
+      await this.cleanFiles();
+      for (const n of members) this.notifyRooms(n, false);
+      this.broadcast({ type: "game_deleted", id });
+      this.notifyObservers({ type: "rooms_changed" });
+      this.log(`${me.name} deleted game ${id} with its room and messages`);
+      return reply(200, { ok: true });
+    }
+
     if (route === "GET /admin/api/rooms") return reply(200, { rooms: this.store.rooms() });
     if (route === "POST /admin/api/rooms") {
       const b = await readJson(req);
       const room = b.name;
       if (typeof room !== "string" || !ROOM_RE.test(room))
         throw new BrokerError("room name must be 1-64 characters: letters, digits, _ or -");
+      if (GAME_ROOM_RE.test(room)) throw new BrokerError(`${room} is reserved for game rooms`, 409);
       if (this.store.roomExists(room)) throw new BrokerError(`room ${room} already exists`);
       const members = b.members ?? [];
       if (!Array.isArray(members)) throw new BrokerError("members must be a list of agent names");
@@ -1011,6 +1039,9 @@ export class Broker {
       const isMembers = url.pathname.includes("/members");
       if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
       if (!this.store.roomExists(room)) throw new BrokerError(`unknown room: ${room}`, 404);
+      const game = room.match(GAME_ROOM_RE);
+      if (game)
+        throw new BrokerError(`${room} is the room of game ${game[1]}; manage the game instead (DELETE /admin/api/games/${game[1]})`, 409);
       if (req.method === "DELETE" && !isMembers) {
         const members = this.store.membersOf(room);
         const configured = this.cfg.agents.filter((a) => a.rooms?.includes(room)).map((a) => a.name);

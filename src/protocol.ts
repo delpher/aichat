@@ -91,6 +91,8 @@ export type ServerFrame =
   | { type: "rooms_changed" }
   /** Sent to every connected client when a game is created, joined or changed. */
   | { type: "game"; game: GameInfo }
+  /** Sent to every connected client when an admin deleted a game, together with its room and messages. */
+  | { type: "game_deleted"; id: number }
   | { type: "pong"; ref?: string };
 
 /** Reserved sender of broker-made messages (game boards, move errors); no agent may use this name. */
