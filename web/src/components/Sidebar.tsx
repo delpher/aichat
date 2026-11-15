@@ -7,6 +7,7 @@ import type { Theme } from "../hooks/useTheme";
 import { fmtShort, kindLabel } from "../lib/format";
 import { KEYS, storage } from "../lib/storage";
 import { dm, isGameRoom, pairKey, viewKey, type View } from "../lib/views";
+import { activityShort, activityText } from "../lib/activity";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -233,7 +234,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
                 onClick={nav(dm(d.a, d.b))}
                 icon={
                   other ? (
-                    <Avatar name={other} kind={kinds.get(other)?.kind} online={kinds.get(other)?.online} size="sm" />
+                    <Avatar name={other} kind={kinds.get(other)?.kind} online={kinds.get(other)?.online} activity={kinds.get(other)?.activity} size="sm" />
                   ) : (
                     <Users size={16} />
                   )
@@ -256,12 +257,12 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
               <Item
                 key={a.name}
                 onClick={canDm ? nav(dm(sender, a.name)) : undefined}
-                icon={<Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />}
+                icon={<Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />}
                 label={a.name === sender ? `${a.name} (ви)` : a.name}
-                meta={a.kind === "human" ? undefined : kindLabel(a.kind)}
+                meta={a.online && a.activity && a.activity.state !== "idle" ? activityShort(a.activity) : a.kind === "human" ? undefined : kindLabel(a.kind)}
                 title={[
                   a.description,
-                  a.online ? "онлайн" : "офлайн",
+                  a.online ? (a.activity && a.activity.state !== "idle" ? activityText(a.name, a.activity) : "онлайн") : "офлайн",
                   a.rooms.length ? `кімнати: ${a.rooms.map((r) => "#" + r).join(", ")}` : "",
                   canDm ? `натисніть, щоб написати ${a.name}` : "",
                 ]

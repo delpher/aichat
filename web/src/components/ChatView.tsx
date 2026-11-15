@@ -4,6 +4,7 @@ import type { ChatMessage } from "../api/types";
 import { useChat } from "../context";
 import { useMessages } from "../hooks/useMessages";
 import type { View } from "../lib/views";
+import { ActivityBar } from "./ActivityBar";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 
@@ -56,6 +57,7 @@ export function ChatView({ view }: { view: ChatViewKind }) {
         showWhere={view.kind === "all"}
         emptyText={view.kind === "dm" ? "Тут ще ніхто не писав. Почніть розмову." : "Повідомлень поки немає."}
       />
+      <ActivityBar view={view} />
       <Composer
         mention={mention}
         key={view.kind === "room" ? view.room : view.kind === "dm" ? `${view.a}|${view.b}` : "all"}

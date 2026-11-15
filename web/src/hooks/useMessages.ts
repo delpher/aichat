@@ -9,7 +9,7 @@ export const PAGE = 100;
 /** Messages of one view: the latest page, older pages on demand, and live ones as they arrive. */
 export function useMessages(view: View) {
   const chat = useChat();
-  const { api, session, subscribe } = chat;
+  const { api, session, subscribe, subscribeDelivered } = chat;
   // callbacks that change with every overview update; read through a ref so the history isn't refetched
   const cb = useRef(chat);
   cb.current = chat;
@@ -63,13 +63,24 @@ export function useMessages(view: View) {
     setMessages([]);
     setHasOlder(false);
     void load();
-    return subscribe((m) => {
+    const offMsg = subscribe((m) => {
       if (!matchesView(m, viewRef.current)) return;
       setMessages((cur) => (cur.some((x) => x.id === m.id) ? cur : [...cur, m]));
     });
+    const offDelivered = subscribeDelivered((id, to) =>
+      setMessages((cur) =>
+        cur.some((m) => m.id === id && !m.delivered_to?.includes(to))
+          ? cur.map((m) => (m.id === id ? { ...m, delivered_to: [...(m.delivered_to ?? []), to] } : m))
+          : cur,
+      ),
+    );
+    return () => {
+      offMsg();
+      offDelivered();
+    };
     // `key` identifies the view; the object itself changes identity on every navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, load, subscribe]);
+  }, [key, load, subscribe, subscribeDelivered]);
 
   const loadOlder = useCallback(() => {
     if (!loading && messages.length) void load(messages[0].id);

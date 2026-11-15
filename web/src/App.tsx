@@ -228,6 +228,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribers.current.add(fn);
     return () => void subscribers.current.delete(fn);
   }, []);
+  const deliveredSubscribers = useRef(new Set<(id: number, to: string) => void>());
+  const subscribeDelivered = useCallback((fn: (id: number, to: string) => void) => {
+    deliveredSubscribers.current.add(fn);
+    return () => void deliveredSubscribers.current.delete(fn);
+  }, []);
   const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
   const gameDeletedSubscribers = useRef(new Set<(id: number) => void>());
   const subscribeGames = useCallback((fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => {
@@ -246,7 +251,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
         reloadOverview().catch((e) => fail(e, "Оновлення учасників"));
         return;
       }
-      setOverview((o) => ({ ...o, agents: o.agents.map((a) => (a.name === agent ? { ...a, online } : a)) }));
+      // An agent that went offline is doing nothing any more.
+      setOverview((o) => ({
+        ...o,
+        agents: o.agents.map((a) => (a.name === agent ? { ...a, online, ...(online ? {} : { activity: undefined }) } : a)),
+      }));
     },
     onRoomsChanged: () => {
       const v = viewRef.current;
@@ -268,6 +277,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     onError: (e) => toast(`Брокер: ${e}`, true),
     onGame: (g) => {
       for (const fn of gameSubscribers.current) fn(g);
+    },
+    onActivity: (agent, activity) =>
+      setOverview((o) => ({ ...o, agents: o.agents.map((a) => (a.name === agent ? { ...a, activity } : a)) })),
+    onDelivered: (id, to) => {
+      for (const fn of deliveredSubscribers.current) fn(id, to);
     },
     onGameDeleted: (id) => {
       for (const fn of gameDeletedSubscribers.current) fn(id);
@@ -311,6 +325,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     sender,
     subscribe,
     subscribeGames,
+    subscribeDelivered,
     addLive,
     toast,
     fail,

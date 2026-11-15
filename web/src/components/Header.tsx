@@ -1,6 +1,7 @@
 import { DoorOpen, Gamepad2, Hash, Inbox, Menu, Settings, Users } from "lucide-react";
 import { useChat } from "../context";
 import type { View } from "../lib/views";
+import { activityText } from "../lib/activity";
 import { Avatar } from "./Avatar";
 
 export function viewTitle(v: View, me: string | null): { title: string; sub: string } {
@@ -43,8 +44,9 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
     const other = me && (view.a === me || view.b === me) ? (view.a === me ? view.b : view.a) : null;
     const a = other ? overview.agents.find((x) => x.name === other) : undefined;
     if (a) {
-      icon = <Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />;
-      sub = [a.online ? "онлайн" : "офлайн", a.description].filter(Boolean).join(" · ");
+      icon = <Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />;
+      const doing = a.online && a.activity && a.activity.state !== "idle" ? activityText(a.name, a.activity) : null;
+      sub = [doing ?? (a.online ? "онлайн" : "офлайн"), a.description].filter(Boolean).join(" · ");
     } else icon = <Users size={18} />;
   } else if (view.kind === "all") icon = <Inbox size={18} />;
   else if (view.kind === "people") icon = <Users size={18} />;
