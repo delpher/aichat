@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync } from "node:fs";
+import { readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -14,7 +16,17 @@ import {
   type BrokerConfig,
 } from "./config.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
-import { NAME_RE, ROOM_RE, type AgentInfo, type ChatMessage, type ClientFrame, type ServerFrame } from "../protocol.js";
+import {
+  INLINE_IMAGE_TYPES,
+  MAX_ATTACHMENTS,
+  NAME_RE,
+  ROOM_RE,
+  type AgentInfo,
+  type ChatMessage,
+  type ClientFrame,
+  type FileInfo,
+  type ServerFrame,
+} from "../protocol.js";
 
 export class BrokerError extends Error {
   constructor(
@@ -37,13 +49,19 @@ export interface BrokerOptions {
   editConfig?: (fn: (raw: Partial<BrokerConfig>) => void) => BrokerConfig;
   /** AIChat folder used in setup instructions when the `projectDir` setting is empty. */
   defaultProjectDir?: string;
-  /** Folder with the web UI (index.html, app.js, ...). Defaults to `web/` in the package root. */
+  /** Folder with the built web UI (index.html, assets/). Defaults to `dist/web`. */
   webDir?: string;
   /** Folder with the bundled adapters. Defaults to `dist/bundle`. */
   bundleDir?: string;
+  /** Folder for uploaded files. Defaults to `files/` next to the database (a temp folder for `:memory:`). */
+  filesDir?: string;
 }
 
-const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "web");
+/** The built web UI (`npm run build:web`, Vite output). */
+const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "web");
+/** Uploads that were never attached to a message are removed after this long. */
+const UNATTACHED_FILE_TTL_MS = 24 * 60 * 60 * 1000;
+const FILE_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const DEFAULT_BUNDLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle");
 /** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
 const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs"]);
@@ -62,6 +80,7 @@ const CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".ico": "image/x-icon",
   ".json": "application/json",
+  ".woff2": "font/woff2",
 };
 
 interface SendArgs {
@@ -69,6 +88,29 @@ interface SendArgs {
   room?: string;
   text: string;
   reply_to?: number;
+  /** Ids of files the sender uploaded and has not attached yet. */
+  attachments?: unknown;
+}
+
+/** A file name safe to store and to put in a Content-Disposition header. */
+export function cleanFileName(raw: string | undefined): string {
+  let name = raw ?? "";
+  try {
+    name = decodeURIComponent(name);
+  } catch {
+    /* keep it as sent */
+  }
+  name = name
+    .replace(/^.*[\\/]/, "")
+    .replace(/[\u0000-\u001f\u007f"]/g, "")
+    .trim()
+    .slice(0, 200);
+  return name && name !== "." && name !== ".." ? name : "file";
+}
+
+function cleanMime(raw: string | undefined): string {
+  const m = (raw ?? "").split(";")[0].trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(m) ? m : "application/octet-stream";
 }
 
 function safeEqual(a: string, b: string) {
@@ -93,6 +135,8 @@ export class Broker {
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
+  private cleanupTimer?: NodeJS.Timeout;
+  private filesRoot?: string;
   private http?: Server;
   private wss?: WebSocketServer;
   private log: (msg: string) => void;
@@ -136,7 +180,8 @@ export class Broker {
   send(from: string, args: SendArgs): ChatMessage {
     const cfg = this.cfg;
     const text = typeof args.text === "string" ? args.text : "";
-    if (!text.trim()) throw new BrokerError("text is empty");
+    const attachments = this.claimableFiles(from, args.attachments);
+    if (!text.trim() && !attachments.length) throw new BrokerError("text is empty");
     if (text.length > cfg.maxTextLength) throw new BrokerError(`text is longer than ${cfg.maxTextLength} characters`);
     if (!!args.to === !!args.room) throw new BrokerError("set exactly one of `to` (agent) or `room`");
     if (args.to) {
@@ -162,10 +207,122 @@ export class Broker {
     }
 
     this.checkRate(from);
-    const msg = this.store.insert({ from, to: args.to, room: args.room, text, reply_to: args.reply_to, hops });
-    this.log(`#${msg.id} ${from} -> ${msg.to ?? "#" + msg.room} (hops ${hops})`);
+    const msg = this.store.insert({ from, to: args.to, room: args.room, text, reply_to: args.reply_to, hops, attachments });
+    const files = attachments.length ? `, ${attachments.length} file(s)` : "";
+    this.log(`#${msg.id} ${from} -> ${msg.to ?? "#" + msg.room} (hops ${hops}${files})`);
     this.deliver(msg);
     return msg;
+  }
+
+  /** Checks `attachments` of a send request: ids of files `from` uploaded and has not attached yet. */
+  private claimableFiles(from: string, raw: unknown): FileInfo[] {
+    if (raw == null) return [];
+    if (!Array.isArray(raw) || !raw.every((x) => typeof x === "string"))
+      throw new BrokerError("attachments must be a list of file ids");
+    const ids = [...new Set(raw as string[])];
+    if (ids.length > MAX_ATTACHMENTS) throw new BrokerError(`at most ${MAX_ATTACHMENTS} files per message`);
+    return ids.map((id) => {
+      const f = FILE_ID_RE.test(id) ? this.store.file(id) : undefined;
+      if (!f || f.uploader !== from) throw new BrokerError(`unknown file: ${id}`, 404);
+      if (f.message_id != null) throw new BrokerError(`file ${id} is already attached to message #${f.message_id}`);
+      return { id: f.id, name: f.name, mime: f.mime, size: f.size };
+    });
+  }
+
+  // ---------------- files ----------------
+
+  private get filesDir(): string {
+    if (!this.filesRoot) {
+      const db = this.cfg.db;
+      this.filesRoot =
+        this.opts.filesDir ??
+        (db === ":memory:" ? mkdtempSync(join(tmpdir(), "aichat-files-")) : join(dirname(resolve(db)), "files"));
+      mkdirSync(this.filesRoot, { recursive: true });
+    }
+    return this.filesRoot;
+  }
+
+  /** Streams an upload to disk; rejects it with 413 once it grows past maxFileSizeMB. */
+  async upload(uploader: string, req: IncomingMessage): Promise<FileInfo> {
+    const maxMB = this.cfg.maxFileSizeMB;
+    const max = maxMB * 1024 * 1024;
+    const tooLarge = () => new BrokerError(`file is larger than ${maxMB} MB`, 413);
+    if (Number(req.headers["content-length"]) > max) throw tooLarge();
+    const id = randomBytes(18).toString("base64url");
+    const path = join(this.filesDir, id);
+    let size = 0;
+    try {
+      await new Promise<void>((ok, fail) => {
+        const out = createWriteStream(path);
+        const stop = (e: Error) => {
+          req.unpipe(out);
+          out.destroy();
+          req.resume(); // drain the rest so the client still gets the answer
+          fail(e);
+        };
+        req.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > max) stop(tooLarge());
+        });
+        req.on("error", stop);
+        out.on("error", stop);
+        out.on("finish", () => ok());
+        req.pipe(out);
+      });
+      if (!size) throw new BrokerError("file is empty");
+    } catch (e) {
+      await rm(path, { force: true });
+      throw e;
+    }
+    const file: FileInfo = {
+      id,
+      name: cleanFileName(req.headers["x-filename"] as string | undefined),
+      mime: cleanMime(req.headers["content-type"]),
+      size,
+    };
+    this.store.addFile({ ...file, uploader });
+    this.log(`${uploader} uploaded ${file.name} (${file.size} bytes) as ${id}`);
+    return file;
+  }
+
+  /** The file if `agent` may download it: its uploader may, and whoever can see the message it is attached to. */
+  private visibleFile(agent: string | null, id: string): FileInfo | undefined {
+    const f = FILE_ID_RE.test(id) ? this.store.file(id) : undefined;
+    if (!f) return undefined;
+    if (agent === null || f.uploader === agent) return f; // null = admin
+    const m = f.message_id != null ? this.store.get(f.message_id) : undefined;
+    return m && this.canSee(agent, m) ? f : undefined;
+  }
+
+  private async serveFile(f: FileInfo, res: ServerResponse) {
+    const path = join(this.filesDir, f.id);
+    const st = await stat(path).catch(() => undefined);
+    if (!st) throw new BrokerError("file not found", 404);
+    const inline = INLINE_IMAGE_TYPES.includes(f.mime);
+    res.writeHead(200, {
+      "content-type": inline ? f.mime : "application/octet-stream",
+      "content-length": st.size,
+      "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+      "cache-control": "private, max-age=86400",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+    });
+    await new Promise<void>((ok) => {
+      const src = createReadStream(path);
+      src.on("error", () => (res.destroy(), ok()));
+      res.on("close", () => ok());
+      src.pipe(res);
+    });
+  }
+
+  /** Deletes uploads never attached within a day, and files whose message was deleted. */
+  async cleanFiles(now = Date.now()): Promise<number> {
+    const stale = this.store.staleFiles(new Date(now - UNATTACHED_FILE_TTL_MS).toISOString());
+    for (const id of stale) {
+      await rm(join(this.filesDir, id), { force: true });
+      this.store.deleteFile(id);
+    }
+    return stale.length;
   }
 
   private canSee(agent: string, m: ChatMessage) {
@@ -462,7 +619,7 @@ export class Broker {
       if (req.method === "GET" && url.pathname.startsWith("/client/")) return await this.serveClient(url.pathname, res);
       if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
         return await this.serveStatic(url.pathname, res);
-      if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, url, reply);
+      if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, res, url, reply);
       if (!url.pathname.startsWith("/api/")) return reply(404, { error: "not found" });
       const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
       const agent = this.authenticate(token);
@@ -480,6 +637,13 @@ export class Broker {
         const b = await body();
         const m = this.send(me, b as unknown as SendArgs);
         return reply(201, { message: m });
+      }
+      if (route === "POST /api/files") return reply(201, { file: await this.upload(me, req) });
+      const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)$/);
+      if (req.method === "GET" && fileMatch) {
+        const f = this.visibleFile(me, decodeURIComponent(fileMatch[1]));
+        if (!f) return reply(404, { error: "unknown file" });
+        return await this.serveFile(f, res);
       }
       if (route === "GET /api/inbox") return reply(200, { messages: this.inbox(me) });
       if (route === "GET /api/history") {
@@ -528,7 +692,7 @@ export class Broker {
       "cache-control": "no-cache",
       "x-content-type-options": "nosniff",
       "content-security-policy":
-        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'",
+        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
     });
     res.end(data);
   }
@@ -551,7 +715,12 @@ export class Broker {
     res.end(data);
   }
 
-  private async onAdminRequest(req: IncomingMessage, url: URL, reply: (status: number, body: unknown) => void) {
+  private async onAdminRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    reply: (status: number, body: unknown) => void,
+  ) {
     if (!this.cfg.adminToken)
       return reply(403, { error: "admin access is off: run `npm run admin-token` to create a token" });
     const me = this.adminFor(req.headers.authorization?.replace(/^Bearer\s+/i, ""));
@@ -741,6 +910,7 @@ export class Broker {
         if (configured.length) setConfiguredRoom(configured, room, false);
         const purge = url.searchParams.get("messages") === "1";
         this.store.deleteRoom(room, purge);
+        if (purge) await this.cleanFiles();
         for (const n of members) this.notifyRooms(n, false);
         this.notifyObservers({ type: "rooms_changed" });
         this.log(`admin deleted room ${room}${purge ? " with its messages" : ""}`);
@@ -773,19 +943,31 @@ export class Broker {
       if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
       return reply(200, { messages: this.store.allMessages({ room: q.room, a: q.a, b: q.b, before, limit }) });
     }
-    if (route === "POST /admin/api/messages") {
-      const b = await readJson(req);
-      const as = this.cfg.agents.find((a) => a.name === b.as);
-      if (!as) throw new BrokerError(`unknown agent: ${String(b.as)}`, 404);
+    /** The human an admin writes as (the web UI may post only as people, never as AI agents). */
+    const humanAs = (name: unknown) => {
+      const as = this.cfg.agents.find((a) => a.name === name);
+      if (!as) throw new BrokerError(`unknown agent: ${String(name)}`, 404);
       if (as.kind !== "human")
         throw new BrokerError(`the web UI may only post as agents of kind "human"; ${as.name} is "${as.kind}"`, 403);
-      const m = this.send(as.name, {
+      return as.name;
+    };
+    if (route === "POST /admin/api/messages") {
+      const b = await readJson(req);
+      const m = this.send(humanAs(b.as), {
         to: b.to as string | undefined,
         room: b.room as string | undefined,
         text: b.text as string,
         reply_to: b.reply_to as number | undefined,
+        attachments: b.attachments,
       });
       return reply(201, { message: m });
+    }
+    if (route === "POST /admin/api/files") return reply(201, { file: await this.upload(humanAs(url.searchParams.get("as")), req) });
+    const fileMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)$/);
+    if (req.method === "GET" && fileMatch) {
+      const f = this.visibleFile(null, decodeURIComponent(fileMatch[1]));
+      if (!f) return reply(404, { error: "unknown file" });
+      return await this.serveFile(f, res);
     }
     return reply(404, { error: "not found" });
   }
@@ -803,6 +985,10 @@ export class Broker {
     this.retryTimer = setInterval(() => void this.flushWebhooks(), 30_000);
     this.retryTimer.unref();
     void this.flushWebhooks();
+    const clean = () => this.cleanFiles().catch((e) => this.log(`file cleanup failed: ${(e as Error).message}`));
+    this.cleanupTimer = setInterval(clean, 60 * 60 * 1000);
+    this.cleanupTimer.unref();
+    void clean();
     return new Promise((resolve) => {
       this.http!.listen(port, host, () => {
         const addr = this.http!.address();
@@ -813,6 +999,7 @@ export class Broker {
 
   async close() {
     clearInterval(this.retryTimer);
+    clearInterval(this.cleanupTimer);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
     for (const ws of this.observers.keys()) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));

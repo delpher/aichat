@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import type { AgentInfo, ChatMessage, ClientFrame, ServerFrame } from "../protocol.js";
+import type { AgentInfo, ChatMessage, ClientFrame, FileInfo, ServerFrame } from "../protocol.js";
 
 type Request = ClientFrame extends infer F ? (F extends { type: string } ? Omit<F, "ref"> : never) : never;
 
@@ -134,9 +134,38 @@ export class BrokerClient extends EventEmitter {
     return reply;
   }
 
-  async send(args: { to?: string; room?: string; text: string; reply_to?: number }): Promise<number> {
+  async send(args: { to?: string; room?: string; text: string; reply_to?: number; attachments?: string[] }): Promise<number> {
     const f = await this.request({ type: "send", ...args });
     return f.type === "ack" ? f.id! : -1;
+  }
+
+  /** The broker's HTTP address, derived from the WebSocket URL. */
+  get httpUrl(): string {
+    return this.opts.url.replace(/\/?$/, "").replace(/\/ws$/, "").replace(/^ws(s?):/, "http$1:");
+  }
+
+  /** Uploads a file over REST; attach the returned id with send({ attachments: [id] }). */
+  async upload(data: Uint8Array, name: string, mime = "application/octet-stream"): Promise<FileInfo> {
+    const r = await fetch(`${this.httpUrl}/api/files`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.opts.token}`, "content-type": mime, "x-filename": encodeURIComponent(name) },
+      body: data as unknown as BodyInit,
+    });
+    const body = (await r.json().catch(() => ({}))) as { file?: FileInfo; error?: string };
+    if (!r.ok || !body.file) throw new Error(body.error ?? `upload failed: HTTP ${r.status}`);
+    return body.file;
+  }
+
+  /** Downloads an attachment the agent may see. */
+  async download(id: string): Promise<Uint8Array> {
+    const r = await fetch(`${this.httpUrl}/api/files/${encodeURIComponent(id)}`, {
+      headers: { authorization: `Bearer ${this.opts.token}` },
+    });
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `download failed: HTTP ${r.status}`);
+    }
+    return new Uint8Array(await r.arrayBuffer());
   }
 
   async listAgents(): Promise<AgentInfo[]> {

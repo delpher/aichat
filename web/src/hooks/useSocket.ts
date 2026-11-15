@@ -1,0 +1,101 @@
+import { useEffect, useRef, useState } from "react";
+import type { ChatMessage, ServerFrame, Session } from "../api/types";
+
+export type ConnStatus = "connecting" | "online" | "offline";
+
+export interface SocketHandlers {
+  onMessage: (m: ChatMessage) => void;
+  onPresence: (agent: string, online: boolean) => void;
+  /** Rooms or memberships changed: re-read the overview. */
+  onRoomsChanged: () => void;
+  /** Reconnected after a drop: refetch to fill the gap. */
+  onReconnected: () => void;
+  /** The broker closed the socket because access changed (4003) or rejected the token. */
+  onAccessChanged: (reason: string) => void;
+  onError: (error: string) => void;
+}
+
+/**
+ * Live connection to the broker. Admins get the observer feed (every message),
+ * people their own socket (only their messages). Reconnects with backoff.
+ */
+export function useSocket(session: Session, handlers: SocketHandlers): { status: ConnStatus; retryIn: number } {
+  const [status, setStatus] = useState<ConnStatus>("connecting");
+  const [retryIn, setRetryIn] = useState(0);
+  const h = useRef(handlers);
+  h.current = handlers;
+
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let retries = 0;
+    let stopped = false;
+    // A person who is an admin must ask for the observer feed; the root token always gets it.
+    const observer = session.mode === "admin" && !session.admin.root;
+
+    const connect = () => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const sock = new WebSocket(`${proto}//${location.host}/ws`);
+      ws = sock;
+      let welcomed = false;
+      setStatus("connecting");
+      sock.onopen = () => sock.send(JSON.stringify({ type: "auth", token: session.token, ...(observer ? { observer: true } : {}) }));
+      sock.onmessage = (ev) => {
+        let f: ServerFrame;
+        try {
+          f = JSON.parse(String(ev.data));
+        } catch {
+          return;
+        }
+        switch (f.type) {
+          case "welcome": {
+            const wasRetry = retries > 0;
+            welcomed = true;
+            retries = 0;
+            setStatus("online");
+            if (wasRetry) h.current.onReconnected();
+            break;
+          }
+          case "message":
+            h.current.onMessage(f.message);
+            break;
+          case "presence":
+            h.current.onPresence(f.agent, f.online);
+            break;
+          case "rooms":
+          case "rooms_changed":
+            h.current.onRoomsChanged();
+            break;
+          case "error":
+            if (!welcomed) {
+              stopped = true;
+              sock.close();
+              h.current.onAccessChanged(f.error);
+            } else h.current.onError(f.error);
+            break;
+        }
+      };
+      sock.onclose = (ev) => {
+        if (stopped || ws !== sock) return;
+        if (ev.code === 4003) {
+          stopped = true;
+          h.current.onAccessChanged(ev.reason || "access changed");
+          return;
+        }
+        retries += 1;
+        const delay = Math.min(15000, 1000 * 2 ** Math.min(retries - 1, 4));
+        setStatus("offline");
+        setRetryIn(Math.round(delay / 1000));
+        timer = setTimeout(connect, delay);
+      };
+    };
+    connect();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      ws?.close();
+    };
+  }, [session]);
+
+  return { status, retryIn };
+}

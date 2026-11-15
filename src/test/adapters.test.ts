@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -35,7 +38,47 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   assert.deepEqual(notes[0].params!.meta, { from: "peer", msg_id: String(firstId), hops: "0" });
 
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map((t) => t.name).sort(), ["join_room", "leave_room", "list_agents", "read_history", "send_message"]);
+  assert.deepEqual(tools.tools.map((t) => t.name).sort(), [
+    "get_attachment",
+    "join_room",
+    "leave_room",
+    "list_agents",
+    "read_history",
+    "send_message",
+  ]);
+
+  // an image from the peer: announced in the channel text, fetched with get_attachment
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+    "base64",
+  );
+  const pic = await peer.upload(png, "dot.png", "image/png");
+  notes.length = 0;
+  await peer.send({ to: "claude1", text: "look", attachments: [pic.id] });
+  const until = Date.now() + 5000;
+  while (!notes.length && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.match(notes[0].params!.content, new RegExp(`^look\\n\\[attachment file_id=${pic.id} name="dot.png" type=image/png`));
+  assert.equal((notes[0].params!.meta as Record<string, string>).attachments, "1");
+  const filesDir = mkdtempSync(join(tmpdir(), "aichat-test-"));
+  const att = await client.callTool({ name: "get_attachment", arguments: { file_id: pic.id } });
+  const parts = att.content as { type: string; data?: string; mimeType?: string; text?: string }[];
+  assert.equal(parts[0].type, "image");
+  assert.equal(parts[0].mimeType, "image/png");
+  assert.equal(Buffer.from(parts[0].data!, "base64").equals(png), true);
+  const saved = parts[1].text!.match(/to (.+)$/)![1];
+  assert.equal(readFileSync(saved).equals(png), true);
+
+  // sending a local file
+  const local = join(filesDir, "report.txt");
+  writeFileSync(local, "numbers");
+  const withFile = nextMessage(peer);
+  const sent = await client.callTool({ name: "send_message", arguments: { to: "peer", text: "here", files: [local] } });
+  assert.match((sent.content as { text: string }[])[0].text, /1 file/);
+  const fm = await withFile;
+  assert.equal(fm.attachments?.[0].name, "report.txt");
+  assert.equal(fm.attachments?.[0].mime, "text/plain");
+  assert.equal(Buffer.from(await peer.download(fm.attachments![0].id)).toString(), "numbers");
+  rmSync(filesDir, { recursive: true, force: true });
 
   const got = nextMessage(peer);
   const res = await client.callTool({ name: "send_message", arguments: { to: "peer", text: "yes!", reply_to: firstId } });

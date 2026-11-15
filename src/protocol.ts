@@ -17,7 +17,22 @@ export interface ChatMessage {
   reply_to?: number;
   /** Length of the reply chain this message is part of (0 = new conversation). */
   hops: number;
+  /** Files sent with the message; download each with GET /api/files/<id>. */
+  attachments?: FileInfo[];
 }
+
+/** An uploaded file (POST /api/files), attached to at most one message. */
+export interface FileInfo {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+/** Most files one message may carry. */
+export const MAX_ATTACHMENTS = 10;
+/** Image types the web UI shows inline; everything else is served as a download. */
+export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 export interface AgentInfo {
   name: string;
@@ -31,7 +46,7 @@ export interface AgentInfo {
 export type ClientFrame =
   /** `observer: true` asks for the admin feed (every message); only for admins. */
   | { type: "auth"; token: string; observer?: boolean; ref?: string }
-  | { type: "send"; to?: string; room?: string; text: string; reply_to?: number; ref?: string }
+  | { type: "send"; to?: string; room?: string; text: string; reply_to?: number; attachments?: string[]; ref?: string }
   | { type: "join"; room: string; ref?: string }
   | { type: "leave"; room: string; ref?: string }
   | { type: "list_agents"; ref?: string }

@@ -12,6 +12,7 @@
 
 import { pathToFileURL } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
+import { textWithAttachments } from "../client/attachments.js";
 import type { ChatMessage } from "../protocol.js";
 
 type Msg =
@@ -101,7 +102,7 @@ export function startOpenAIAgent(o: OpenAIAgentOptions) {
     const hist = histories.get(key) ?? [];
     hist.push({
       role: "user",
-      content: `[${m.from}${m.room ? ` in #${m.room}` : " (direct)"}, msg ${m.id}] ${m.text}`,
+      content: `[${m.from}${m.room ? ` in #${m.room}` : " (direct)"}, msg ${m.id}] ${textWithAttachments(m)}`,
     });
 
     let final: string | null = null;

@@ -25,6 +25,8 @@ export interface BrokerConfig {
   /** Messages one agent may send per minute. */
   ratePerMinute: number;
   maxTextLength: number;
+  /** Largest file one upload may be, in megabytes. */
+  maxFileSizeMB: number;
   /** Bearer token for the web UI and /admin/api: sees every message, may post as `human` agents. */
   adminToken?: string;
   /** Broker address as agents on other machines see it (http://host:port); used in setup instructions. */
@@ -41,6 +43,7 @@ export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
   maxHops: 8,
   ratePerMinute: 30,
   maxTextLength: 20000,
+  maxFileSizeMB: 20,
 };
 
 /** Settings the admin may change at runtime from the web UI, with their allowed ranges. */
@@ -48,6 +51,7 @@ export const SETTING_LIMITS = {
   maxHops: { min: 1, max: 100 },
   ratePerMinute: { min: 1, max: 10_000 },
   maxTextLength: { min: 100, max: 1_000_000 },
+  maxFileSizeMB: { min: 1, max: 500 },
 } as const;
 export type SettingName = keyof typeof SETTING_LIMITS;
 /** Free-text settings; an empty string means "not set". */
@@ -60,6 +64,7 @@ export function settingsOf(cfg: BrokerConfig): Settings {
     maxHops: cfg.maxHops,
     ratePerMinute: cfg.ratePerMinute,
     maxTextLength: cfg.maxTextLength,
+    maxFileSizeMB: cfg.maxFileSizeMB,
     publicUrl: cfg.publicUrl ?? "",
     projectDir: cfg.projectDir ?? "",
   };

@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage } from "../protocol.js";
+import type { ChatMessage, FileInfo } from "../protocol.js";
 
 interface Row {
   id: number;
@@ -12,6 +12,13 @@ interface Row {
   ts: string;
   reply_to: number | null;
   hops: number;
+  attachments: string | null;
+}
+
+export interface FileRow extends FileInfo {
+  uploader: string;
+  created: string;
+  message_id: number | null;
 }
 
 function toMessage(r: Row): ChatMessage {
@@ -19,6 +26,7 @@ function toMessage(r: Row): ChatMessage {
   if (r.recipient) m.to = r.recipient;
   if (r.room) m.room = r.room;
   if (r.reply_to != null) m.reply_to = r.reply_to;
+  if (r.attachments) m.attachments = JSON.parse(r.attachments) as FileInfo[];
   return m;
 }
 
@@ -57,7 +65,20 @@ export class Store {
         agent TEXT PRIMARY KEY,
         last_id INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        uploader TEXT NOT NULL,
+        created TEXT NOT NULL,
+        message_id INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_files_message ON files(message_id);
     `);
+    // databases created before attachments existed
+    const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "attachments")) this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
   }
 
   close() {
@@ -68,10 +89,51 @@ export class Store {
     const ts = new Date().toISOString();
     const res = this.db
       .prepare(
-        "INSERT INTO messages (sender, recipient, room, text, ts, reply_to, hops) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (sender, recipient, room, text, ts, reply_to, hops, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(m.from, m.to ?? null, m.room ?? null, m.text, ts, m.reply_to ?? null, m.hops);
-    return { ...m, id: Number(res.lastInsertRowid), ts };
+      .run(
+        m.from,
+        m.to ?? null,
+        m.room ?? null,
+        m.text,
+        ts,
+        m.reply_to ?? null,
+        m.hops,
+        m.attachments?.length ? JSON.stringify(m.attachments) : null,
+      );
+    const id = Number(res.lastInsertRowid);
+    for (const f of m.attachments ?? []) this.db.prepare("UPDATE files SET message_id = ? WHERE id = ?").run(id, f.id);
+    const out: ChatMessage = { ...m, id, ts };
+    if (!out.attachments?.length) delete out.attachments;
+    return out;
+  }
+
+  // ---- files ----
+
+  addFile(f: FileInfo & { uploader: string }) {
+    this.db
+      .prepare("INSERT INTO files (id, name, mime, size, uploader, created) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(f.id, f.name, f.mime, f.size, f.uploader, new Date().toISOString());
+  }
+
+  file(id: string): FileRow | undefined {
+    return this.db.prepare("SELECT * FROM files WHERE id = ?").get(id) as FileRow | undefined;
+  }
+
+  /** Files never attached to a message and older than `before` (ISO), plus files whose message is gone. */
+  staleFiles(before: string): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT id FROM files WHERE (message_id IS NULL AND created < ?)
+             OR (message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = files.message_id))`,
+        )
+        .all(before) as { id: string }[]
+    ).map((r) => r.id);
+  }
+
+  deleteFile(id: string) {
+    this.db.prepare("DELETE FROM files WHERE id = ?").run(id);
   }
 
   get(id: number): ChatMessage | undefined {
