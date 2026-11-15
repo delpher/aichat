@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { adminSession, msg, overview, userSession } from "../test/render";
 import { fmtDay, fmtSize, hueFor, initials } from "./format";
 import { applyFormat } from "./markdownEdit";
-import { dm, hashFor, historyPath, matchesView, parseHash, resolveView, viewKey } from "./views";
+import { dm, gameIdOfRoom, hashFor, historyPath, matchesView, parseHash, resolveView, viewKey } from "./views";
 
 describe("views", () => {
   it("round-trips views through the hash", () => {
@@ -74,5 +74,15 @@ describe("format", () => {
     expect(fmtDay("2026-11-15T08:00:00", now)).toBe("Сьогодні");
     expect(fmtDay("2026-11-14T08:00:00", now)).toBe("Вчора");
     expect(hueFor("a")).toBe(hueFor("a"));
+  });
+});
+
+describe("game rooms", () => {
+  it("routes game-room messages to the game view", () => {
+    const m = { id: 1, from: "aichat", room: "game-4", text: "x", ts: "", hops: 0 };
+    expect(gameIdOfRoom("game-4")).toBe(4);
+    expect(gameIdOfRoom("lobby")).toBeNull();
+    expect(matchesView(m, { kind: "game", id: 4 })).toBe(true);
+    expect(matchesView(m, { kind: "game", id: 5 })).toBe(false);
   });
 });

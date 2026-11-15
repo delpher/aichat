@@ -1768,13 +1768,15 @@ span.msg-where {
   background: var(--accent);
   margin-left: auto;
 }
-.board-wrap {
+.game {
   --sq-light: #ecdab9;
   --sq-dark: #a7744f;
   --pc-w: #fbf8f2;
   --pc-w-edge: #c9bfae;
   --pc-b: #2a2420;
   --pc-b-edge: #0d0b0a;
+}
+.board-wrap {
   border-radius: 10px;
   overflow: hidden;
   box-shadow: var(--shadow);
@@ -1969,4 +1971,22 @@ span.msg-where {
 }
 .turn-hint svg {
   vertical-align: -2px;
+}
+.game-chat {
+  padding-bottom: 0;
+}
+.game-chat h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.game-chat-body {
+  display: flex;
+  height: 460px;
+  margin: 0 -20px;
+  border-top: 1px solid var(--line);
+}
+.game-chat .card-head > .btn {
+  flex: none;
+  width: auto;
 }

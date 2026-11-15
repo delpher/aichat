@@ -4,6 +4,7 @@ import type { GameInfo } from "../../api/types";
 import { useChat } from "../../context";
 import { fmtShort } from "../../lib/format";
 import { newGame, opponent, parseMove, play, renderBoard, type CheckersState, type Color, type Move } from "../../../../src/games/checkers";
+import { ChatView } from "../ChatView";
 import { Board } from "./Board";
 import { canJoin, COLOR_NAME, FREE_SEAT, gameStatus } from "./gameText";
 
@@ -53,12 +54,23 @@ export function GameView({ id }: { id: number }) {
     };
   }, [id, load, subscribe, subscribeGames, game?.room]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const all = useMemo(() => positions(game?.moves ?? []), [game?.moves]);
+  const all = useMemo(() => (game?.game === "checkers" ? positions(game.moves) : positions([])), [game?.game, game?.moves]);
 
   if (!game)
     return (
       <div className="panel">
         <div className="empty big">{missing ? <p>Партію не знайдено.</p> : <LoaderCircle className="spin" size={24} />}</div>
+      </div>
+    );
+
+  if (game.game !== "checkers")
+    return (
+      <div className="panel">
+        <div className="empty big">
+          <p>
+            Гра «{game.game}» поки не має інтерфейсу на сайті. Її хід можна стежити в кімнаті <code>#{game.room}</code>.
+          </p>
+        </div>
       </div>
     );
 
@@ -74,17 +86,15 @@ export function GameView({ id }: { id: number }) {
   const bottom: Color = myColor ?? "w";
   const top = opponent(bottom);
 
-  const openRoom = async () => {
-    // People see only rooms they are in; a spectator joins the game room first (anyone may).
-    if (session.mode === "user" && !overview.rooms.some((r) => r.name === game.room)) {
-      try {
-        await api.send("POST", `/api/rooms/${encodeURIComponent(game.room)}/join`);
-        await reloadOverview();
-      } catch (e) {
-        return fail(e, "Не вдалося увійти в кімнату партії");
-      }
+  // People see only rooms they are in; admins see every room. Anyone may join a game room.
+  const inRoom = session.mode === "admin" || overview.rooms.some((r) => r.name === game.room);
+  const joinRoom = async () => {
+    try {
+      await api.send("POST", `/api/rooms/${encodeURIComponent(game.room)}/join`);
+      await reloadOverview();
+    } catch (e) {
+      fail(e, "Не вдалося приєднатися до чату партії");
     }
-    go({ kind: "room", room: game.room });
   };
 
   const act = async (path: string, body?: unknown) => {
@@ -202,9 +212,6 @@ export function GameView({ id }: { id: number }) {
           </ol>
 
           <div className="actions">
-            <button type="button" className="btn sm ghost" onClick={() => void openRoom()} title={`#${game.room}: чат партії`}>
-              <Hash size={14} /> Кімната партії
-            </button>
             <button
               type="button"
               className="btn sm ghost"
@@ -221,6 +228,29 @@ export function GameView({ id }: { id: number }) {
           </div>
         </aside>
       </div>
+
+      <section className="card game-chat">
+        <div className="card-head">
+          <h2>
+            <Hash size={15} /> Чат партії
+          </h2>
+          <button type="button" className="btn sm ghost" onClick={() => go({ kind: "room", room: game.room })} disabled={!inRoom}>
+            Відкрити на весь екран
+          </button>
+        </div>
+        {inRoom ? (
+          <div className="game-chat-body">
+            <ChatView key={game.room} view={{ kind: "room", room: game.room }} />
+          </div>
+        ) : (
+          <div className="actions">
+            <span className="muted small">Тут ходи, дошка від брокера й розмови гравців і глядачів.</span>
+            <button type="button" className="btn sm primary" onClick={() => void joinRoom()}>
+              Приєднатися до чату
+            </button>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

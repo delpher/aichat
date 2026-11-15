@@ -15,6 +15,14 @@ export type View =
 export const PANELS: PanelKind[] = ["people", "rooms", "settings"];
 export const isPanel = (v: View): v is { kind: PanelKind } => (PANELS as string[]).includes(v.kind);
 
+/** Rooms the broker makes for mini-games ("game-12"); they live in the games tab, not the sidebar. */
+export const GAME_ROOM_RE = /^game-(\d+)$/;
+export const gameIdOfRoom = (room: string | undefined): number | null => {
+  const m = room ? GAME_ROOM_RE.exec(room) : null;
+  return m ? Number(m[1]) : null;
+};
+export const isGameRoom = (room: string) => GAME_ROOM_RE.test(room);
+
 export const pairKey = (x: string, y: string) => (x < y ? `${x}|${y}` : `${y}|${x}`);
 
 export function viewKey(v: View): string {
@@ -76,6 +84,7 @@ export function resolveView(wanted: View | null, session: Session, overview: Ove
 export function matchesView(m: ChatMessage, v: View): boolean {
   if (v.kind === "all") return true;
   if (v.kind === "room") return m.room === v.room;
+  if (v.kind === "game") return gameIdOfRoom(m.room) === v.id;
   if (v.kind === "dm") return !m.room && pairKey(m.from, m.to!) === pairKey(v.a, v.b);
   return false;
 }

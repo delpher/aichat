@@ -153,7 +153,7 @@ export function GamesPanel() {
                     </span>
                     <span className="game-state">{gameStatus(g)}</span>
                     <span className="muted small">
-                      №{g.id} · {g.moves.length} ход. · {fmtShort(g.updated_ts)}
+                      {g.game === "checkers" ? "" : `${g.game} · `}№{g.id} · {g.moves.length} ход. · {fmtShort(g.updated_ts)}
                     </span>
                   </a>
                   {canJoin(g, sender) ? (

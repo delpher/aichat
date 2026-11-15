@@ -169,9 +169,10 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     const want = hashFor(view);
     if (want !== location.hash && (want || location.hash)) history.replaceState(null, "", want || location.pathname);
     setUnread((u) => {
-      if (!u.has(key)) return u;
+      if (!u.has(key) && !(view.kind === "game" && u.has(`r:game-${view.id}`))) return u;
       const n = new Map(u);
       n.delete(key);
+      if (view.kind === "game") n.delete(`r:game-${view.id}`);
       return n;
     });
     const { title } = viewTitle(view, session.mode === "user" ? session.me.name : null);
