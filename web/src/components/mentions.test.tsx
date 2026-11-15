@@ -72,3 +72,12 @@ describe("Enter on touch devices", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("clicking a mention in the text", () => {
+  it("puts that @name into the composer", async () => {
+    const api = fakeApi({ get: vi.fn(async () => ({ messages: [msg({ id: 1, from: "claude", text: "ask @alexey about it" })] })) });
+    renderWithChat(<ChatView view={{ kind: "room", room: "lobby" }} />, { api });
+    await userEvent.click(await screen.findByText("@alexey"));
+    await waitFor(() => expect(screen.getByLabelText("Повідомлення")).toHaveValue("@alexey "));
+  });
+});

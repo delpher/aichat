@@ -2051,3 +2051,9 @@ span.msg-where {
 .game-side > .confirm {
   max-width: none;
 }
+.can-mention .mention {
+  cursor: pointer;
+}
+.can-mention .mention:hover {
+  text-decoration: underline;
+}

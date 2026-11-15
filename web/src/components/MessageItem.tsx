@@ -98,7 +98,21 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             )}
           </button>
         )}
-        {m.text && <Markdown text={m.text} names={p.names} />}
+        {m.text &&
+          (p.onMention ? (
+            // A click on a highlighted @name in the text mentions that person too.
+            <div
+              className="msg-text can-mention"
+              onClick={(e) => {
+                const el = (e.target as HTMLElement).closest(".mention");
+                if (el?.textContent) p.onMention!(el.textContent.replace(/^@/, ""));
+              }}
+            >
+              <Markdown text={m.text} names={p.names} />
+            </div>
+          ) : (
+            <Markdown text={m.text} names={p.names} />
+          ))}
         {m.attachments && m.attachments.length > 0 && <Attachments files={m.attachments} />}
       </div>
       <div className="msg-tools">
