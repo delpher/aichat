@@ -1990,3 +1990,53 @@ span.msg-where {
   flex: none;
   width: auto;
 }
+
+/* ---------- @mentions ---------- */
+.msg-from.as-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.msg-from.as-link:hover {
+  text-decoration: underline;
+}
+.composer-box {
+  position: relative;
+}
+.mentions {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  min-width: 220px;
+  max-width: calc(100% - 16px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.mentions button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mentions button.on {
+  background: var(--active);
+}
+.mentions .small {
+  margin-left: auto;
+}

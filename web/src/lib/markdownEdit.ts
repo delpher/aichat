@@ -70,3 +70,18 @@ export function applyFormat(kind: FormatKind, text: string, start: number, end: 
     end: lineStart + next.length,
   };
 }
+
+/** The "@na" being typed right before the caret, if any: where it starts and what follows the @. */
+export function mentionQuery(text: string, caret: number): { start: number; query: string } | null {
+  const m = /(^|[\s(])@([A-Za-z0-9_-]*)$/.exec(text.slice(0, caret));
+  return m ? { start: caret - m[2].length - 1, query: m[2] } : null;
+}
+
+/** Replaces text[start, end) with "@name " and returns the new text and caret position. */
+export function insertMention(text: string, start: number, end: number, name: string): { text: string; caret: number } {
+  const before = text.slice(0, start);
+  const lead = before && !/[\s(]$/.test(before) ? " " : "";
+  const after = text.slice(end).replace(/^ /, "");
+  const ins = `${lead}@${name} `;
+  return { text: before + ins + after, caret: before.length + ins.length };
+}

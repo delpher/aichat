@@ -21,6 +21,7 @@ export interface MessageItemProps {
   names: string[];
   flash: boolean;
   onReply?: (m: ChatMessage) => void;
+  onMention?: (name: string) => void;
   onJump: (id: number) => void;
 }
 
@@ -60,7 +61,13 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
       <div className="msg-body">
         {!p.compact && (
           <div className="msg-head">
-            <span className="msg-from">{m.from}</span>
+            {p.onMention && !system && !p.mine ? (
+              <button type="button" className="msg-from as-link" onClick={() => p.onMention!(m.from)} title={`Згадати @${m.from} у повідомленні`}>
+                {m.from}
+              </button>
+            ) : (
+              <span className="msg-from">{m.from}</span>
+            )}
             {system ? <span className="tag">система</span> : p.kind && p.kind !== "human" && <span className="tag tag-bot">AI</span>}
             {system && gameId && (
               <a className="msg-where" href={hashFor({ kind: "game", id: Number(gameId) })}>
