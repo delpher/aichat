@@ -9,7 +9,7 @@ export const tok = (name: string) => `token-for-${name}-xxxxxxxxxxxx`;
 export async function startBroker(
   agents: Partial<AgentConfig>[],
   extra: Record<string, unknown> = {},
-  opts: { webDir?: string; bundleDir?: string } = {},
+  opts: { webDir?: string; bundleDir?: string; gameRules?: Record<string, import("../broker/games.js").GameRules> } = {},
 ) {
   let cfg = validate({
     ...extra,

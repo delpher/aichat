@@ -37,9 +37,9 @@ export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "imag
 /** A mini-game between two players (people or agents); moves travel through the broker. */
 export interface GameInfo {
   id: number;
-  /** Only "checkers" for now (rules in src/games/checkers.ts). */
-  game: "checkers";
-  /** Room the game is played in: moves are messages there ("move c3-d4", "resign", "draw?", "draw!"). */
+  /** Rules name; only "checkers" for now (src/games/checkers.ts). */
+  game: string;
+  /** Room the game is played in: moves are messages there ("move c3-d4", "resign", "draw"). */
   room: string;
   /** Who plays white (moves first) and black; null while that seat is free (status "open"). */
   white: string | null;
@@ -50,7 +50,7 @@ export interface GameInfo {
   /** "open" waits for a second player (POST /api/games/<id>/join), then "active", then "finished". */
   status: "open" | "active" | "finished";
   /** Set when finished: winner "w" / "b", or null for a draw. */
-  result?: { winner: "w" | "b" | null; reason: "no-moves" | "repetition" | "quiet" | "resign" | "agreement" };
+  result?: { winner: "w" | "b" | null; reason: "no-moves" | "repetition" | "quiet" | "resign" | "agreement" } | null;
   /** Who offered a draw that is still open. */
   draw_offer?: string | null;
   created_ts: string;
@@ -89,7 +89,7 @@ export type ServerFrame =
   | { type: "rooms"; rooms: string[] }
   /** Sent to admin observers when rooms or memberships changed; re-read the lists. */
   | { type: "rooms_changed" }
-  /** A game the client takes part in (or any game, for admin observers) was created or changed. */
+  /** Sent to every connected client when a game is created, joined or changed. */
   | { type: "game"; game: GameInfo }
   | { type: "pong"; ref?: string };
 

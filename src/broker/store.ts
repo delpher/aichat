@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage, FileInfo } from "../protocol.js";
+import type { ChatMessage, FileInfo, GameInfo } from "../protocol.js";
 
 interface Row {
   id: number;
@@ -19,6 +19,27 @@ export interface FileRow extends FileInfo {
   uploader: string;
   created: string;
   message_id: number | null;
+}
+
+/** A game as stored; `moves` in game notation, `result` as the game module reports it. */
+export interface GameRecord {
+  id: number;
+  game: string;
+  white: string | null;
+  black: string | null;
+  created_by: string;
+  moves: string[];
+  status: "open" | "active" | "finished";
+  result: NonNullable<GameInfo["result"]> | null;
+  draw_offer: string | null;
+  created_ts: string;
+  updated_ts: string;
+}
+
+type GameRow = Omit<GameRecord, "moves" | "result"> & { moves: string; result: string | null };
+
+function toGame(r: GameRow): GameRecord {
+  return { ...r, moves: JSON.parse(r.moves), result: r.result ? JSON.parse(r.result) : null };
 }
 
 function toMessage(r: Row): ChatMessage {
@@ -75,6 +96,20 @@ export class Store {
         message_id INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_files_message ON files(message_id);
+      CREATE TABLE IF NOT EXISTS games (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game TEXT NOT NULL,
+        white TEXT,
+        black TEXT,
+        created_by TEXT NOT NULL,
+        moves TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL,
+        result TEXT,
+        draw_offer TEXT,
+        created_ts TEXT NOT NULL,
+        updated_ts TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_games_status ON games(status, id);
     `);
     // databases created before attachments existed
     const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
@@ -134,6 +169,38 @@ export class Store {
 
   deleteFile(id: string) {
     this.db.prepare("DELETE FROM files WHERE id = ?").run(id);
+  }
+
+  // ---- games ----
+
+  createGame(g: Omit<GameRecord, "id" | "created_ts" | "updated_ts">): GameRecord {
+    const ts = new Date().toISOString();
+    const res = this.db
+      .prepare(
+        `INSERT INTO games (game, white, black, created_by, moves, status, result, draw_offer, created_ts, updated_ts)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(g.game, g.white, g.black, g.created_by, JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, ts, ts);
+    return this.game(Number(res.lastInsertRowid))!;
+  }
+
+  game(id: number): GameRecord | undefined {
+    const r = this.db.prepare("SELECT * FROM games WHERE id = ?").get(id) as GameRow | undefined;
+    return r && toGame(r);
+  }
+
+  games(q: { status?: string; limit?: number } = {}): GameRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM games ${q.status ? "WHERE status = ?" : ""} ORDER BY id DESC LIMIT ?`)
+      .all(...(q.status ? [q.status] : []), q.limit ?? 200) as unknown as GameRow[];
+    return rows.map(toGame);
+  }
+
+  updateGame(g: GameRecord): GameRecord {
+    this.db
+      .prepare("UPDATE games SET white = ?, black = ?, moves = ?, status = ?, result = ?, draw_offer = ?, updated_ts = ? WHERE id = ?")
+      .run(g.white, g.black, JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, new Date().toISOString(), g.id);
+    return this.game(g.id)!;
   }
 
   get(id: number): ChatMessage | undefined {

@@ -118,6 +118,7 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
   const tokens = new Set<string>();
   for (const a of cfg.agents) {
     if (!NAME_RE.test(a.name)) throw new Error(`invalid agent name: ${a.name}`);
+    if (a.name === "aichat") throw new Error(`the name "aichat" is reserved for messages from the broker itself`);
     if (names.has(a.name)) throw new Error(`duplicate agent name: ${a.name}`);
     if (!a.token || a.token.length < 16) throw new Error(`agent ${a.name}: token must be at least 16 characters`);
     if (tokens.has(a.token)) throw new Error(`agent ${a.name}: token is shared with another agent`);
