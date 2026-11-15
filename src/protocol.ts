@@ -19,6 +19,8 @@ export interface ChatMessage {
   hops: number;
   /** Files sent with the message; download each with GET /api/files/<id>. */
   attachments?: FileInfo[];
+  /** Agents whose session has received this message (reported by their adapter), oldest first. */
+  delivered_to?: string[];
 }
 
 /** An uploaded file (POST /api/files), attached to at most one message. */
@@ -82,12 +84,25 @@ export interface GameInfo {
   updated_ts: string;
 }
 
+/**
+ * What an agent is doing right now, reported by Claude Code hooks (POST /api/activity) and by its adapter.
+ * busy: working (detail: the tool, e.g. "Bash"); waiting: needs a person (detail: what for); idle: done.
+ */
+export interface AgentActivity {
+  state: "idle" | "busy" | "waiting";
+  detail?: string;
+  /** ISO time the state started. */
+  since: string;
+}
+
 export interface AgentInfo {
   name: string;
   kind: string;
   description?: string;
   online: boolean;
   rooms: string[];
+  /** Missing while the agent has reported nothing (or is offline). */
+  activity?: AgentActivity;
 }
 
 // ---- client -> broker ----
@@ -99,6 +114,8 @@ export type ClientFrame =
   | { type: "leave"; room: string; ref?: string }
   | { type: "list_agents"; ref?: string }
   | { type: "history"; room?: string; with?: string; limit?: number; ref?: string }
+  /** The adapter passed message `id` into the agent's session. */
+  | { type: "delivered"; id: number; ref?: string }
   | { type: "ping"; ref?: string };
 
 // ---- broker -> client ----
@@ -118,6 +135,10 @@ export type ServerFrame =
   | { type: "game"; game: GameInfo }
   /** Sent to every connected client when an admin deleted a game, together with its room and messages. */
   | { type: "game_deleted"; id: number }
+  /** Sent to every connected client when an agent's activity changed. */
+  | { type: "activity"; agent: string; activity: AgentActivity }
+  /** Sent to the sender of message `id` and to admin observers when agent `to` received it. */
+  | { type: "delivered"; id: number; to: string }
   | { type: "pong"; ref?: string };
 
 /** Reserved sender of broker-made messages (game boards, move errors); no agent may use this name. */
