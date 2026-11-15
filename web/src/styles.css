@@ -477,6 +477,43 @@ input[type="checkbox"] {
   text-transform: uppercase;
   color: var(--muted);
 }
+.nav-title button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nav-title button:hover {
+  color: var(--text-2);
+  background: var(--hover);
+}
+.nav-chevron {
+  flex: none;
+  transition: transform 0.15s;
+}
+.nav-group.collapsed .nav-chevron {
+  transform: rotate(-90deg);
+}
+.nav-count {
+  font-weight: 500;
+  opacity: 0.8;
+}
+.nav-title .badge {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .nav-list {
   list-style: none;
   margin: 0;
