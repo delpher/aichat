@@ -55,3 +55,20 @@ describe("clicking a name", () => {
     await waitFor(() => expect(screen.getByLabelText("Повідомлення")).toHaveValue("@claude "));
   });
 });
+
+describe("Enter on touch devices", () => {
+  it("makes a new line instead of sending", async () => {
+    // jsdom has no matchMedia; pretend to be a phone (coarse pointer, no hover)
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("coarse"), media: q }) as MediaQueryList);
+    const api = fakeApi();
+    const props = { view: { kind: "room", room: "lobby" } as const, replyTo: null, onCancelReply: vi.fn(), dropped: [], onDroppedTaken: vi.fn() };
+    renderWithChat(<Composer {...props} />, { api });
+    const box = screen.getByLabelText("Повідомлення");
+    await userEvent.type(box, "one{Enter}two");
+    expect(box).toHaveValue("one\ntwo");
+    expect(api.send).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Надіслати" }));
+    await waitFor(() => expect(api.send).toHaveBeenCalledWith("POST", "/api/messages", { room: "lobby", text: "one\ntwo" }));
+    vi.unstubAllGlobals();
+  });
+});

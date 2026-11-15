@@ -55,6 +55,18 @@ interface Props {
 
 let pendingSeq = 0;
 
+/**
+ * Touch keyboards have no Shift+Enter, so there Enter makes a new line and the send button sends.
+ * A coarse pointer without hover is a phone or tablet; a laptop with a touchscreen keeps Enter-to-send.
+ */
+export const enterSends = () => {
+  try {
+    return !window.matchMedia("(pointer: coarse) and (hover: none)").matches;
+  } catch {
+    return true;
+  }
+};
+
 export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken, mention }: Props) {
   const { session, api, overview, sender, addLive, fail, toast } = useChat();
   const admin = session.mode === "admin";
@@ -238,7 +250,7 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && enterSends()) {
       e.preventDefault();
       void send();
       return;
@@ -365,7 +377,8 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
           aria-controls={picking ? "mention-list" : undefined}
           onPaste={onPaste}
           disabled={disabled}
-          placeholder={blocked || "Повідомлення… Enter надіслати, Shift+Enter новий рядок"}
+          placeholder={blocked || (enterSends() ? "Повідомлення… Enter надіслати, Shift+Enter новий рядок" : "Повідомлення…")}
+          enterKeyHint={enterSends() ? "send" : "enter"}
           aria-label="Повідомлення"
         />
         <div className="composer-bar">
