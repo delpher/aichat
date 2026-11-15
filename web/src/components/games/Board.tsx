@@ -73,7 +73,7 @@ export function Board({ state, bottom, canMove, last, onMove }: Props) {
                 title={dark ? name : undefined}
               >
                 {cell !== "." && <span className={`piece ${colorOf(cell)}${isKing(cell) ? " king" : ""}`} />}
-                {captured.has(i) && cell === "." && <span className="ghost" />}
+                {captured.has(i) && cell === "." && <span className="captured-mark" />}
                 {f === files[0] && <span className="coord rank">{r + 1}</span>}
                 {r === ranks[7] && <span className="coord file">{String.fromCharCode(97 + f)}</span>}
               </button>

@@ -1860,7 +1860,7 @@ span.msg-where {
   border-width: 1px;
   box-shadow: none;
 }
-.ghost {
+.sq .captured-mark {
   width: 60%;
   height: 60%;
   border-radius: 50%;
