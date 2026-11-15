@@ -15,7 +15,7 @@ export interface ChatContextValue {
   /** Live messages for the open view; returns an unsubscribe function. */
   subscribe: (fn: (m: ChatMessage) => void) => () => void;
   /** Live game updates; returns an unsubscribe function. */
-  subscribeGames: (fn: (g: GameInfo) => void) => () => void;
+  subscribeGames: (fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */
   addLive: (m: ChatMessage) => void;
   toast: (text: string, error?: boolean) => void;

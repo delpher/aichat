@@ -6,6 +6,7 @@ import { fmtShort } from "../../lib/format";
 import { newGame, opponent, parseMove, play, renderBoard, type CheckersState, type Color, type Move } from "../../../../src/games/checkers";
 import { ChatView } from "../ChatView";
 import { Board } from "./Board";
+import { DeleteGame } from "./DeleteGame";
 import { canJoin, COLOR_NAME, FREE_SEAT, gameStatus } from "./gameText";
 
 /** Every position of the game, with the move that led to it. */
@@ -43,7 +44,14 @@ export function GameView({ id }: { id: number }) {
 
   useEffect(() => {
     load();
-    const offGame = subscribeGames((g) => g.id === id && setGame(g));
+    const offGame = subscribeGames(
+      (g) => g.id === id && setGame(g),
+      (gone) => {
+        if (gone !== id) return;
+        toast(`Партію №${id} видалено.`);
+        go({ kind: "games" });
+      },
+    );
     // Moves are messages in the game room too; refetch in case the broker sent no game frame.
     const offMsg = subscribe((m) => {
       if (game && m.room === game.room) load();
@@ -226,6 +234,7 @@ export function GameView({ id }: { id: number }) {
               Копіювати як текст
             </button>
           </div>
+          <DeleteGame game={game} onDeleted={() => go({ kind: "games" })} />
         </aside>
       </div>
 

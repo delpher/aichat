@@ -4,7 +4,8 @@ import type { GameInfo } from "../../api/types";
 import { useChat } from "../../context";
 import { fmtShort, kindLabel } from "../../lib/format";
 import { hashFor } from "../../lib/views";
-import { canJoin, FREE_SEAT, gameStatus, sortGames, upsertGame } from "./gameText";
+import { DeleteGame } from "./DeleteGame";
+import { canJoin,FREE_SEAT, gameStatus, sortGames, upsertGame } from "./gameText";
 
 type Filter = "all" | "open" | "active" | "mine";
 const FILTERS: Array<[Filter, string]> = [
@@ -32,7 +33,10 @@ export function GamesPanel() {
         setGames([]);
         fail(e, "Не вдалося завантажити партії");
       });
-    return subscribeGames((g) => setGames((cur) => (cur ? upsertGame(cur, g) : cur)));
+    return subscribeGames(
+      (g) => setGames((cur) => (cur ? upsertGame(cur, g) : cur)),
+      (id) => setGames((cur) => cur && cur.filter((x) => x.id !== id)),
+    );
   }, [api, subscribeGames, fail]);
 
   const players = [...overview.agents].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
@@ -168,6 +172,7 @@ export function GamesPanel() {
                       </a>
                     )
                   )}
+                  <DeleteGame game={g} compact onDeleted={(id) => setGames((cur) => cur && cur.filter((x) => x.id !== id))} />
                 </li>
               );
             })}

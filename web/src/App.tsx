@@ -228,9 +228,14 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     return () => void subscribers.current.delete(fn);
   }, []);
   const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
-  const subscribeGames = useCallback((fn: (g: GameInfo) => void) => {
+  const gameDeletedSubscribers = useRef(new Set<(id: number) => void>());
+  const subscribeGames = useCallback((fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => {
     gameSubscribers.current.add(fn);
-    return () => void gameSubscribers.current.delete(fn);
+    if (onDeleted) gameDeletedSubscribers.current.add(onDeleted);
+    return () => {
+      gameSubscribers.current.delete(fn);
+      if (onDeleted) gameDeletedSubscribers.current.delete(onDeleted);
+    };
   }, []);
 
   const conn = useSocket(session, {
@@ -262,6 +267,16 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     onError: (e) => toast(`Брокер: ${e}`, true),
     onGame: (g) => {
       for (const fn of gameSubscribers.current) fn(g);
+    },
+    onGameDeleted: (id) => {
+      for (const fn of gameDeletedSubscribers.current) fn(id);
+      // The game's room went with it: drop its unread count.
+      setUnread((u) => {
+        if (!u.has(`r:game-${id}`)) return u;
+        const n = new Map(u);
+        n.delete(`r:game-${id}`);
+        return n;
+      });
     },
   });
 

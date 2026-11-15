@@ -15,6 +15,8 @@ export interface SocketHandlers {
   onError: (error: string) => void;
   /** A game was created or changed. */
   onGame?: (game: GameInfo) => void;
+  /** A game (with its room and messages) was deleted. */
+  onGameDeleted?: (id: number) => void;
 }
 
 /**
@@ -66,6 +68,9 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             break;
           case "game":
             h.current.onGame?.(f.game);
+            break;
+          case "game_deleted":
+            h.current.onGameDeleted?.(f.id);
             break;
           case "rooms":
           case "rooms_changed":

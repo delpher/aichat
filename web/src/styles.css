@@ -2040,3 +2040,14 @@ span.msg-where {
 .mentions .small {
   margin-left: auto;
 }
+.game-item {
+  flex-wrap: wrap;
+}
+.game-item > .confirm {
+  flex-basis: 100%;
+  max-width: none;
+  margin: 0 8px 8px;
+}
+.game-side > .confirm {
+  max-width: none;
+}

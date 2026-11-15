@@ -2,8 +2,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { GameInfo } from "../../api/types";
-import { fakeApi, renderWithChat } from "../../test/render";
+import { adminSession, fakeApi, renderWithChat } from "../../test/render";
 import { newGame, play } from "../../../../src/games/checkers";
+import { RoomsPanel } from "../panels/RoomsPanel";
 import { Board } from "./Board";
 import { GameView } from "./GameView";
 import { GamesPanel } from "./GamesPanel";
@@ -132,5 +133,42 @@ describe("gameStatus", () => {
   it("names whose turn it is and how a game ended", () => {
     expect(gameStatus(game({ moves: ["c3-d4"] }))).toBe("Хід: claude (чорні)");
     expect(gameStatus(game({ status: "finished", result: { winner: null, reason: "repetition" } }))).toBe("Нічия · триразове повторення");
+  });
+});
+
+describe("deleting a game", () => {
+  it("is offered to admins only and asks before deleting", async () => {
+    const api = fakeApi({ get: vi.fn(async () => ({ games: [game({ status: "finished", result: { winner: "w", reason: "resign" } })] })) });
+    const { unmount } = renderWithChat(<GamesPanel />, { api });
+    await screen.findByText(/Перемога/);
+    expect(screen.queryByRole("button", { name: /Видалити партію/ })).toBeNull();
+    unmount();
+
+    renderWithChat(<GamesPanel />, { api, session: adminSession, sender: "alexey" });
+    await userEvent.click(await screen.findByRole("button", { name: "Видалити партію №7" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("кімната #game-7");
+    await userEvent.click(screen.getByRole("button", { name: "Видалити назавжди" }));
+    expect(api.send).toHaveBeenCalledWith("DELETE", "/admin/api/games/7");
+    await waitFor(() => expect(screen.queryByText(/Перемога/)).toBeNull());
+  });
+});
+
+describe("admin rooms panel", () => {
+  it("leaves game rooms out", async () => {
+    const api = fakeApi({
+      get: vi.fn(async (path: string) =>
+        path === "/admin/api/rooms"
+          ? {
+              rooms: [
+                { name: "lobby", members: [], count: 0, last_ts: null },
+                { name: "game-7", members: [], count: 4, last_ts: null },
+              ],
+            }
+          : { agents: [] },
+      ),
+    });
+    renderWithChat(<RoomsPanel />, { api, session: adminSession, sender: "alexey" });
+    expect(await screen.findByText("lobby")).toBeInTheDocument();
+    expect(screen.queryByText("game-7")).toBeNull();
   });
 });
