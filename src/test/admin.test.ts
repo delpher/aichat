@@ -5,16 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { BrokerClient } from "../client/broker-client.js";
-import { ConfigFile, ensureAdminToken, validate } from "../broker/config.js";
+import { ConfigFile, addAgent, setAdmin, validate } from "../broker/config.js";
 import type { ChatMessage } from "../protocol.js";
 
-const ADMIN = "admin-token-xxxxxxxxxxxxxxxx";
+/** The admin in these tests: a person with admin rights, using their own token. */
+const BOSS = { name: "boss", kind: "human", admin: true };
+const ADMIN = tok("boss");
+const feed = (url: string, token = ADMIN) => new BrokerClient({ url, token, observer: true, reconnect: false, log: () => {} });
 const auth = (token = ADMIN) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
 
 test("admin API: overview and messages see every room and DM", async () => {
   const { broker, url, http } = await startBroker(
-    [{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }, { name: "c" }],
-    { adminToken: ADMIN },
+    [{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }, { name: "c" }, BOSS],
   );
   const a = await connect(url, "a");
   const b = await connect(url, "b");
@@ -30,7 +32,7 @@ test("admin API: overview and messages see every room and DM", async () => {
     rooms: { name: string; members: string[]; count: number }[];
     dms: { a: string; b: string; count: number }[];
   };
-  assert.deepEqual(o.agents.map((x) => x.name), ["a", "b", "c"]);
+  assert.deepEqual(o.agents.map((x) => x.name), ["a", "b", "c", "boss"]);
   assert.deepEqual(o.rooms.map(({ name, members, count }) => ({ name, members, count })), [
     { name: "lab", members: ["a", "b"], count: 2 },
   ]);
@@ -60,21 +62,28 @@ test("admin API: overview and messages see every room and DM", async () => {
   await broker.close();
 });
 
-test("admin API is off without adminToken", async () => {
-  const { broker, http } = await startBroker([{ name: "a" }]);
-  const r = await fetch(`${http}/admin/api/overview`, { headers: auth() });
+test("without any admin the admin API says how to create one; the old adminToken is ignored", async () => {
+  const { broker, url, http } = await startBroker([{ name: "a" }, { name: "p", kind: "human" }], {
+    adminToken: "old-root-token-xxxxxxxxxxxx",
+  });
+  let r = await fetch(`${http}/admin/api/overview`, { headers: auth(tok("p")) });
   assert.equal(r.status, 403);
-  const c = new BrokerClient({ url: http.replace("http", "ws"), token: ADMIN, reconnect: false, log: () => {} });
-  await assert.rejects(c.connect(), /token/);
+  assert.match(((await r.json()) as { error: string }).error, /npm run admin/);
+  r = await fetch(`${http}/admin/api/overview`, { headers: auth("old-root-token-xxxxxxxxxxxx") });
+  assert.equal(r.status, 403);
+  await assert.rejects(feed(url, "old-root-token-xxxxxxxxxxxx").connect(), /token/);
+  await assert.rejects(feed(url, tok("a")).connect(), /admin/);
   await broker.close();
 });
 
 test("admin WebSocket observes every message and presence, and is read-only", async () => {
-  const { broker, url } = await startBroker([{ name: "a" }, { name: "b" }, { name: "c" }], { adminToken: ADMIN });
-  const obs = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
+  const { broker, url } = await startBroker([{ name: "a" }, { name: "b" }, { name: "c" }, BOSS]);
+  const obs = feed(url);
   await obs.connect();
-  assert.equal(obs.agent, "owner");
-  const presence = new Promise<{ agent: string; online: boolean }>((res) => obs.once("presence", res));
+  assert.equal(obs.agent, "boss");
+  const presence = new Promise<{ agent: string; online: boolean }>((res) =>
+    obs.on("presence", (p: { agent: string; online: boolean }) => p.agent === "a" && res(p)),
+  );
   const a = await connect(url, "a");
   assert.deepEqual(await presence, { agent: "a", online: true });
   const got = nextMessage(obs);
@@ -87,8 +96,7 @@ test("admin WebSocket observes every message and presence, and is read-only", as
 
 test("admin may post only as human agents; message reaches recipients and observers", async () => {
   const { broker, url, http } = await startBroker(
-    [{ name: "me", kind: "human", rooms: ["lobby"] }, { name: "bot", rooms: ["lobby"] }],
-    { adminToken: ADMIN },
+    [{ name: "me", kind: "human", rooms: ["lobby"] }, { name: "bot", rooms: ["lobby"] }, BOSS],
   );
   const bot = await connect(url, "bot");
   const got = nextMessage(bot);
@@ -135,27 +143,28 @@ test("web UI static files are served without path traversal", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("config: adminToken is validated and ensureAdminToken creates it once", () => {
-  assert.throws(() => validate({ adminToken: "short", agents: [] }), /adminToken/);
-  assert.throws(
-    () => validate({ adminToken: "same-token-xxxxxxxxxxxx", agents: [{ name: "a", kind: "x", token: "same-token-xxxxxxxxxxxx" }] }),
-    /shared/,
-  );
+test("config: first admin via add-agent --admin, setAdmin grants, revokes and issues tokens", () => {
+  assert.doesNotThrow(() => validate({ adminToken: "short", agents: [] })); // legacy field is ignored
   const dir = mkdtempSync(join(tmpdir(), "aichat-cfg-"));
   const path = join(dir, "agents.json");
   writeFileSync(path, JSON.stringify({ agents: [] }));
-  const one = ensureAdminToken(path);
-  assert.equal(one.created, true);
-  const two = ensureAdminToken(path);
-  assert.deepEqual(two, { token: one.token, created: false });
-  assert.equal(JSON.parse(readFileSync(path, "utf8")).adminToken, one.token);
-  const three = ensureAdminToken(path, true);
-  assert.notEqual(three.token, one.token);
+  const first = addAgent(path, { name: "alexey", kind: "human", admin: true });
+  assert.equal(first.admin, true);
+  assert.throws(() => addAgent(path, { name: "bot", kind: "claude", admin: true }), /human/);
+  addAgent(path, { name: "bot", kind: "claude" });
+  addAgent(path, { name: "olena", kind: "human" });
+  assert.equal(setAdmin(path, "olena").admin, true);
+  const again = setAdmin(path, "olena", { newToken: true });
+  assert.notEqual(again.token, JSON.parse(readFileSync(path, "utf8")).agents[0].token);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).agents.find((a: { name: string }) => a.name === "olena").token, again.token);
+  assert.equal(setAdmin(path, "olena", { admin: false }).admin, undefined);
+  assert.throws(() => setAdmin(path, "bot"), /human/);
+  assert.throws(() => setAdmin(path, "ghost"), /add-agent/);
   rmSync(dir, { recursive: true, force: true });
 });
 
 test("admin settings: read, change maxHops at runtime, reject bad values", async () => {
-  const { broker, url, http } = await startBroker([{ name: "a" }, { name: "b" }], { adminToken: ADMIN, maxHops: 1 });
+  const { broker, url, http } = await startBroker([{ name: "a" }, { name: "b" }, BOSS], { maxHops: 1 });
   let r = await fetch(`${http}/admin/api/settings`, { headers: auth() });
   assert.equal(r.status, 200);
   const s = (await r.json()) as { settings: { maxHops: number }; limits: { maxHops: { min: number; max: number } }; editable: boolean };
@@ -204,8 +213,7 @@ test("ConfigFile.updateSettings persists settings and keeps the rest of the file
 
 test("personal web login: overview and history show only the agent's own conversations", async () => {
   const { broker, url, http } = await startBroker(
-    [{ name: "olena", kind: "human", rooms: ["lobby"] }, { name: "bot", rooms: ["lobby", "lab"] }, { name: "c" }],
-    { adminToken: ADMIN },
+    [{ name: "olena", kind: "human", rooms: ["lobby"] }, { name: "bot", rooms: ["lobby", "lab"] }, { name: "c" }, BOSS],
   );
   const bot = await connect(url, "bot");
   const c = await connect(url, "c");
@@ -229,7 +237,7 @@ test("personal web login: overview and history show only the agent's own convers
   assert.deepEqual(o.rooms.map((x) => x.name), ["lobby"]);
   assert.deepEqual(o.dms.map((d) => [d.a, d.b]), [["bot", "olena"]]);
   assert.deepEqual(o.all_rooms, ["lab", "lobby"]);
-  assert.equal(o.agents.length, 3);
+  assert.equal(o.agents.length, 4);
 
   r = await fetch(`${http}/api/history?room=lobby&before=${ids[2]}&limit=1`, { headers: h });
   assert.deepEqual(((await r.json()) as { messages: ChatMessage[] }).messages.map((m) => m.id), [ids[1]]);
@@ -247,7 +255,7 @@ test("personal web login: overview and history show only the agent's own convers
 });
 
 test("admin manages people: add, new token, remove", async () => {
-  const { broker, url, http, cfg } = await startBroker([{ name: "bot", kind: "claude", rooms: ["lobby"] }], { adminToken: ADMIN });
+  const { broker, url, http, cfg } = await startBroker([{ name: "bot", kind: "claude", rooms: ["lobby"] }, BOSS]);
   const post = (path: string, body?: unknown) =>
     fetch(`${http}${path}`, { method: "POST", headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
 
@@ -272,7 +280,7 @@ test("admin manages people: add, new token, remove", async () => {
 
   r = await fetch(`${http}/admin/api/agents`, { headers: auth() });
   const list = (await r.json()) as { agents: { name: string; webhook: boolean; token?: string }[] };
-  assert.deepEqual(list.agents.map((a) => a.name), ["bot", "olena"]);
+  assert.deepEqual(list.agents.map((a) => a.name), ["bot", "boss", "olena"]);
   assert.ok(list.agents.every((a) => a.token === undefined && a.webhook === false));
 
   // the new person can log in and receives room messages
@@ -309,7 +317,7 @@ test("admin manages people: add, new token, remove", async () => {
 });
 
 test("admin adds AI agents with ready-made setup steps; tokens and removal work for any kind", async () => {
-  const { broker, http, cfg } = await startBroker([{ name: "me", kind: "human" }], { adminToken: ADMIN });
+  const { broker, http, cfg } = await startBroker([{ name: "me", kind: "human" }, BOSS]);
   const post = (path: string, body?: unknown) =>
     fetch(`${http}${path}`, { method: "POST", headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
   type SetupRes = { token: string; setup: { kind: string; steps: { title: string; code?: string; lang?: string }[] } };
@@ -373,12 +381,11 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
 
 test("admin manages rooms: create, members, delete; changes persist and reach live agents", async () => {
   const { broker, url, http, cfg } = await startBroker(
-    [{ name: "a", rooms: ["lobby"] }, { name: "b" }, { name: "me", kind: "human" }],
-    { adminToken: ADMIN },
+    [{ name: "a", rooms: ["lobby"] }, { name: "b" }, { name: "me", kind: "human" }, BOSS],
   );
   const call = (method: string, path: string, body?: unknown) =>
     fetch(`${http}${path}`, { method, headers: auth(), ...(body ? { body: JSON.stringify(body) } : {}) });
-  const obs = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
+  const obs = feed(url);
   await obs.connect();
   const frames: { type: string; rooms?: string[] }[] = [];
   const b = await connect(url, "b");
@@ -464,8 +471,7 @@ test("bundled adapters are served without a token; nothing else under /client", 
 
 test("a human can be made an admin: own token opens the admin API and the observer feed", async () => {
   const { broker, url, http, cfg } = await startBroker(
-    [{ name: "olena", kind: "human" }, { name: "bot", kind: "claude" }, { name: "c" }],
-    { adminToken: ADMIN },
+    [{ name: "olena", kind: "human" }, { name: "bot", kind: "claude" }, { name: "c" }, BOSS],
   );
   const olenaTok = tok("olena");
   const as = (t: string) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
@@ -485,10 +491,8 @@ test("a human can be made an admin: own token opens the admin API and the observ
   r = await fetch(`${http}/admin/api/overview`, { headers: as(olenaTok) });
   assert.equal(r.status, 200);
   const o = (await r.json()) as { me: unknown; agents: { name: string; admin: boolean }[] };
-  assert.deepEqual(o.me, { name: "olena", root: false });
+  assert.deepEqual(o.me, { name: "olena" });
   assert.equal(o.agents.find((a) => a.name === "olena")?.admin, true);
-  r = await fetch(`${http}/admin/api/overview`, { headers: as(ADMIN) });
-  assert.deepEqual(((await r.json()) as { me: unknown }).me, { name: "owner", root: true });
 
   // raw WebSocket: auth with observer:true gives the admin feed
   const { WebSocket } = await import("ws");
@@ -524,14 +528,18 @@ test("a human can be made an admin: own token opens the admin API and the observ
   const member = await connect(url, "olena");
   assert.equal(member.agent, "olena");
   member.close(); bot.close();
+
+  // the last admin can neither lose the rights nor be removed
+  r = await patch("boss", { admin: false });
+  assert.equal(r.status, 409);
+  assert.match(((await r.json()) as { error: string }).error, /only admin/);
+  assert.equal((await fetch(`${http}/admin/api/agents/boss`, { method: "DELETE", headers: as(ADMIN) })).status, 409);
+  assert.equal(cfg().agents.find((a) => a.name === "boss")?.admin, true);
   await broker.close();
 });
 
-test("a human admin's observer feed counts as that human being online; the root feed does not", async () => {
-  const { broker, url, http } = await startBroker(
-    [{ name: "olena", kind: "human", admin: true }, { name: "owner", kind: "human" }, { name: "bot" }],
-    { adminToken: ADMIN },
-  );
+test("a human admin's observer feed counts as that human being online", async () => {
+  const { broker, url, http } = await startBroker([{ name: "olena", kind: "human", admin: true }, { name: "bot" }, BOSS]);
   const onlineOf = async (name: string) => {
     const r = await fetch(`${http}/admin/api/agents`, { headers: auth() });
     const { agents } = (await r.json()) as { agents: { name: string; online: boolean }[] };
@@ -547,11 +555,6 @@ test("a human admin's observer feed counts as that human being online; the root 
       bot.on("presence", check);
     });
 
-  // the root admin's feed is not a participant, even if a human is called "owner"
-  const root = new BrokerClient({ url, token: ADMIN, reconnect: false, log: () => {} });
-  await root.connect();
-  assert.equal(await onlineOf("owner"), false);
-
   const { WebSocket } = await import("ws");
   const feed = new WebSocket(`${url}/ws`);
   feed.on("open", () => feed.send(JSON.stringify({ type: "auth", token: tok("olena"), observer: true })));
@@ -561,7 +564,6 @@ test("a human admin's observer feed counts as that human being online; the root 
   feed.close();
   await waitPresence(false);
   assert.equal(await onlineOf("olena"), false);
-  assert.ok(!presences.some((p) => p.agent === "owner"));
-  root.close(); bot.close();
+  bot.close();
   await broker.close();
 });

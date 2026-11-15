@@ -10,11 +10,8 @@ export interface ChatContextValue {
   reloadOverview: () => Promise<void>;
   view: View;
   go: (v: View) => void;
-  /** Who messages are sent as: yourself, or (admin) the chosen person. */
-  sender: string | null;
-  setSender: (name: string) => void;
-  /** People an admin may write as. */
-  humans: string[];
+  /** Who is logged in, and so who messages are sent as. */
+  sender: string;
   /** Live messages for the open view; returns an unsubscribe function. */
   subscribe: (fn: (m: ChatMessage) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */
@@ -33,4 +30,4 @@ export function useChat(): ChatContextValue {
 }
 
 export const isAdmin = (s: Session) => s.mode === "admin";
-export const myName = (s: Session) => (s.mode === "user" ? s.me.name : s.admin.root ? null : s.admin.name);
+export const myName = (s: Session) => (s.mode === "user" ? s.me.name : s.admin.name);

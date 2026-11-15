@@ -30,8 +30,8 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
     let timer: ReturnType<typeof setTimeout> | undefined;
     let retries = 0;
     let stopped = false;
-    // A person who is an admin must ask for the observer feed; the root token always gets it.
-    const observer = session.mode === "admin" && !session.admin.root;
+    // An admin asks for the observer feed; without it they would get only their own messages.
+    const observer = session.mode === "admin";
 
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";

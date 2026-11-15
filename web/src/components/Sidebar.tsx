@@ -69,7 +69,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
   const dms = [...overview.dms].sort((x, y) => String(y.last_ts ?? "").localeCompare(String(x.last_ts ?? "")));
   const agents = [...overview.agents].sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name));
   const kinds = new Map(overview.agents.map((a) => [a.name, a]));
-  const who = session.mode === "user" ? session.me.name : session.admin.root ? "Адмін" : session.admin.name;
+  const who = sender;
 
   return (
     <aside className="sidebar">
@@ -184,13 +184,13 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
         <h2 className="nav-title">Учасники</h2>
         <ul className="nav-list">
           {agents.map((a) => {
-            const canDm = !!sender && sender !== a.name;
+            const canDm = sender !== a.name;
             return (
               <Item
                 key={a.name}
-                onClick={canDm ? nav(dm(sender!, a.name)) : undefined}
+                onClick={canDm ? nav(dm(sender, a.name)) : undefined}
                 icon={<Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />}
-                label={a.name === sender && !admin ? `${a.name} (ви)` : a.name}
+                label={a.name === sender ? `${a.name} (ви)` : a.name}
                 meta={a.kind === "human" ? undefined : kindLabel(a.kind)}
                 title={[
                   a.description,
@@ -221,7 +221,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
         <Avatar name={who} kind="human" size="sm" />
         <span className="me">
           <span className="me-name">{who}</span>
-          <span className="me-role">{admin ? (session.admin.root ? "головний токен" : "адміністратор") : "учасник"}</span>
+          <span className="me-role">{admin ? "адміністратор" : "учасник"}</span>
         </span>
         <button type="button" className="icon-btn" onClick={onLogout} title="Вийти" aria-label="Вийти">
           <LogOut size={16} />

@@ -66,10 +66,9 @@ const DEFAULT_BUNDLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), ".."
 /** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
 const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs"]);
 
-/** Who is using the admin API: the root adminToken ("owner") or a human agent with `admin: true`. */
+/** Who is using the admin API: a human agent with `admin: true`, by their own token. */
 export interface AdminIdentity {
   name: string;
-  root: boolean;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -131,7 +130,7 @@ export class Broker {
   private sockets = new Map<string, Set<WebSocket>>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
   /** Admin feed sockets; a human admin's feed also counts as that human being online. */
-  private observers = new Map<WebSocket, AdminIdentity>();
+  private observers = new Map<WebSocket, string>();
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -162,13 +161,15 @@ export class Broker {
     return agent;
   }
 
-  /** The admin behind a token: the root adminToken, or a human agent marked `admin: true`. */
+  /** The admin behind a token: a human agent marked `admin: true`. */
   adminFor(token: string | undefined): AdminIdentity | undefined {
     if (!token) return undefined;
-    const root = this.cfg.adminToken;
-    if (root && safeEqual(root, token)) return { name: "owner", root: true };
     const a = this.cfg.agents.find((x) => safeEqual(x.token, token));
-    return a?.admin && a.kind === "human" ? { name: a.name, root: false } : undefined;
+    return a?.admin && a.kind === "human" ? { name: a.name } : undefined;
+  }
+
+  private admins(): string[] {
+    return this.cfg.agents.filter((a) => a.admin && a.kind === "human").map((a) => a.name);
   }
 
   isAdmin(token: string | undefined): boolean {
@@ -361,7 +362,7 @@ export class Broker {
   /** Online = a live participant socket, a human admin's feed socket, or a webhook. */
   private isOnline(name: string): boolean {
     if ((this.sockets.get(name)?.size ?? 0) > 0) return true;
-    for (const who of this.observers.values()) if (!who.root && who.name === name) return true;
+    for (const who of this.observers.values()) if (who === name) return true;
     return !!this.cfg.agents.find((a) => a.name === name)?.webhook;
   }
 
@@ -428,7 +429,7 @@ export class Broker {
 
   /** Drops the admin feed of a human admin (rights removed, token changed, removed). */
   private disconnectObserver(name: string, reason: string) {
-    for (const [ws, who] of this.observers) if (!who.root && who.name === name) ws.close(4003, reason);
+    for (const [ws, who] of this.observers) if (who === name) ws.close(4003, reason);
   }
 
   /** Pending messages for a polling agent; marks them delivered. */
@@ -527,12 +528,11 @@ export class Broker {
       if (!agent) {
         if (f.type !== "auth") return this.sendFrame(ws, { type: "error", error: "authenticate first", ref });
         const admin = this.adminFor(f.token);
-        if (admin && (admin.root || f.observer)) {
+        if (admin && f.observer) {
           observer = true;
           clearTimeout(authTimer);
           this.sendFrame(ws, { type: "welcome", agent: admin.name, rooms: [], observer: true, ref });
-          if (admin.root) this.observers.set(ws, admin);
-          else this.trackPresence(admin.name, () => this.observers.set(ws, admin));
+          this.trackPresence(admin.name, () => this.observers.set(ws, admin.name));
           this.log(`admin observer ${admin.name} connected`);
           return;
         }
@@ -569,8 +569,7 @@ export class Broker {
       clearTimeout(authTimer);
       clearInterval(heartbeat);
       const who = this.observers.get(ws);
-      if (who && !who.root) this.trackPresence(who.name, () => this.observers.delete(ws));
-      else this.observers.delete(ws);
+      if (who) this.trackPresence(who, () => this.observers.delete(ws));
       if (!agent) return;
       const name = agent.name;
       this.trackPresence(name, () => {
@@ -721,10 +720,18 @@ export class Broker {
     url: URL,
     reply: (status: number, body: unknown) => void,
   ) {
-    if (!this.cfg.adminToken)
-      return reply(403, { error: "admin access is off: run `npm run admin-token` to create a token" });
     const me = this.adminFor(req.headers.authorization?.replace(/^Bearer\s+/i, ""));
-    if (!me) return reply(401, { error: "invalid or missing admin token" });
+    if (!me) {
+      if (!this.admins().length)
+        return reply(403, { error: "nobody has admin rights: run `npm run admin -- <person>` on the broker's machine" });
+      return reply(401, { error: "this token has no admin rights" });
+    }
+    /** Refuses changes that would leave the broker without any admin. */
+    const keepOneAdmin = (name: string, what: string) => {
+      const admins = this.admins();
+      if (admins.length === 1 && admins[0] === name)
+        throw new BrokerError(`${name} is the only admin: make someone else an admin before you ${what}`, 409);
+    };
     const route = `${req.method} ${url.pathname}`;
     const adminAgents = () =>
       this.agents().map((a) => {
@@ -826,6 +833,7 @@ export class Broker {
         if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
         if (b.admin && target.kind !== "human")
           throw new BrokerError(`only agents of kind "human" can be admins; ${name} is "${target.kind}"`, 403);
+        if (!b.admin) keepOneAdmin(name, "remove their rights");
         edit((raw) => {
           const a = raw.agents?.find((x) => x.name === name);
           if (!a) throw new BrokerError(`unknown agent: ${name}`, 404);
@@ -848,6 +856,7 @@ export class Broker {
         return reply(200, { token, setup: setupFor(target, token) });
       }
       if (req.method === "DELETE" && !agentMatch[2]) {
+        keepOneAdmin(name, "remove them");
         edit((raw) => {
           raw.agents = (raw.agents ?? []).filter((x) => x.name !== name);
         });

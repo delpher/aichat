@@ -4,7 +4,7 @@ import { cleanFileName } from "../broker/broker.js";
 import type { ChatMessage, FileInfo } from "../protocol.js";
 import { connect, nextMessage, startBroker, tok } from "./helpers.js";
 
-const ADMIN = "admin-token-xxxxxxxxxxxxxxxx";
+const ADMIN = tok("boss");
 
 function upload(http: string, token: string, body: string | Uint8Array, name = "notes.txt", type = "text/plain", path = "/api/files") {
   return fetch(`${http}${path}`, {
@@ -103,8 +103,7 @@ test("images are served inline, other types never are; limits apply", async () =
 
 test("admin uploads as a human and downloads any file; stale uploads are cleaned", async () => {
   const { broker, http } = await startBroker(
-    [{ name: "me", kind: "human" }, { name: "bot" }],
-    { adminToken: ADMIN },
+    [{ name: "me", kind: "human" }, { name: "bot" }, { name: "boss", kind: "human", admin: true }],
   );
   const as = (path: string) => `/admin/api/files${path}`;
   let r = await upload(http, ADMIN, "from admin", "a.txt", "text/plain", as("?as=bot"));

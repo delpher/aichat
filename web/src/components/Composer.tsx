@@ -53,7 +53,7 @@ interface Props {
 let pendingSeq = 0;
 
 export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken }: Props) {
-  const { session, api, overview, sender, setSender, humans, addLive, fail, toast } = useChat();
+  const { session, api, overview, sender, addLive, fail, toast } = useChat();
   const admin = session.mode === "admin";
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
@@ -112,9 +112,8 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
     });
 
   let blocked = "";
-  if (admin && !humans.length) blocked = "Щоб писати з вебу, додайте людину в розділі «Агенти й люди».";
-  else if (admin && view.kind === "dm" && sender !== view.a && sender !== view.b)
-    blocked = `${sender} не учасник цієї розмови. Оберіть ${view.a} або ${view.b} у полі «Від», якщо це люди.`;
+  if (view.kind === "dm" && sender !== view.a && sender !== view.b)
+    blocked = "Це чужа особиста розмова: ви її бачите як адмін, але писати в неї не можете.";
 
   const target = (): { room: string } | { to: string } | null => {
     if (view.kind === "room") return { room: view.room };
@@ -138,8 +137,8 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
     if (busy || blocked) return;
     if (!text.trim() && !files.length) return;
     const t = target();
-    if (!sender || !t) {
-      toast("Оберіть відправника й отримувача.", true);
+    if (!t) {
+      toast("Оберіть отримувача.", true);
       return;
     }
     try {
@@ -211,32 +210,18 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
         void send();
       }}
     >
-      {(admin || view.kind === "all") && (
+      {view.kind === "all" && (
         <div className="composer-route">
-          {admin && (
-            <label>
-              Від
-              <select value={sender ?? ""} onChange={(e) => setSender(e.target.value)} disabled={!humans.length} aria-label="Від">
-                {humans.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {view.kind === "all" && (
-            <label>
-              Кому
-              <select value={to} onChange={(e) => setTo(e.target.value)} aria-label="Кому">
-                {targets.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <label>
+            Кому
+            <select value={to} onChange={(e) => setTo(e.target.value)} aria-label="Кому">
+              {targets.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
       <div className={`composer-box${blocked ? " blocked" : ""}`}>

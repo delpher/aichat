@@ -60,7 +60,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("App", () => {
   it("rejects a bad token, then logs in as a person and shows live messages", async () => {
     render(<App />);
-    const input = await screen.findByPlaceholderText("особистий або адмін-токен");
+    const input = await screen.findByPlaceholderText("ваш особистий токен");
     await userEvent.type(input, "bad-token");
     await userEvent.click(screen.getByRole("button", { name: /Увійти/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Невірний токен.");
@@ -86,7 +86,7 @@ describe("App", () => {
     await waitFor(() => expect(document.querySelectorAll(".presence.on").length).toBe(2));
 
     await userEvent.click(screen.getByLabelText("Вийти"));
-    expect(await screen.findByPlaceholderText("особистий або адмін-токен")).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("ваш особистий токен")).toBeInTheDocument();
     expect(localStorage.getItem("aichat.token")).toBeNull();
   });
 });

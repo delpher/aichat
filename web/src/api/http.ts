@@ -56,8 +56,8 @@ export type Api = ReturnType<typeof makeApi>;
 /** Tries the token as an admin first, then as a person's own token. */
 export async function detectSession(token: string) {
   try {
-    const data = await request<{ me?: { name: string; root: boolean } } & Record<string, unknown>>("/admin/api/overview", token);
-    return { mode: "admin" as const, admin: data.me ?? { name: "owner", root: true }, data };
+    const data = await request<{ me: { name: string } } & Record<string, unknown>>("/admin/api/overview", token);
+    return { mode: "admin" as const, admin: { name: data.me.name }, data };
   } catch (err) {
     if (!(err instanceof HttpError) || (err.status !== 401 && err.status !== 403)) throw err;
   }

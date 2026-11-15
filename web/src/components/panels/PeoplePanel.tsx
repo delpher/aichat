@@ -21,7 +21,8 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
   const [status, setStatus] = useState<StatusValue>(null);
   const [setup, setSetup] = useState<{ title: string; setup: Setup; fresh: boolean } | null>(null);
   const [form, setForm] = useState({ name: "", kind: "human", custom: "bot", webhook: "", description: "", rooms: "" });
-  const me = session.mode === "admin" && !session.admin.root ? session.admin.name : null;
+  const me = session.mode === "admin" ? session.admin.name : null;
+  const adminCount = list.filter((a) => a.admin).length;
 
   const load = useCallback(async () => {
     try {
@@ -253,7 +254,13 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                   <div className="person-actions">
                     {a.kind === "human" &&
                       (a.admin ? (
-                        <button type="button" className="btn sm ghost" disabled={locked} onClick={() => setConfirm({ name: a.name, action: "revoke" })}>
+                        <button
+                          type="button"
+                          className="btn sm ghost"
+                          disabled={locked || adminCount <= 1}
+                          title={adminCount <= 1 ? "Це єдиний адмін: спершу зробіть адміном когось іще" : undefined}
+                          onClick={() => setConfirm({ name: a.name, action: "revoke" })}
+                        >
                           <ShieldOff size={14} /> Зняти адміна
                         </button>
                       ) : (
@@ -270,7 +277,7 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                     <button
                       type="button"
                       className="btn sm ghost danger-text"
-                      disabled={locked}
+                      disabled={locked || (!!a.admin && adminCount <= 1)}
                       onClick={() => setConfirm({ name: a.name, action: "delete" })}
                       title={`Видалити ${a.name}`}
                       aria-label={`Видалити ${a.name}`}

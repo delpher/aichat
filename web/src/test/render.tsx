@@ -5,7 +5,7 @@ import type { ChatMessage, Overview, Session } from "../api/types";
 import { ChatContext, type ChatContextValue } from "../context";
 
 export const userSession: Session = { mode: "user", token: "t", me: { name: "olena", kind: "human" } };
-export const adminSession: Session = { mode: "admin", token: "t", admin: { name: "alexey", root: false } };
+export const adminSession: Session = { mode: "admin", token: "t", admin: { name: "alexey" } };
 
 export const overview: Overview = {
   agents: [
@@ -41,8 +41,6 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     view: { kind: "room", room: "lobby" },
     go: vi.fn(),
     sender: "olena",
-    setSender: vi.fn(),
-    humans: ["alexey", "olena"],
     subscribe: () => () => {},
     addLive: vi.fn(),
     toast: vi.fn(),

@@ -11,6 +11,13 @@ if (!existsSync(path)) {
   process.exit(1);
 }
 const config = new ConfigFile(path);
+if (config.get().adminToken)
+  console.error(
+    "[broker] adminToken in the config is no longer used and is ignored: admins are people with \"admin\": true " +
+      "(npm run admin -- <name>). You can delete it from the file.",
+  );
+if (!config.get().agents.some((a) => a.admin && a.kind === "human"))
+  console.error("[broker] nobody has admin rights yet: run `npm run add-agent -- <name> human --admin` to create the first admin");
 /** Environment overrides on top of the config file (used by the Docker image to listen on all interfaces). */
 const withEnv = (c: BrokerConfig): BrokerConfig => ({
   ...c,

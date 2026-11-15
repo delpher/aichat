@@ -149,9 +149,10 @@ describe("Composer", () => {
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
-  it("admins write as the chosen person and upload as them", async () => {
+  it("admins write as themselves, with no sender picker", async () => {
     const api = fakeApi({ send: vi.fn(async () => ({ message: msg({ id: 11 }) })) });
     renderWithChat(<Composer {...props} />, { api, session: adminSession, sender: "alexey" });
+    expect(screen.queryByLabelText("Від")).toBeNull();
     await userEvent.upload(screen.getByTestId("file-input"), new File(["d"], "a.png", { type: "image/png" }));
     await userEvent.type(screen.getByLabelText("Повідомлення"), "look{Enter}");
     await waitFor(() =>
@@ -168,6 +169,14 @@ describe("Composer", () => {
     await waitFor(() => expect(api.send).toHaveBeenCalledWith("POST", "/api/messages", { room: "lobby", text: "a", reply_to: 4 }));
     renderWithChat(<Composer {...props} view={{ kind: "dm", a: "claude", b: "olena" }} />, { session: adminSession, sender: "alexey" });
     expect(screen.getAllByLabelText("Повідомлення")[1]).toBeDisabled();
+  });
+
+  it("admins pick the recipient in the all-messages view", async () => {
+    const api = fakeApi({ send: vi.fn(async () => ({})) });
+    renderWithChat(<Composer {...props} view={{ kind: "all" }} />, { api, session: adminSession, sender: "alexey" });
+    await userEvent.selectOptions(screen.getByLabelText("Кому"), "@claude");
+    await userEvent.type(screen.getByLabelText("Повідомлення"), "hi{Enter}");
+    await waitFor(() => expect(api.send).toHaveBeenCalledWith("POST", "/admin/api/messages", { as: "alexey", to: "claude", text: "hi" }));
   });
 
   it("refuses more than 10 files", async () => {
@@ -206,7 +215,7 @@ describe("Login", () => {
   it("submits the token and shows errors", async () => {
     const onLogin = vi.fn(async () => {});
     const { rerender } = render(<Login onLogin={onLogin} error="" />);
-    await userEvent.type(screen.getByPlaceholderText("особистий або адмін-токен"), "  secret-token  ");
+    await userEvent.type(screen.getByPlaceholderText("ваш особистий токен"), "  secret-token  ");
     await userEvent.click(screen.getByRole("button", { name: /Увійти/ }));
     expect(onLogin).toHaveBeenCalledWith("secret-token", true);
     rerender(<Login onLogin={onLogin} error="Невірний токен." />);

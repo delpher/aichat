@@ -27,7 +27,7 @@ export interface BrokerConfig {
   maxTextLength: number;
   /** Largest file one upload may be, in megabytes. */
   maxFileSizeMB: number;
-  /** Bearer token for the web UI and /admin/api: sees every message, may post as `human` agents. */
+  /** No longer used: admins are people with `admin: true`. Ignored (with a warning) if still present. */
   adminToken?: string;
   /** Broker address as agents on other machines see it (http://host:port); used in setup instructions. */
   publicUrl?: string;
@@ -128,10 +128,6 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     tokens.add(a.token);
     a.kind ??= "agent";
   }
-  if (cfg.adminToken != null) {
-    if (cfg.adminToken.length < 16) throw new Error("adminToken must be at least 16 characters");
-    if (tokens.has(cfg.adminToken)) throw new Error("adminToken is shared with an agent");
-  }
   return cfg;
 }
 
@@ -187,12 +183,19 @@ export function addAgent(path: string, agent: Omit<AgentConfig, "token">): Agent
   return full;
 }
 
-/** Returns the admin token from the config file, creating one if it is missing (or if `rotate`). */
-export function ensureAdminToken(path: string, rotate = false): { token: string; created: boolean } {
-  const raw: Partial<BrokerConfig> = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { ...DEFAULTS, agents: [] };
-  if (raw.adminToken && !rotate) return { token: raw.adminToken, created: false };
-  raw.adminToken = newToken();
+/**
+ * Makes an existing person an admin (or takes the rights away), optionally with a new token.
+ * Used on the broker's machine to create the first admin or to get back in.
+ */
+export function setAdmin(path: string, name: string, opts: { admin?: boolean; newToken?: boolean } = {}): AgentConfig {
+  const raw: Partial<BrokerConfig> = JSON.parse(readFileSync(path, "utf8"));
+  const a = raw.agents?.find((x) => x.name === name);
+  if (!a) throw new Error(`no agent ${name} in ${path}; add the person with: npm run add-agent -- ${name} human --admin`);
+  if (a.kind !== "human") throw new Error(`only agents of kind "human" can be admins; ${name} is "${a.kind}"`);
+  if (opts.admin === false) delete a.admin;
+  else a.admin = true;
+  if (opts.newToken) a.token = newToken();
   validate(structuredClone(raw));
   writeFileSync(path, JSON.stringify(raw, null, 2) + "\n");
-  return { token: raw.adminToken, created: true };
+  return a;
 }

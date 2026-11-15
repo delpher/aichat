@@ -26,7 +26,6 @@ export const storage = {
 export const KEYS = {
   token: "aichat.token",
   oldToken: "aichat.adminToken", // pre-multi-user key, read once for migration
-  as: "aichat.as",
   projectDir: "aichat.projectDir",
   theme: "aichat.theme",
 };

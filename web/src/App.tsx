@@ -186,21 +186,8 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     [session, overview],
   );
 
-  // ---- who we write as ----
-  const humans = useMemo(() => overview.agents.filter((a) => a.kind === "human").map((a) => a.name).sort(), [overview.agents]);
-  const [chosen, setChosen] = useState<string | null>(() => storage.get(KEYS.as));
-  const sender =
-    session.mode === "user"
-      ? session.me.name
-      : chosen && humans.includes(chosen)
-        ? chosen
-        : !session.admin.root && humans.includes(session.admin.name)
-          ? session.admin.name
-          : (humans[0] ?? null);
-  const setSender = useCallback((n: string) => {
-    storage.set(KEYS.as, n);
-    setChosen(n);
-  }, []);
+  // ---- everyone writes as themselves ----
+  const sender = session.mode === "user" ? session.me.name : session.admin.name;
 
   // ---- live messages ----
   const addLive = useCallback(
@@ -295,8 +282,6 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     view,
     go,
     sender,
-    setSender,
-    humans,
     subscribe,
     addLive,
     toast,

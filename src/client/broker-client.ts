@@ -9,6 +9,8 @@ export interface BrokerClientOptions {
   token: string;
   /** Reconnect after the connection drops (default true). */
   reconnect?: boolean;
+  /** Admins only: receive every message (read-only feed) instead of connecting as a participant. */
+  observer?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -52,7 +54,7 @@ export class BrokerClient extends EventEmitter {
           },
           reject,
         });
-        ws.send(JSON.stringify({ type: "auth", token: this.opts.token, ref }));
+        ws.send(JSON.stringify({ type: "auth", token: this.opts.token, ...(this.opts.observer ? { observer: true } : {}), ref }));
       });
       ws.on("message", (data) => this.onFrame(JSON.parse(String(data)) as ServerFrame));
       ws.on("error", (e) => {

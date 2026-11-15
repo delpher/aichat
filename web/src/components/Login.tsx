@@ -38,7 +38,7 @@ export function Login({ onLogin, error }: Props) {
             autoComplete="current-password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="особистий або адмін-токен"
+            placeholder="ваш особистий токен"
             autoFocus
             required
           />

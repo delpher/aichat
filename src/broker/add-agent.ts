@@ -11,22 +11,30 @@ const { values, positionals } = parseArgs({
     description: { type: "string", short: "d" },
     webhook: { type: "string" },
     room: { type: "string", multiple: true, short: "r" },
+    admin: { type: "boolean", default: false },
   },
 });
 const [name, kind = "agent"] = positionals;
 if (!name) {
-  console.error("usage: npm run add-agent -- <name> [kind] [-d description] [-r room]... [--webhook URL] [--config agents.json]");
+  console.error("usage: npm run add-agent -- <name> [kind] [-d description] [-r room]... [--webhook URL] [--admin] [--config agents.json]");
   process.exit(1);
 }
 const path = resolve(values.config!);
-const a = addAgent(path, {
-  name,
-  kind,
-  ...(values.description ? { description: values.description } : {}),
-  ...(values.webhook ? { webhook: values.webhook } : {}),
-  ...(values.room?.length ? { rooms: values.room } : {}),
-});
-console.log(`Added agent "${a.name}" (${a.kind}) to ${path}`);
+let a: ReturnType<typeof addAgent>;
+try {
+  a = addAgent(path, {
+    name,
+    kind,
+    ...(values.description ? { description: values.description } : {}),
+    ...(values.webhook ? { webhook: values.webhook } : {}),
+    ...(values.room?.length ? { rooms: values.room } : {}),
+    ...(values.admin ? { admin: true } : {}),
+  });
+} catch (e) {
+  console.error((e as Error).message);
+  process.exit(1);
+}
+console.log(`Added agent "${a.name}" (${a.kind})${a.admin ? " as an admin" : ""} to ${path}`);
 console.log(`Token: ${a.token}`);
 console.log("The broker picks up the change without a restart.");
 

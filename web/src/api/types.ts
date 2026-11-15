@@ -56,7 +56,7 @@ export interface Setup {
   steps: SetupStep[];
 }
 
-/** Who is logged in. Admin: the root token ({root: true}) or a person marked admin. User: a person's own token. */
+/** Who is logged in, always a person by their own token: an admin (sees everything) or a participant. */
 export type Session =
-  | { mode: "admin"; token: string; admin: { name: string; root: boolean } }
+  | { mode: "admin"; token: string; admin: { name: string } }
   | { mode: "user"; token: string; me: { name: string; kind: string } };

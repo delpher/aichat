@@ -10,12 +10,14 @@ import { MessageList } from "./MessageList";
 type ChatViewKind = Extract<View, { kind: "all" | "room" | "dm" }>;
 
 export function ChatView({ view }: { view: ChatViewKind }) {
-  const { session, humans } = useChat();
+  const { session, view: current } = useChat();
   const { messages, hasOlder, loading, loadOlder, olderLoads } = useMessages(view);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [dragging, setDragging] = useState(false);
   const [dropped, setDropped] = useState<File[]>([]);
-  const canWrite = session.mode === "user" || humans.length > 0;
+  // admins see other people's DMs but cannot write there
+  const canWrite =
+    session.mode === "user" || current.kind !== "dm" || current.a === session.admin.name || current.b === session.admin.name;
 
   const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
   return (
