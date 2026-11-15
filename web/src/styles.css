@@ -2346,10 +2346,8 @@ span.msg-where {
     opacity: 0.7;
   }
 }
-.msg > .delivered {
-  position: absolute;
-  right: 14px;
-  bottom: 4px;
+.msg-tools > .delivered {
   display: inline-flex;
+  margin-right: 4px;
   color: var(--ok);
 }
