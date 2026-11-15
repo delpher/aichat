@@ -101,11 +101,13 @@ export function GamePage({ id }: { id: number }) {
 
   const drawOfferedToMe = !!game.draw_offer && game.draw_offer !== sender && mySeat !== null;
   const per = Math.max(1, game.players.length);
-  const rounds: Array<{ n: number; moves: Array<{ text: string; ply: number }> }> = [];
-  game.moves.forEach((text, i) => {
-    if (i % per === 0) rounds.push({ n: i / per + 1, moves: [] });
-    rounds[rounds.length - 1].moves.push({ text, ply: i + 1 });
-  });
+  const rows: Array<Array<{ text: string; ply: number }>> = m?.moveRows?.(game.moves) ?? [];
+  if (!m?.moveRows)
+    game.moves.forEach((text, i) => {
+      if (i % per === 0) rows.push([]);
+      rows[rows.length - 1].push({ text, ply: i + 1 });
+    });
+  const rounds = rows.map((moves, i) => ({ n: i + 1, moves }));
   const freeSeat = game.players.findIndex((p) => !p);
 
   return (

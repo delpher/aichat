@@ -2351,3 +2351,207 @@ span.msg-where {
   margin-right: 4px;
   color: var(--ok);
 }
+
+/* Long nardy board: two rows of 12 points split by a bar, dice and borne-off counts in the middle. */
+.nd-board {
+  --nd-felt: #2f5d46;
+  --nd-pt-a: #e7d3ae;
+  --nd-pt-b: #9a5a3a;
+  --nd-bar: #5b3a26;
+  display: flex;
+  flex-direction: column;
+  background: var(--nd-felt);
+  padding: 6px;
+  aspect-ratio: 1 / 0.92;
+  width: 100%;
+}
+.nd-row {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr) 10px repeat(6, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.nd-bar {
+  background: var(--nd-bar);
+  border-radius: 3px;
+}
+.nd-point {
+  position: relative;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: none;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  cursor: default;
+}
+.nd-point:disabled {
+  opacity: 1;
+}
+.nd-point::before {
+  content: "";
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  height: 88%;
+  background: var(--nd-pt-a);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+.nd-point.odd::before {
+  background: var(--nd-pt-b);
+}
+.nd-point.down::before {
+  top: 0;
+}
+.nd-point.up {
+  flex-direction: column-reverse;
+}
+.nd-point.up::before {
+  bottom: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.nd-point.last::before {
+  filter: brightness(1.25) saturate(1.3);
+}
+.nd-stack {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+}
+.nd-point.up .nd-stack {
+  flex-direction: column-reverse;
+}
+.nd-stack .piece {
+  width: min(86%, 30px);
+  height: auto;
+  aspect-ratio: 1;
+  flex: none;
+  border-width: 1.5px;
+}
+@media (max-width: 600px) {
+  /* Stacks overlap on phones so five checkers and the point number fit the row. */
+  .nd-point.down .nd-stack .piece + .piece {
+    margin-top: -30%;
+  }
+  .nd-point.up .nd-stack .piece + .piece {
+    margin-bottom: -30%;
+  }
+  .nd-die {
+    width: 24px;
+    height: 24px;
+  }
+}
+.nd-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 8px;
+  padding: 0 5px;
+  margin: 2px 0;
+}
+.nd-num {
+  position: relative;
+  font-size: 10px;
+  line-height: 14px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.nd-point.movable,
+.nd-point.target {
+  cursor: pointer;
+}
+.nd-point.movable .piece.outer {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.nd-point.picked .piece.outer {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+.nd-point.target::after {
+  content: "";
+  position: absolute;
+  left: 30%;
+  right: 30%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+}
+.nd-point.target.down::after {
+  bottom: 18%;
+}
+.nd-point.target.up::after {
+  top: 18%;
+}
+.nd-point:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.nd-mid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  min-height: 44px;
+  color: #fff;
+}
+.nd-off {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.nd-off:last-child {
+  margin-left: auto;
+}
+.nd-dice {
+  display: inline-flex;
+  gap: 6px;
+  margin: 0 auto;
+}
+.nd-die {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #fbf8f2;
+  color: #1c1917;
+  font-weight: 750;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
+}
+.nd-die.used {
+  opacity: 0.35;
+}
+.tile-nardy {
+  --pc-w: #fbf8f2;
+  --pc-w-edge: #c9bfae;
+  --pc-b: #2a2420;
+  --pc-b-edge: #0d0b0a;
+  display: grid;
+  grid-template-columns: repeat(6, 22px);
+  height: 68px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #2f5d46;
+  box-shadow: var(--shadow);
+}
+.tile-nardy > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  background: #e7d3ae;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  padding-top: 2px;
+}
+.tile-nardy > .odd {
+  background: #9a5a3a;
+}
