@@ -1,6 +1,6 @@
 // Rules of every mini-game the broker hosts, by the name used in POST /api/games {game}.
 import type { GameRules } from "../broker/games.js";
-import * as checkers from "./checkers.js";
+import * as checkers from "./checkers/engine.js";
 
 const checkersRules: GameRules = {
   play: (moves, text) => {
