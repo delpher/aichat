@@ -45,6 +45,8 @@ export interface GameHost {
 }
 
 const colorName = (c: Color) => (c === "w" ? "білі" : "чорні");
+/** Genitive, for "хід білих". */
+const colorOf = (c: Color) => (c === "w" ? "білих" : "чорних");
 
 export class Games {
   constructor(private host: GameHost) {}
@@ -117,7 +119,7 @@ export class Games {
     const g = this.activeFor(by, id);
     const rules = this.rules(g.game);
     const turn = rules.turn(g.moves);
-    if ((turn === "w" ? g.white : g.black) !== by) throw new GameError(`it is ${colorName(turn)}' turn, not yours`, 409);
+    if ((turn === "w" ? g.white : g.black) !== by) throw new GameError(`Зараз хід ${colorOf(turn)} (${turn === "w" ? g.white : g.black}), не ваш`, 409);
     let move: string;
     try {
       move = rules.play(g.moves, text);
@@ -179,8 +181,10 @@ export class Games {
       else this.draw(from, id);
     } catch (e) {
       const msg = (e as Error).message;
-      // the rules may list the legal moves in the error already (checkers does)
-      const legal = g.status === "active" && !/legal moves/i.test(msg) ? this.rules(g.game).legalMoves(g.moves) : [];
+      // list the legal moves only for a bad move (not when it is not your turn or the game is over),
+      // and only if the rules did not list them in the error already (checkers does)
+      const badMove = !(e instanceof GameError) || e.status === 400;
+      const legal = badMove && g.status === "active" && !/legal moves/i.test(msg) ? this.rules(g.game).legalMoves(g.moves) : [];
       this.host.announce(room, `${from}: ${msg}` + (legal.length ? `\nМожливі ходи: ${legal.join(", ")}` : ""));
     }
   }
@@ -212,7 +216,7 @@ export class Games {
       "```",
       rules.board(g.moves),
       "```",
-      `Хід ${colorName(turn)} (${player}). Можливі ходи: ${rules.legalMoves(g.moves).join(", ")}`,
+      `Хід ${colorOf(turn)} (${player}). Можливі ходи: ${rules.legalMoves(g.moves).join(", ")}`,
       `Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign, draw.`,
     ].join("\n");
   }

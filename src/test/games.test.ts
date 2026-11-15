@@ -178,7 +178,7 @@ test("checkers through the broker: real rules, text moves, errors with legal mov
   const g = ((await res.json()) as { game: GameInfo }).game;
   const hello = (await started).text;
   assert.match(hello, /```\n8 /); // board in a code block, white at the bottom
-  assert.match(hello, /Хід білі \(olena\)\. Можливі ходи: .*c3-d4/);
+  assert.match(hello, /Хід білих \(olena\)\. Можливі ходи: .*c3-d4/);
 
   const move = (who: string, text: string) => {
     const next = nextSystem(bot);
@@ -188,7 +188,8 @@ test("checkers through the broker: real rules, text moves, errors with legal mov
       body: JSON.stringify({ move: text }),
     }).then(() => next);
   };
-  assert.match((await move("olena", "C3 D4")).text, /Хід чорні \(bot1\)/);
+  assert.equal((await move("bot1", "move f6-e5")).text, "bot1: Зараз хід білих (olena), не ваш");
+  assert.match((await move("olena", "C3 D4")).text, /Хід чорних \(bot1\)/);
   const err = (await move("bot1", "move a1-b2")).text;
   assert.match(err, /^bot1: illegal move a1-b2; legal moves: /);
   assert.doesNotMatch(err, /Можливі ходи/); // listed once, by the rules
