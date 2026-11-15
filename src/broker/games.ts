@@ -1,26 +1,14 @@
-// Mini-games over the broker: games are stored, every move goes through the rules, and each game has
-// a chat room `game-<id>` where the broker (as the system sender "aichat") posts the board and whose
-// players may also move by plain text: `move c3-d4`, `resign`, `draw`.
-import type { GameInfo } from "../protocol.js";
+// The broker's game service, for any game in src/games/: games are stored, every move goes through the
+// game's rules, and each game has a chat room `game-<id>` where the broker (as the system sender "aichat")
+// posts the board and whose players may also play by plain text: `move <move>`, `resign`, `draw`.
+// Nothing here knows about a particular game.
+import type { GameInfo, GameResult, GameType } from "../protocol.js";
+import type { GameDefinition, GameOutcome } from "../games/game.js";
 import type { GameRecord, Store } from "./store.js";
 
 export { SYSTEM_SENDER } from "../protocol.js";
 export const GAME_ROOM_RE = /^game-(\d+)$/;
 export const gameRoom = (id: number) => `game-${id}`;
-
-export type Color = "w" | "b";
-export type GameResult = NonNullable<GameInfo["result"]>;
-
-/** What the broker needs from a game's rules; the state is always rebuilt from the list of moves. */
-export interface GameRules {
-  /** Checks `text` as the next move; returns it in canonical notation or throws with a readable reason. */
-  play(moves: string[], text: string): string;
-  turn(moves: string[]): Color;
-  legalMoves(moves: string[]): string[];
-  outcome(moves: string[]): GameResult | null;
-  /** Text board for agents. */
-  board(moves: string[]): string;
-}
 
 export class GameError extends Error {
   constructor(
@@ -33,7 +21,7 @@ export class GameError extends Error {
 
 export interface GameHost {
   store: Store;
-  rules: Record<string, GameRules>;
+  games: GameDefinition[];
   isAgent(name: string): boolean;
   isHuman(name: string): boolean;
   /** Puts an agent into a room (and tells its live connections). */
@@ -41,28 +29,28 @@ export interface GameHost {
   /** Posts a message from the system sender to a room. */
   announce(room: string, text: string): void;
   /** Tells every connected client the game changed. */
-  publish(game: GameRecord): void;
+  publish(game: GameInfo): void;
 }
 
-const colorName = (c: Color) => (c === "w" ? "білі" : "чорні");
-/** Why a game ended, worded as in the web (web/src/components/games/gameText.ts). */
-const REASON: Record<GameResult["reason"], string> = {
-  "no-moves": "немає ходів",
-  repetition: "триразове повторення",
-  quiet: "30 ходів без взять",
-  resign: "здача",
-  agreement: "за згодою",
-};
-/** Genitive, for "хід білих". */
-const colorOf = (c: Color) => (c === "w" ? "білих" : "чорних");
+const FREE = "вільне місце";
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export class Games {
-  constructor(private host: GameHost) {}
+  private defs: Map<string, GameDefinition>;
 
-  private rules(game: string): GameRules {
-    const r = this.host.rules[game];
-    if (!r) throw new GameError(`unknown game: ${game}`);
-    return r;
+  constructor(private host: GameHost) {
+    this.defs = new Map(host.games.map((d) => [d.id, d]));
+  }
+
+  /** The games the broker can host, for GET /api/games/types. */
+  types(): GameType[] {
+    return [...this.defs.values()].map(({ id, title, description, seats }) => ({ id, title, description, seats }));
+  }
+
+  private def(game: string): GameDefinition {
+    const d = this.defs.get(game);
+    if (!d) throw new GameError(`unknown game: ${game}; known: ${[...this.defs.keys()].join(", ")}`);
+    return d;
   }
 
   get(id: number): GameRecord {
@@ -71,103 +59,127 @@ export class Games {
     return g;
   }
 
-  list(status?: string): GameRecord[] {
-    if (status && !["open", "active", "finished"].includes(status)) throw new GameError("status must be open, active or finished");
-    return this.host.store.games({ status });
+  list(q: { status?: string; game?: string } = {}): GameRecord[] {
+    if (q.status && !["open", "active", "finished"].includes(q.status)) throw new GameError("status must be open, active or finished");
+    return this.host.store.games(q);
   }
 
-  create(by: string, args: { game?: unknown; white?: unknown; black?: unknown }): GameRecord {
-    const game = typeof args.game === "string" ? args.game : "checkers";
-    this.rules(game);
-    const seat = (v: unknown, color: string): string | null => {
-      if (v == null || v === "") return null;
-      if (typeof v !== "string" || !this.host.isAgent(v)) throw new GameError(`unknown ${color} player: ${String(v)}`, 404);
-      return v;
+  /** A stored game as the API and the WebSocket show it. */
+  info(g: GameRecord): GameInfo {
+    const def = this.defs.get(g.game);
+    return {
+      ...g,
+      room: gameRoom(g.id),
+      turn: g.status === "active" && def ? def.turn(g.moves) : null,
+      result: g.result ? { ...g.result, text: def ? this.resultText(def, g, g.result) : g.result.reason } : null,
     };
-    const white = seat(args.white, "white");
-    const black = seat(args.black, "black");
-    if (!white && !black) throw new GameError("set white or black (or both)");
-    if (white && white === black) throw new GameError("a player cannot play against themselves");
-    // An agent may open a game for itself; only people may set up games they do not play in.
-    if (white !== by && black !== by && !this.host.isHuman(by))
-      throw new GameError("agents may only create games they play in", 403);
-    const status = white && black ? "active" : "open";
-    const g = this.host.store.createGame({ game, white, black, created_by: by, moves: [], status, result: null, draw_offer: null });
+  }
+
+  /**
+   * `players`: who sits where, in seat order (null = free). Or `seat`: the creator sits there alone and
+   * the game waits for the others. People may set up games they do not play in; agents may not.
+   */
+  create(by: string, args: { game?: unknown; players?: unknown; seat?: unknown }): GameRecord {
+    if (typeof args.game !== "string") throw new GameError("set game (see GET /api/games/types)");
+    const def = this.def(args.game);
+    let players: (string | null)[];
+    if (args.players !== undefined) {
+      if (!Array.isArray(args.players) || args.players.length > def.seats.length)
+        throw new GameError(`players must be a list of up to ${def.seats.length} names (null for a free seat)`);
+      players = def.seats.map((_, i) => this.player((args.players as unknown[])[i]));
+    } else {
+      players = def.seats.map(() => null);
+      players[this.seatIndex(def, args.seat ?? def.seats[0].id)] = by;
+    }
+    const named = players.filter((p): p is string => !!p);
+    if (!named.length) throw new GameError("name at least one player");
+    if (new Set(named).size !== named.length) throw new GameError("a player cannot take two seats");
+    if (!named.includes(by) && !this.host.isHuman(by)) throw new GameError("agents may only create games they play in", 403);
+    const status = named.length === def.seats.length ? "active" : "open";
+    const g = this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
     const room = gameRoom(g.id);
-    for (const n of new Set([white, black, by].filter((x): x is string => !!x))) this.host.join(n, room);
-    if (status === "active") this.announceStart(g);
+    for (const n of new Set([...named, by])) this.host.join(n, room);
+    if (status === "active") this.announceStart(def, g);
     else
       this.host.announce(
         room,
-        `Партію #${g.id} (${game}) створив ${by}. ${white ? `Білими грає ${white}` : `Чорними грає ${black}`}; ` +
-          `чекаємо суперника: приєднатися можна через join_game(${g.id}) або на сайті.`,
+        `Партію #${g.id} (${def.title}) створив ${by}. ${this.seatsText(def, g)}. ` +
+          `Чекаємо гравців: приєднатися можна через join_game(${g.id}) або на сайті.`,
       );
-    this.host.publish(g);
+    this.publish(g);
     return g;
   }
 
-  join(by: string, id: number, color?: unknown): GameRecord {
+  /** Takes a free seat (the one named, or the first free one); when every seat is taken the game starts. */
+  join(by: string, id: number, seat?: unknown): GameRecord {
     const g = this.get(id);
+    const def = this.def(g.game);
     if (g.status !== "open") throw new GameError("the game has already started", 409);
-    if (g.white === by || g.black === by) throw new GameError("you are already in this game", 409);
-    const free: Color = g.white ? "b" : "w";
-    if (color != null && color !== free && color !== (free === "w" ? "white" : "black"))
-      throw new GameError(`only ${free === "w" ? "white" : "black"} is free`, 409);
-    if (free === "w") g.white = by;
-    else g.black = by;
-    g.status = "active";
+    if (g.players.includes(by)) throw new GameError("you are already in this game", 409);
+    const i = seat == null || seat === "" ? g.players.indexOf(null) : this.seatIndex(def, seat);
+    if (i < 0 || g.players[i] !== null) {
+      const free = def.seats.filter((_, j) => g.players[j] === null).map((s) => s.id);
+      throw new GameError(`that seat is taken; free: ${free.join(", ") || "none"}`, 409);
+    }
+    g.players[i] = by;
+    if (!g.players.includes(null)) g.status = "active";
     const saved = this.host.store.updateGame(g);
     this.host.join(by, gameRoom(id));
-    this.announceStart(saved);
-    this.host.publish(saved);
+    if (saved.status === "active") this.announceStart(def, saved);
+    else this.host.announce(gameRoom(id), `${by} сідає: ${def.seats[i].name}. ${this.seatsText(def, saved)}.`);
+    this.publish(saved);
     return saved;
   }
 
   move(by: string, id: number, text: string): GameRecord {
     const g = this.activeFor(by, id);
-    const rules = this.rules(g.game);
-    const turn = rules.turn(g.moves);
-    if ((turn === "w" ? g.white : g.black) !== by) throw new GameError(`Зараз хід ${colorOf(turn)} (${turn === "w" ? g.white : g.black}), не ваш`, 409);
+    const def = this.def(g.game);
+    const turn = def.turn(g.moves);
+    if (g.players[turn] !== by) throw new GameError(`Не ваш хід. ${this.turnLabel(def, turn)} (${g.players[turn]}).`, 409);
     let move: string;
     try {
-      move = rules.play(g.moves, text);
+      move = def.play(g.moves, text);
     } catch (e) {
       throw new GameError((e as Error).message);
     }
     g.moves = [...g.moves, move];
     g.draw_offer = null;
-    const result = rules.outcome(g.moves);
-    if (result) this.finish(g, result);
+    const outcome = def.outcome(g.moves);
+    if (outcome) this.finish(g, outcome);
     const saved = this.host.store.updateGame(g);
-    this.host.announce(gameRoom(id), result ? this.finalText(saved) : this.turnText(saved, `${by}: ${move}`));
-    this.host.publish(saved);
+    this.host.announce(gameRoom(id), outcome ? this.finalText(def, saved) : this.turnText(def, saved, `${by}: ${move}`));
+    this.publish(saved);
     return saved;
   }
 
+  /** With two seats the other player wins; with more, the game ends without a winner. */
   resign(by: string, id: number): GameRecord {
     const g = this.activeFor(by, id);
-    this.finish(g, { winner: g.white === by ? "b" : "w", reason: "resign" });
+    const def = this.def(g.game);
+    const me = g.players.indexOf(by);
+    this.finish(g, { winner: def.seats.length === 2 ? 1 - me : null, reason: "resign" });
     const saved = this.host.store.updateGame(g);
-    this.host.announce(gameRoom(id), `${by} здається.\n${this.finalText(saved)}`);
-    this.host.publish(saved);
+    this.host.announce(gameRoom(id), `${by} здається.\n${this.finalText(def, saved)}`);
+    this.publish(saved);
     return saved;
   }
 
-  /** Offers a draw, or accepts the opponent's offer. */
+  /** Offers a draw, or accepts another player's offer. */
   draw(by: string, id: number): GameRecord {
     const g = this.activeFor(by, id);
+    const def = this.def(g.game);
     if (g.draw_offer && g.draw_offer !== by) {
       this.finish(g, { winner: null, reason: "agreement" });
       const saved = this.host.store.updateGame(g);
-      this.host.announce(gameRoom(id), `${by} приймає нічию.\n${this.finalText(saved)}`);
-      this.host.publish(saved);
+      this.host.announce(gameRoom(id), `${by} приймає нічию.\n${this.finalText(def, saved)}`);
+      this.publish(saved);
       return saved;
     }
     g.draw_offer = by;
     const saved = this.host.store.updateGame(g);
-    const other = g.white === by ? g.black : g.white;
-    this.host.announce(gameRoom(id), `${by} пропонує нічию. ${other}, щоб погодитися, напишіть "draw"; щоб грати далі, просто ходіть.`);
-    this.host.publish(saved);
+    const others = g.players.filter((p) => p && p !== by).join(", ");
+    this.host.announce(gameRoom(id), `${by} пропонує нічию. ${others}, щоб погодитися, напишіть "draw"; щоб грати далі, просто ходіть.`);
+    this.publish(saved);
     return saved;
   }
 
@@ -182,7 +194,7 @@ export class Games {
     if (!cmd) return;
     const id = Number(m[1]);
     const g = this.host.store.game(id);
-    if (!g || (g.white !== from && g.black !== from)) return;
+    if (!g || !g.players.includes(from)) return;
     try {
       if (cmd[2]) this.move(from, id, cmd[2].trim());
       else if (cmd[3]) this.resign(from, id);
@@ -192,48 +204,80 @@ export class Games {
       // list the legal moves only for a bad move (not when it is not your turn or the game is over),
       // and only if the rules did not list them in the error already (checkers does)
       const badMove = !(e instanceof GameError) || e.status === 400;
-      const legal = badMove && g.status === "active" && !/legal moves/i.test(msg) ? this.rules(g.game).legalMoves(g.moves) : [];
+      const legal = badMove && g.status === "active" && !/legal moves/i.test(msg) ? this.def(g.game).legalMoves(g.moves) : [];
       this.host.announce(room, `${from}: ${msg}` + (legal.length ? `\nМожливі ходи: ${legal.join(", ")}` : ""));
     }
   }
 
+  private player(v: unknown): string | null {
+    if (v == null || v === "") return null;
+    if (typeof v !== "string" || !this.host.isAgent(v)) throw new GameError(`unknown player: ${String(v)}`, 404);
+    return v;
+  }
+
+  private seatIndex(def: GameDefinition, seat: unknown): number {
+    const i = def.seats.findIndex((s) => s.id === seat);
+    if (i < 0) throw new GameError(`unknown seat: ${String(seat)}; seats: ${def.seats.map((s) => s.id).join(", ")}`);
+    return i;
+  }
+
   private activeFor(by: string, id: number): GameRecord {
     const g = this.get(id);
-    if (g.white !== by && g.black !== by) throw new GameError("only the players can do this", 403);
+    if (!g.players.includes(by)) throw new GameError("only the players can do this", 403);
     if (g.status !== "active") throw new GameError(g.status === "open" ? "the game has not started yet" : "the game is over", 409);
     return g;
   }
 
-  private finish(g: GameRecord, result: GameResult) {
+  private finish(g: GameRecord, outcome: GameOutcome) {
     g.status = "finished";
-    g.result = result;
+    g.result = outcome;
     g.draw_offer = null;
   }
 
-  private announceStart(g: GameRecord) {
-    this.host.announce(gameRoom(g.id), this.turnText(g, `Партія #${g.id} почалася: білі ${g.white}, чорні ${g.black}.`));
+  private publish(g: GameRecord) {
+    this.host.publish(this.info(g));
+  }
+
+  /** "Хід білих" from the game, or "Хід: <seat name>". */
+  private turnLabel(def: GameDefinition, seat: number): string {
+    return def.turnLabel ? def.turnLabel(seat) : `Хід: ${def.seats[seat].name}`;
+  }
+
+  /** "білі — alice, чорні — вільне місце" */
+  private seatsText(def: GameDefinition, g: GameRecord): string {
+    return def.seats.map((s, i) => `${s.name} — ${g.players[i] ?? FREE}`).join(", ");
+  }
+
+  private announceStart(def: GameDefinition, g: GameRecord) {
+    this.host.announce(gameRoom(g.id), this.turnText(def, g, `Партія #${g.id} (${def.title}) почалася: ${this.seatsText(def, g)}.`));
   }
 
   /** Board plus whose turn it is and the legal moves, so an agent can answer with one message. */
-  private turnText(g: GameRecord, head: string): string {
-    const rules = this.rules(g.game);
-    const turn = rules.turn(g.moves);
-    const player = turn === "w" ? g.white : g.black;
+  private turnText(def: GameDefinition, g: GameRecord, head: string): string {
+    const turn = def.turn(g.moves);
+    const label = this.turnLabel(def, turn);
     return [
       head,
       "```",
-      rules.board(g.moves),
+      def.board(g.moves),
       "```",
-      `Хід ${colorOf(turn)} (${player}). Можливі ходи: ${rules.legalMoves(g.moves).join(", ")}`,
+      `${label} (${g.players[turn]}). Можливі ходи: ${def.legalMoves(g.moves).join(", ")}`,
       `Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign, draw.`,
     ].join("\n");
   }
 
-  private finalText(g: GameRecord): string {
-    const rules = this.rules(g.game);
-    const r = g.result!;
-    const who = r.winner ? `Перемогли ${colorName(r.winner)} (${r.winner === "w" ? g.white : g.black})` : "Нічия";
-    const why = r.reason === "no-moves" && r.winner ? `у ${colorOf(r.winner === "w" ? "b" : "w")} немає ходів` : REASON[r.reason];
-    return [`Партію #${g.id} завершено. ${who}: ${why}.`, "```", rules.board(g.moves), "```"].join("\n");
+  /** "Перемога: чорні (bob). У білих немає ходів." / "Нічия: за згодою." */
+  private resultText(def: GameDefinition, g: GameRecord, r: GameOutcome): GameResult["text"] {
+    const why =
+      r.reason === "resign" ? "суперник здався"
+      : r.reason === "agreement" ? "за згодою"
+      : def.reasonText ? def.reasonText(r)
+      : r.reason;
+    if (r.winner === null) return `Нічия: ${why}.`;
+    return `Перемога: ${def.seats[r.winner].name} (${g.players[r.winner] ?? FREE}). ${capitalize(why)}.`;
+  }
+
+  private finalText(def: GameDefinition, g: GameRecord): string {
+    return [`Партію #${g.id} завершено. ${this.resultText(def, g, g.result!)}`, "```", def.board(g.moves), "```"].join("\n");
   }
 }

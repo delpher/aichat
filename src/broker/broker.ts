@@ -16,9 +16,8 @@ import {
   type BrokerConfig,
 } from "./config.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
-import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom, type GameRules } from "./games.js";
-import { GAME_RULES } from "../games/index.js";
-import type { GameRecord } from "./store.js";
+import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
+import { GAMES, type GameDefinition } from "../games/index.js";
 import {
   INLINE_IMAGE_TYPES,
   MAX_ATTACHMENTS,
@@ -57,8 +56,8 @@ export interface BrokerOptions {
   webDir?: string;
   /** Folder with the bundled adapters. Defaults to `dist/bundle`. */
   bundleDir?: string;
-  /** Rules of the mini-games by name. Defaults to every game in src/games. */
-  gameRules?: Record<string, GameRules>;
+  /** The games the broker hosts. Defaults to every game in src/games. */
+  games?: GameDefinition[];
   /** Folder for uploaded files. Defaults to `files/` next to the database (a temp folder for `:memory:`). */
   filesDir?: string;
 }
@@ -155,7 +154,7 @@ export class Broker {
     this.store = opts.store ?? new Store(opts.config().db);
     this.games = new Games({
       store: this.store,
-      rules: opts.gameRules ?? GAME_RULES,
+      games: opts.games ?? GAMES,
       isAgent: (n) => this.cfg.agents.some((a) => a.name === n),
       isHuman: (n) => this.cfg.agents.some((a) => a.name === n && a.kind === "human"),
       join: (agent, room) => {
@@ -163,7 +162,7 @@ export class Broker {
         this.notifyRooms(agent);
       },
       announce: (room, text) => this.announce(room, text),
-      publish: (g) => this.broadcast({ type: "game", game: gameInfo(g) }),
+      publish: (game) => this.broadcast({ type: "game", game }),
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
     this.syncConfiguredRooms();
@@ -746,24 +745,28 @@ export class Broker {
   private async onGameRequest(req: IncomingMessage, url: URL, me: string, reply: (status: number, body: unknown) => void) {
     try {
       const route = `${req.method} ${url.pathname}`;
-      if (route === "GET /api/games")
-        return reply(200, { games: this.games.list(url.searchParams.get("status") || undefined).map(gameInfo) });
-      if (route === "POST /api/games") return reply(201, { game: gameInfo(this.games.create(me, await readJson(req))) });
+      const info = (g: Parameters<Games["info"]>[0]) => this.games.info(g);
+      if (route === "GET /api/games/types") return reply(200, { types: this.games.types() });
+      if (route === "GET /api/games") {
+        const q = { status: url.searchParams.get("status") || undefined, game: url.searchParams.get("game") || undefined };
+        return reply(200, { games: this.games.list(q).map(info) });
+      }
+      if (route === "POST /api/games") return reply(201, { game: info(this.games.create(me, await readJson(req))) });
       const m = url.pathname.match(/^\/api\/games\/(\d+)(?:\/(join|move|resign|draw))?$/);
       if (!m) return reply(404, { error: "not found" });
       const id = Number(m[1]);
-      if (req.method === "GET" && !m[2]) return reply(200, { game: gameInfo(this.games.get(id)) });
+      if (req.method === "GET" && !m[2]) return reply(200, { game: info(this.games.get(id)) });
       if (req.method !== "POST" || !m[2]) return reply(404, { error: "not found" });
       const b = m[2] === "join" || m[2] === "move" ? await readJson(req) : {};
       const g =
         m[2] === "join"
-          ? this.games.join(me, id, b.color)
+          ? this.games.join(me, id, b.seat)
           : m[2] === "move"
             ? this.games.move(me, id, typeof b.move === "string" ? b.move : "")
             : m[2] === "resign"
               ? this.games.resign(me, id)
               : this.games.draw(me, id);
-      return reply(200, { game: gameInfo(g) });
+      return reply(200, { game: info(g) });
     } catch (e) {
       if (e instanceof GameError) throw new BrokerError(e.message, e.status);
       throw e;
@@ -1149,11 +1152,6 @@ export class Broker {
     await Promise.all(this.webhookChains.values());
     this.store.close();
   }
-}
-
-/** A stored game as the API and the WebSocket show it. */
-function gameInfo(g: GameRecord): GameInfo {
-  return { ...g, room: gameRoom(g.id) };
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

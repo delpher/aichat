@@ -50,7 +50,12 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "send_message",
   ]);
   const games = await client.callTool({ name: "list_games", arguments: {} });
-  assert.equal((games.content as { text: string }[])[0].text, "no games");
+  assert.equal((games.content as { text: string }[])[0].text, "Games you can play: checkers (Шашки): seats w=білі, b=чорні\nno games yet");
+  // the agent sits where it asks; the seat names come from the game type
+  const created = await client.callTool({ name: "create_game", arguments: { game: "checkers", seat: "b" } });
+  assert.match((created.content as { text: string }[])[0].text, /^created #\d+ checkers \[open\] білі: \(free\), чорні: claude1, moves: 0 - room game-\d+$/);
+  const badSeat = await client.callTool({ name: "create_game", arguments: { seat: "x" } });
+  assert.match((badSeat.content as { text: string }[])[0].text, /unknown seat x; seats: w, b/);
   const joinBad = await client.callTool({ name: "join_game", arguments: { game_id: 99 } });
   assert.equal(joinBad.isError, true);
   assert.match((joinBad.content as { text: string }[])[0].text, /unknown game/);
