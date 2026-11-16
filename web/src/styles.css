@@ -2555,3 +2555,39 @@ span.msg-where {
 .tile-nardy > .odd {
   background: #9a5a3a;
 }
+
+/* Settings → Version */
+.update p {
+  margin: 0;
+}
+.update-new {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.update-new h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.update-notes {
+  max-height: 260px;
+  overflow-y: auto;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.update-settings summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.update-settings form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}

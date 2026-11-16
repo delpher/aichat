@@ -4,6 +4,7 @@ import { AuthError } from "../../api/http";
 import type { Settings } from "../../api/types";
 import { useChat } from "../../context";
 import { Status, type StatusValue } from "./Status";
+import { UpdateBox } from "./UpdateBox";
 
 type Limits = Partial<Record<keyof Settings, { min: number; max: number }>>;
 
@@ -189,6 +190,7 @@ export function SettingsPanel() {
         </div>
         <p className="muted small">Зміни записуються в agents.json і діють одразу, без перезапуску брокера.</p>
       </form>
+      <UpdateBox />
     </div>
   );
 }

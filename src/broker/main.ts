@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { Broker } from "./broker.js";
 import { ConfigFile, type BrokerConfig } from "./config.js";
 import { VERSION } from "../version.js";
+import { RESTART_EXIT_CODE } from "../updates/layout.js";
+import { Updater } from "./updater.js";
 
 const path = resolve(process.argv[2] ?? process.env.AICHAT_CONFIG ?? "agents.json");
 if (!existsSync(path)) {
@@ -26,17 +28,37 @@ const withEnv = (c: BrokerConfig): BrokerConfig => ({
   port: Number(process.env.AICHAT_PORT) || c.port,
   db: process.env.AICHAT_DB || c.db,
 });
-const broker = new Broker({
+// Set by the launcher (node dist/launcher.js): installed versions live there and the broker may update itself.
+const home = process.env.AICHAT_LAUNCHER ? process.env.AICHAT_HOME : undefined;
+let broker: Broker;
+const updater = new Updater({
+  config: () => config.get(),
+  home,
+  apiBase: process.env.AICHAT_GITHUB_API || undefined,
+  restart: async () => {
+    await broker.close();
+    process.exit(RESTART_EXIT_CODE);
+  },
+});
+broker = new Broker({
+  updater,
   config: () => withEnv(config.get()),
   editConfig: (fn) => withEnv(config.edit(fn)),
   // Where the bundled adapters already are when the broker runs from this checkout. Inside Docker the
   // broker cannot know a path on the host, so the instructions show a placeholder until projectDir is set.
   defaultProjectDir:
     process.env.AICHAT_PROJECT_DIR ??
-    (existsSync("/.dockerenv") ? "" : resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle")),
+    (existsSync("/.dockerenv")
+      ? ""
+      : // under the launcher the version folders come and go; the built-in copy's path stays the same
+        process.env.AICHAT_BUILTIN_DIR
+        ? resolve(process.env.AICHAT_BUILTIN_DIR, "dist", "bundle")
+        : resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle")),
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();
+updater.confirmStartup();
+updater.start();
 console.error(`[broker] AIChat ${VERSION} listening on http://${cfg.host}:${port} (WebSocket: ws://${cfg.host}:${port}/ws)`);
 console.error(`[broker] agents: ${cfg.agents.map((a) => `${a.name} (${a.kind})`).join(", ") || "none"}`);
 

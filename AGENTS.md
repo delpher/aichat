@@ -29,7 +29,9 @@
 - імена файлів у релізі: `aichat-<версія>.zip`, `aichat-<версія>.tar.gz`, `SHA256SUMS.txt`, `release.json`;
 - поля `release.json` (`schema`, `version`, `tag`, `prerelease`, `assets[].name/size/sha256`, `root`, `entry`). Несумісна зміна формату означає новий `schema`;
 - структура архіву: корінна папка `aichat/`, точка входу `dist/broker/main.js`, файл `VERSION`;
-- `GET /health` повертає `{"ok":true,"version":"<версія>"}` (`src/version.ts` читає `package.json`).
+- `GET /health` повертає `{"ok":true,"version":"<версія>"}` (`src/version.ts` читає `package.json`);
+- протокол запускача (`src/launcher.ts`, `src/updates/layout.ts`): папки `<AICHAT_HOME>/<версія>`, файли `current`, `pending.json`, `failed.json`, код виходу 75 («перезапусти мене»). Запускач живе в Docker-образі й оновлюється рідко, тому нові версії брокера мають працювати зі старим запускачем: протокол лише розширюй, нічого не прибирай.
 
 Нова runtime-залежність має бути чистим JS: архів один для всіх ОС, нативних модулів у ньому бути не може.
+Брокер, який стартує, мусить викликати `updater.confirmStartup()` після `listen()`: без цього запускач через 90 с вважатиме оновлення зламаним і відкотить його.
 Docker-образ публікується як `ghcr.io/delpher/aichat:<версія>` і `:latest`.

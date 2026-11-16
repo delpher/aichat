@@ -13,9 +13,11 @@ import {
   checkSettingsPatch,
   newToken,
   settingsOf,
+  checkUpdateSettings,
   type AgentConfig,
   type BrokerConfig,
 } from "./config.js";
+import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
@@ -56,6 +58,8 @@ export interface BrokerOptions {
    * settings and manage people. Without it those admin endpoints answer 403.
    */
   editConfig?: (fn: (raw: Partial<BrokerConfig>) => void) => BrokerConfig;
+  /** Checks and installs new releases. Defaults to one that can only check (no launcher, no restart). */
+  updater?: Updater;
   /** AIChat folder used in setup instructions when the `projectDir` setting is empty. */
   defaultProjectDir?: string;
   /** Folder with the built web UI (index.html, assets/). Defaults to `dist/web`. */
@@ -140,6 +144,7 @@ function safeEqual(a: string, b: string) {
  */
 export class Broker {
   readonly store: Store;
+  readonly updater: Updater;
   readonly games: Games;
   private sockets = new Map<string, Set<WebSocket>>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
@@ -166,6 +171,7 @@ export class Broker {
 
   constructor(private opts: BrokerOptions) {
     this.store = opts.store ?? new Store(opts.config().db);
+    this.updater = opts.updater ?? new Updater({ config: () => this.cfg });
     this.games = new Games({
       store: this.store,
       games: opts.games ?? GAMES,
@@ -929,6 +935,50 @@ export class Broker {
         throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
       }
     };
+    // ---- updates ----
+    if (url.pathname.startsWith("/admin/api/update")) {
+      try {
+        if (route === "GET /admin/api/update") return reply(200, this.updater.status());
+        if (route === "POST /admin/api/update/check") {
+          return reply(200, await this.updater.check());
+        }
+        if (route === "POST /admin/api/update/install") {
+          const b = await readJson(req);
+          if (typeof b.version !== "string") throw new BrokerError("version is required");
+          this.log(`${me.name} installs update ${b.version}`);
+          const r = await this.updater.install(b.version);
+          return reply(202, r);
+        }
+        if (route === "DELETE /admin/api/update/failed") {
+          this.updater.dismissFailed();
+          return reply(200, this.updater.status());
+        }
+        if (route === "PATCH /admin/api/update/settings") {
+          let patch: ReturnType<typeof checkUpdateSettings>;
+          try {
+            patch = checkUpdateSettings(await readJson(req));
+          } catch (e) {
+            throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
+          }
+          edit((raw) => {
+            const u = { ...(raw.updates ?? {}) } as Record<string, unknown>;
+            for (const [k, v] of Object.entries(patch)) {
+              if (v === "" || v === false) delete u[k];
+              else u[k] = v;
+            }
+            if (Object.keys(u).length) raw.updates = u;
+            else delete raw.updates;
+          });
+          this.log(`update settings changed: ${Object.keys(patch).join(", ")}`);
+          this.updater.reset();
+          return reply(200, this.updater.status());
+        }
+      } catch (e) {
+        if (e instanceof UpdateError) throw new BrokerError(e.message, e.status);
+        throw e;
+      }
+      return reply(404, { error: "not found" });
+    }
     if (route === "GET /admin/api/settings")
       return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.editConfig });
     if (route === "PATCH /admin/api/settings") {
@@ -1220,6 +1270,7 @@ export class Broker {
     clearInterval(this.retryTimer);
     clearInterval(this.cleanupTimer);
     clearInterval(this.configTimer);
+    this.updater.stop();
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
     for (const ws of this.observers.keys()) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));
