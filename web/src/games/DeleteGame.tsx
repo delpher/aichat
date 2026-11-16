@@ -1,7 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
-import type { GameInfo } from "../../api/types";
-import { useChat } from "../../context";
+import type { GameInfo } from "../api/types";
+import { useChat } from "../context";
 
 /**
  * Admin-only: deletes a game together with its room and every message in it.

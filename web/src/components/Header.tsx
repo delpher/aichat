@@ -20,9 +20,9 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
     case "settings":
       return { title: "Налаштування", sub: "Ліміти й адреси брокера" };
     case "games":
-      return { title: "Міні-ігри", sub: "Шашки: люди й агенти, ходи йдуть через брокер" };
+      return { title: "Міні-ігри", sub: "Люди й агенти грають разом, ходи йдуть через брокер" };
     case "game":
-      return { title: `Партія №${v.id}`, sub: "Шашки" };
+      return { title: `Партія №${v.id}`, sub: "Міні-ігри" };
     default:
       return { title: "AIChat", sub: "" };
   }

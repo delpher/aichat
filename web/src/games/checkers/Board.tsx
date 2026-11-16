@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { colorOf, isDark, isKing, legalMoves, squareName, type CheckersState, type Color, type Move } from "../../../../src/games/checkers";
+import { colorOf, isDark, isKing, legalMoves, squareName, type CheckersState, type Color, type Move } from "./engine";
 
 interface Props {
   state: CheckersState;

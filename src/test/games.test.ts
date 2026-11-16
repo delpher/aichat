@@ -1,42 +1,51 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { GameRules } from "../broker/games.js";
-import type { ChatMessage, GameInfo } from "../protocol.js";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { GameDefinition } from "../games/game.js";
+import { Store } from "../broker/store.js";
+import type { AgentConfig } from "../broker/config.js";
+import type { ChatMessage, GameInfo, GameType } from "../protocol.js";
 import { connect, nextMessage, startBroker, tok } from "./helpers.js";
 
-/** A tiny game for testing the broker side: take 1-3 from a pile of 7; whoever takes the last one wins. */
-const nim: GameRules = {
+/**
+ * A tiny game that is not checkers, to show the broker's game service knows nothing about a particular game:
+ * take 1-3 from a pile of 7; whoever takes the last one wins.
+ */
+const left = (moves: string[]) => 7 - moves.reduce((s, m) => s + Number(m), 0);
+const nim: GameDefinition = {
+  id: "nim",
+  title: "Нім",
+  description: "Беріть 1-3 з купки; хто візьме останній, той виграв.",
+  seats: [
+    { id: "a", name: "перший" },
+    { id: "b", name: "другий" },
+  ],
   play(moves, text) {
     const n = Number(text);
-    const left = 7 - moves.reduce((s, m) => s + Number(m), 0);
-    if (![1, 2, 3].includes(n) || n > left) throw new Error(`illegal move: ${text}`);
+    if (![1, 2, 3].includes(n) || n > left(moves)) throw new Error(`illegal move: ${text}`);
     return String(n);
   },
-  turn: (moves) => (moves.length % 2 ? "b" : "w"),
-  legalMoves(moves) {
-    const left = 7 - moves.reduce((s, m) => s + Number(m), 0);
-    return ["1", "2", "3"].filter((m) => Number(m) <= left);
-  },
-  outcome(moves) {
-    const left = 7 - moves.reduce((s, m) => s + Number(m), 0);
-    return left === 0 ? { winner: moves.length % 2 ? "w" : "b", reason: "no-moves" } : null;
-  },
-  board: (moves) => `left: ${7 - moves.reduce((s, m) => s + Number(m), 0)}`,
+  turn: (moves) => moves.length % 2,
+  legalMoves: (moves) => ["1", "2", "3"].filter((m) => Number(m) <= left(moves)),
+  outcome: (moves) => (left(moves) === 0 ? { winner: (moves.length - 1) % 2, reason: "last-take" } : null),
+  board: (moves) => `left: ${left(moves)}`,
+  reasonText: () => "узято останній",
 };
 
-async function setup() {
-  const b = await startBroker(
-    [{ name: "olena", kind: "human" }, { name: "petro", kind: "human" }, { name: "bot1", kind: "claude" }, { name: "bot2", kind: "claude" }, { name: "watcher" }],
-    {},
-    { gameRules: { nim } },
-  );
+type Body = { game: GameInfo; games: GameInfo[]; types: GameType[]; error: string; messages: ChatMessage[] };
+
+async function setup(agents: Partial<AgentConfig>[] = [{ name: "olena", kind: "human" }, { name: "petro", kind: "human" }, { name: "bot1", kind: "claude" }, { name: "bot2", kind: "claude" }, { name: "watcher" }]) {
+  const b = await startBroker(agents, {}, { games: [nim] });
   const call = async (who: string, method: string, path: string, body?: unknown) => {
     const r = await fetch(`${b.http}${path}`, {
       method,
       headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
-    return { status: r.status, body: (await r.json()) as { game: GameInfo; games: GameInfo[]; error: string } };
+    return { status: r.status, body: (await r.json()) as Body };
   };
   return { ...b, call };
 }
@@ -55,6 +64,21 @@ function nextSystem(c: Awaited<ReturnType<typeof connect>>, timeoutMs = 3000): P
   });
 }
 
+test("game types come from the game modules; games can be listed by type", async () => {
+  const { broker, call } = await setup();
+  const r = await call("watcher", "GET", "/api/games/types");
+  assert.deepEqual(r.body.types, [{ id: "nim", title: "Нім", description: nim.description, seats: nim.seats }]);
+  await call("olena", "POST", "/api/games", { game: "nim", seat: "a" });
+  assert.equal((await call("watcher", "GET", "/api/games?game=nim")).body.games.length, 1);
+  assert.equal((await call("watcher", "GET", "/api/games?game=checkers")).body.games.length, 0);
+  // the game is a required choice now, and an unknown one says which exist
+  assert.equal((await call("olena", "POST", "/api/games", { seat: "a" })).status, 400);
+  const bad = await call("olena", "POST", "/api/games", { game: "chess", seat: "a" });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /known: nim/);
+  await broker.close();
+});
+
 test("open game: created by a person, joined by an agent, played over REST to the end", async () => {
   const { broker, url, call } = await setup();
   const bot = await connect(url, "bot1");
@@ -65,21 +89,22 @@ test("open game: created by a person, joined by an agent, played over REST to th
     if (f.type === "game") frames.push(f.game);
   });
 
-  let r = await call("olena", "POST", "/api/games", { game: "nim", white: "olena" });
+  let r = await call("olena", "POST", "/api/games", { game: "nim", seat: "a" });
   assert.equal(r.status, 201);
   const g = r.body.game;
-  assert.deepEqual([g.status, g.white, g.black, g.room], ["open", "olena", null, `game-${g.id}`]);
+  assert.deepEqual([g.status, g.players, g.turn, g.room], ["open", ["olena", null], null, `game-${g.id}`]);
   assert.equal((await call("olena", "POST", `/api/games/${g.id}/join`)).status, 409);
   assert.equal((await call("olena", "POST", `/api/games/${g.id}/move`, { move: "1" })).status, 409);
 
   const started = nextSystem(bot);
   r = await call("bot1", "POST", `/api/games/${g.id}/join`, {});
   assert.equal(r.status, 200);
-  assert.deepEqual([r.body.game.status, r.body.game.black], ["active", "bot1"]);
+  assert.deepEqual([r.body.game.status, r.body.game.players, r.body.game.turn], ["active", ["olena", "bot1"], 0]);
   const hello = await started;
   assert.equal(hello.room, g.room);
+  assert.match(hello.text, /почалася: перший — olena, другий — bot1/);
   assert.match(hello.text, /left: 7/);
-  assert.match(hello.text, /Можливі ходи: 1, 2, 3/);
+  assert.match(hello.text, /Хід: перший \(olena\)\. Можливі ходи: 1, 2, 3/);
   assert.equal((await call("petro", "POST", `/api/games/${g.id}/join`)).status, 409);
 
   assert.equal((await call("bot1", "POST", `/api/games/${g.id}/move`, { move: "1" })).status, 409); // not its turn
@@ -90,12 +115,14 @@ test("open game: created by a person, joined by an agent, played over REST to th
   for (const [who, m] of [["olena", "3"], ["bot1", "3"], ["olena", "1"]] as const)
     assert.equal((await call(who, "POST", `/api/games/${g.id}/move`, { move: m })).status, 200);
   r = await call("watcher", "GET", `/api/games/${g.id}`);
-  assert.deepEqual([r.body.game.status, r.body.game.moves, r.body.game.result], ["finished", ["3", "3", "1"], { winner: "w", reason: "no-moves" }]);
+  assert.deepEqual([r.body.game.status, r.body.game.moves, r.body.game.turn], ["finished", ["3", "3", "1"], null]);
+  assert.deepEqual(r.body.game.result, { winner: 0, reason: "last-take", text: "Перемога: перший (olena). Узято останній." });
   assert.equal((await call("bot1", "POST", `/api/games/${g.id}/resign`)).status, 409);
 
   // everyone connected hears about every change, players or not
   await new Promise((res) => setTimeout(res, 50));
   assert.deepEqual(frames.map((f) => f.status), ["open", "active", "active", "active", "finished"]);
+  assert.equal(frames.at(-1)!.result!.text, "Перемога: перший (olena). Узято останній.");
   r = await call("watcher", "GET", "/api/games?status=finished");
   assert.deepEqual(r.body.games.map((x) => x.id), [g.id]);
   assert.equal((await call("watcher", "GET", "/api/games?status=bogus")).status, 400);
@@ -108,11 +135,12 @@ test("agents play each other by text in the game room, without hitting maxHops",
   const b1 = await connect(url, "bot1");
   const b2 = await connect(url, "bot2");
   // agents may not set up games they do not play in; people may
-  assert.equal((await call("bot1", "POST", "/api/games", { game: "nim", white: "bot2", black: "olena" })).status, 403);
-  assert.equal((await call("olena", "POST", "/api/games", { game: "nim", white: "bot1", black: "bot1" })).status, 400);
-  assert.equal((await call("olena", "POST", "/api/games", { game: "chess", white: "bot1" })).status, 400);
+  assert.equal((await call("bot1", "POST", "/api/games", { game: "nim", players: ["bot2", "olena"] })).status, 403);
+  assert.equal((await call("olena", "POST", "/api/games", { game: "nim", players: ["bot1", "bot1"] })).status, 400);
+  assert.equal((await call("olena", "POST", "/api/games", { game: "nim", players: ["bot1", "bot2", "olena"] })).status, 400);
+  assert.equal((await call("olena", "POST", "/api/games", { game: "nim", players: ["nobody", null] })).status, 404);
   const first = nextSystem(b1);
-  const r = await call("olena", "POST", "/api/games", { game: "nim", white: "bot1", black: "bot2" });
+  const r = await call("olena", "POST", "/api/games", { game: "nim", players: ["bot1", "bot2"] });
   assert.equal(r.body.game.status, "active");
   const room = r.body.game.room;
   let last = await first;
@@ -125,15 +153,18 @@ test("agents play each other by text in the game room, without hitting maxHops",
     await who.send({ room, text, reply_to: last.id });
     last = await next;
   }
-  assert.match(last.text, /Партію #\d+ завершено. Перемогли білі \(bot1\): у чорних немає ходів\./);
+  assert.match(last.text, /Партію #\d+ завершено. Перемога: перший \(bot1\)\. Узято останній\./);
 
-  // a wrong move is answered in the room, not rejected
+  // a wrong move is answered in the room, not rejected; so is a move out of turn
   const opened = nextSystem(b1);
-  const g2 = (await call("olena", "POST", "/api/games", { game: "nim", white: "bot1", black: "bot2" })).body.game;
+  const g2 = (await call("olena", "POST", "/api/games", { game: "nim", players: ["bot1", "bot2"] })).body.game;
   await opened;
-  const answer = nextSystem(b1);
+  let answer = nextSystem(b1);
   await b1.send({ room: g2.room, text: "move 5" });
   assert.match((await answer).text, /bot1: illegal move: 5\nМожливі ходи: 1, 2, 3/);
+  answer = nextSystem(b1);
+  await b2.send({ room: g2.room, text: "move 1" });
+  assert.equal((await answer).text, "bot2: Не ваш хід. Хід: перший (bot1).");
   // plain chat in the game room is just chat
   const chat = nextMessage(b2);
   await b1.send({ room: g2.room, text: "good luck!" });
@@ -149,17 +180,18 @@ test("agents play each other by text in the game room, without hitting maxHops",
   await broker.close();
 });
 
-test("an agent opens a game for itself; resign ends it; the name aichat is reserved", async () => {
+test("an agent opens a game for itself; seats are taken by id; resign ends it; the name aichat is reserved", async () => {
   const { broker, call } = await setup();
-  let r = await call("bot2", "POST", "/api/games", { game: "nim", black: "bot2" });
+  let r = await call("bot2", "POST", "/api/games", { game: "nim", seat: "b" });
   assert.equal(r.status, 201);
+  assert.deepEqual(r.body.game.players, [null, "bot2"]);
   const id = r.body.game.id;
-  r = await call("petro", "POST", `/api/games/${id}/join`, { color: "black" });
-  assert.equal(r.status, 409);
-  r = await call("petro", "POST", `/api/games/${id}/join`, { color: "white" });
-  assert.equal(r.body.game.white, "petro");
+  assert.equal((await call("petro", "POST", `/api/games/${id}/join`, { seat: "b" })).status, 409);
+  assert.equal((await call("petro", "POST", `/api/games/${id}/join`, { seat: "x" })).status, 400);
+  r = await call("petro", "POST", `/api/games/${id}/join`, { seat: "a" });
+  assert.deepEqual(r.body.game.players, ["petro", "bot2"]);
   r = await call("petro", "POST", `/api/games/${id}/resign`);
-  assert.deepEqual(r.body.game.result, { winner: "b", reason: "resign" });
+  assert.deepEqual(r.body.game.result, { winner: 1, reason: "resign", text: "Перемога: другий (bot2). Суперник здався." });
   assert.equal((await call("petro", "GET", "/api/games/999")).status, 404);
   await broker.close();
   await assert.rejects(startBroker([{ name: "aichat" }]), /reserved/);
@@ -172,11 +204,12 @@ test("checkers through the broker: real rules, text moves, errors with legal mov
   const res = await fetch(`${b.http}/api/games`, {
     method: "POST",
     headers: { authorization: `Bearer ${tok("olena")}`, "content-type": "application/json" },
-    body: JSON.stringify({ game: "checkers", white: "olena", black: "bot1" }),
+    body: JSON.stringify({ game: "checkers", players: ["olena", "bot1"] }),
   });
   assert.equal(res.status, 201);
   const g = ((await res.json()) as { game: GameInfo }).game;
   const hello = (await started).text;
+  assert.match(hello, /\(Шашки\) почалася: білі — olena, чорні — bot1/);
   assert.match(hello, /```\n8 /); // board in a code block, white at the bottom
   assert.match(hello, /Хід білих \(olena\)\. Можливі ходи: .*c3-d4/);
 
@@ -188,35 +221,25 @@ test("checkers through the broker: real rules, text moves, errors with legal mov
       body: JSON.stringify({ move: text }),
     }).then(() => next);
   };
-  assert.equal((await move("bot1", "move f6-e5")).text, "bot1: Зараз хід білих (olena), не ваш");
+  assert.equal((await move("bot1", "move f6-e5")).text, "bot1: Не ваш хід. Хід білих (olena).");
   assert.match((await move("olena", "C3 D4")).text, /Хід чорних \(bot1\)/);
   const err = (await move("bot1", "move a1-b2")).text;
   assert.match(err, /^bot1: illegal move a1-b2; legal moves: /);
   assert.doesNotMatch(err, /Можливі ходи/); // listed once, by the rules
   await move("bot1", "move f6-e5");
   const r = await fetch(`${b.http}/api/games/${g.id}`, { headers: { authorization: `Bearer ${tok("olena")}` } });
-  assert.deepEqual(((await r.json()) as { game: GameInfo }).game.moves, ["c3-d4", "f6-e5"]);
+  const after = ((await r.json()) as { game: GameInfo }).game;
+  assert.deepEqual([after.moves, after.turn], [["c3-d4", "f6-e5"], 0]);
   bot.close();
   await b.broker.close();
 });
 
 test("deleting a game takes its room and messages; game rooms are not managed as rooms", async () => {
-  const b = await startBroker(
-    [{ name: "boss", kind: "human", admin: true }, { name: "olena", kind: "human" }, { name: "bot1", kind: "claude" }],
-    {},
-    { gameRules: { nim } },
-  );
-  const call = async (who: string, method: string, path: string, body?: unknown) => {
-    const r = await fetch(`${b.http}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
-    return { status: r.status, body: (await r.json()) as { game: GameInfo; games: GameInfo[]; error: string; messages: ChatMessage[] } };
-  };
+  const b = await setup([{ name: "boss", kind: "human", admin: true }, { name: "olena", kind: "human" }, { name: "bot1", kind: "claude" }]);
+  const { call } = b;
   const bot = await connect(b.url, "bot1");
   const started = nextSystem(bot);
-  const g = (await call("olena", "POST", "/api/games", { game: "nim", white: "olena", black: "bot1" })).body.game;
+  const g = (await call("olena", "POST", "/api/games", { game: "nim", players: ["olena", "bot1"] })).body.game;
   await started;
   await bot.send({ room: g.room, text: "hi" });
 
@@ -243,4 +266,33 @@ test("deleting a game takes its room and messages; game rooms are not managed as
   await assert.rejects(bot.send({ room: g.room, text: "anyone?" }), /no game/);
   bot.close();
   await b.broker.close();
+});
+
+test("games saved before seats existed (white/black columns) are migrated to players", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aichat-games-"));
+  const path = join(dir, "old.db");
+  try {
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE games (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, game TEXT NOT NULL, white TEXT, black TEXT, created_by TEXT NOT NULL,
+      moves TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, result TEXT, draw_offer TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL)`);
+    const ins = old.prepare("INSERT INTO games (game, white, black, created_by, moves, status, result, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, 't', 't')");
+    ins.run("checkers", "olena", "bot1", "olena", '["c3-d4"]', "finished", JSON.stringify({ winner: "b", reason: "no-moves" }));
+    ins.run("checkers", "olena", null, "olena", "[]", "open", null);
+    ins.run("checkers", "a", "b", "a", "[]", "finished", JSON.stringify({ winner: null, reason: "agreement" }));
+    old.close();
+
+    const store = new Store(path);
+    const [draw, open, won] = store.games();
+    assert.deepEqual([won.players, won.result], [["olena", "bot1"], { winner: 1, reason: "no-moves" }]);
+    assert.deepEqual([open.players, open.result], [["olena", null], null]);
+    assert.deepEqual(draw.result, { winner: null, reason: "agreement" });
+    store.close();
+    // opening it again does not migrate twice
+    const again = new Store(path);
+    assert.deepEqual(again.game(won.id)!.players, ["olena", "bot1"]);
+    again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -34,25 +34,50 @@ export const MAX_ATTACHMENTS = 10;
 /** Image types the web UI shows inline; everything else is served as a download. */
 export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-/** A mini-game between two players (people or agents); moves travel through the broker. */
+/** A seat at a game, e.g. checkers has { id: "w", name: "білі" } and { id: "b", name: "чорні" }. */
+export interface GameSeat {
+  id: string;
+  name: string;
+}
+
+/** A kind of game the broker can host (GET /api/games/types); its rules live in src/games/<id>/. */
+export interface GameType {
+  id: string;
+  title: string;
+  description: string;
+  /** In turn order: seat 0 moves first. */
+  seats: GameSeat[];
+}
+
+export interface GameResult {
+  /** Index of the winning seat (into `seats` / `players`), or null for a draw. */
+  winner: number | null;
+  /** "resign", "agreement", or a reason of the game's own (checkers: "no-moves", "repetition", "quiet"). */
+  reason: string;
+  /** Ready to show, e.g. "Перемогли чорні (bob): у білих немає ходів." */
+  text: string;
+}
+
+/** A game between people and/or agents; moves travel through the broker. */
 export interface GameInfo {
   id: number;
-  /** Rules name; only "checkers" for now (src/games/checkers.ts). */
+  /** Game type id, e.g. "checkers" (see GET /api/games/types). */
   game: string;
   /** Room the game is played in: moves are messages there ("move c3-d4", "resign", "draw"). */
   room: string;
-  /** Who plays white (moves first) and black; null while that seat is free (status "open"). */
-  white: string | null;
-  black: string | null;
+  /** Who sits where, in the order of the type's `seats`; null while that seat is free (status "open"). */
+  players: (string | null)[];
+  /** Index of the seat to move while the game is active, otherwise null. */
+  turn: number | null;
   created_by: string;
-  /** Moves in notation, oldest first; replay them for the position. */
+  /** Moves in the game's notation, oldest first. */
   moves: string[];
-  /** "open" waits for a second player (POST /api/games/<id>/join), then "active", then "finished". */
+  /** "open" waits for players (POST /api/games/<id>/join), then "active", then "finished". */
   status: "open" | "active" | "finished";
-  /** Set when finished: winner "w" / "b", or null for a draw. */
-  result?: { winner: "w" | "b" | null; reason: "no-moves" | "repetition" | "quiet" | "resign" | "agreement" } | null;
+  /** Set when finished. */
+  result: GameResult | null;
   /** Who offered a draw that is still open. */
-  draw_offer?: string | null;
+  draw_offer: string | null;
   created_ts: string;
   updated_ts: string;
 }
