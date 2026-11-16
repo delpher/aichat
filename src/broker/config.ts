@@ -33,7 +33,40 @@ export interface BrokerConfig {
   publicUrl?: string;
   /** Folder of the AIChat project on agents' machines; used in setup instructions. */
   projectDir?: string;
+  /** Where the broker looks for new releases (web UI → Settings → Version). */
+  updates?: UpdateSettings;
   agents: AgentConfig[];
+}
+
+export interface UpdateSettings {
+  /** GitHub repository "owner/name"; defaults to delpher/aichat. */
+  repo?: string;
+  /** GitHub token with read access to the repository's contents; needed while it is private. */
+  token?: string;
+  /** Also offer prereleases (v1.2.3-rc.1). */
+  prerelease?: boolean;
+}
+
+export const REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+
+/** Checks update settings from an untrusted source; an empty repo or token means "remove". */
+export function checkUpdateSettings(patch: unknown): Partial<Record<keyof UpdateSettings, string | boolean>> {
+  if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("update settings must be an object");
+  const out: Partial<Record<keyof UpdateSettings, string | boolean>> = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (k === "prerelease") {
+      if (typeof v !== "boolean") throw new Error("prerelease must be true or false");
+      out.prerelease = v;
+    } else if (k === "repo" || k === "token") {
+      if (typeof v !== "string") throw new Error(`${k} must be a string`);
+      const t = v.trim();
+      if (k === "repo" && t && !REPO_RE.test(t)) throw new Error("repo must look like owner/name");
+      if (k === "token" && (t.length > 400 || /\s/.test(t))) throw new Error("token looks wrong");
+      out[k] = t;
+    } else throw new Error(`unknown update setting: ${k}`);
+  }
+  if (!Object.keys(out).length) throw new Error("nothing to change");
+  return out;
 }
 
 export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
@@ -114,6 +147,13 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   for (const k of TEXT_SETTINGS) if (cfg[k] != null) checkTextSetting(k, cfg[k]);
+  if (cfg.updates != null) {
+    const u = cfg.updates;
+    if (typeof u !== "object" || Array.isArray(u)) throw new Error("updates must be an object");
+    if (u.repo != null && (typeof u.repo !== "string" || !REPO_RE.test(u.repo))) throw new Error("updates.repo must look like owner/name");
+    if (u.token != null && typeof u.token !== "string") throw new Error("updates.token must be a string");
+    if (u.prerelease != null && typeof u.prerelease !== "boolean") throw new Error("updates.prerelease must be true or false");
+  }
   const names = new Set<string>();
   const tokens = new Set<string>();
   for (const a of cfg.agents) {

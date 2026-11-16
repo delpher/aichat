@@ -10,3 +10,8 @@ services:
       # Writable: the broker re-reads it on change and saves settings from the web UI.
       - ./agents.json:/app/config/agents.json
       - ./data:/app/data
+      # Versions installed from the web UI (Settings → Version); kept across container re-creation.
+      - versions:/app/versions
+
+volumes:
+  versions:

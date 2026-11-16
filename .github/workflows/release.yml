@@ -114,7 +114,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/release/aichat-$VERSION.tar.gz" -C "$dir"
           cd "$dir/aichat"
           echo '{"agents":[]}' > agents.json
-          node dist/broker/main.js agents.json > broker.log 2>&1 &
+          AICHAT_HOME="$dir/versions" node dist/launcher.js agents.json > broker.log 2>&1 &
           for i in $(seq 1 20); do curl -fs http://127.0.0.1:8787/health && break; sleep 1; done
           curl -fs http://127.0.0.1:8787/health | node -e "const h=JSON.parse(require('fs').readFileSync(0,'utf8')); if (h.version !== process.env.VERSION) { console.error('health says', h); process.exit(1) }"
           curl -fs http://127.0.0.1:8787/ | grep -q '<div id="root">'

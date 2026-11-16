@@ -61,3 +61,32 @@ export interface Setup {
 export type Session =
   | { mode: "admin"; token: string; admin: { name: string } }
   | { mode: "user"; token: string; me: { name: string; kind: string } };
+
+/** GET /admin/api/update (see src/broker/updater.ts). */
+export interface UpdateStatus {
+  current: string;
+  launcher: boolean;
+  docker: boolean;
+  repo: string;
+  hasToken: boolean;
+  tokenFromEnv: boolean;
+  prerelease: boolean;
+  checking: boolean;
+  installing: boolean;
+  checkedAt: string | null;
+  error: string | null;
+  latest: {
+    version: string;
+    tag: string;
+    name: string;
+    notes: string;
+    url: string;
+    publishedAt: string | null;
+    prerelease: boolean;
+    node?: string;
+    nodeOk: boolean;
+    installable: boolean;
+  } | null;
+  updateAvailable: boolean;
+  failed: { version: string; previous: string; at?: string; reason: string } | null;
+}

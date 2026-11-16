@@ -4,3 +4,4 @@ data/
 agents.json
 .mcp.json
 agents/
+versions/
