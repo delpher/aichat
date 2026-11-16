@@ -1,4 +1,4 @@
-import { Gamepad2, Hash, Inbox, LayoutGrid, LoaderCircle, MessagesSquare, Search, Settings, UserCog } from "lucide-react";
+import { Gamepad2, Hash, Inbox, LayoutGrid, LoaderCircle, Search, Settings, UserCog } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
 import { useChat } from "../context";
@@ -70,16 +70,6 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: nav(dm(sender, a.name)),
       });
     }
-    if (admin)
-      for (const d of overview.dms)
-        if (d.a !== sender && d.b !== sender)
-          out.push({
-            key: `dd:${d.a}|${d.b}`,
-            label: `${d.a} і ${d.b}`,
-            hint: "особиста розмова",
-            icon: <MessagesSquare size={16} />,
-            run: nav(dm(d.a, d.b)),
-          });
     out.push({ key: "games", label: "Міні-ігри", icon: <Gamepad2 size={16} />, run: nav({ kind: "games" }) });
     if (admin)
       out.push(

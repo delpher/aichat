@@ -101,9 +101,9 @@ test("images are served inline, other types never are; limits apply", async () =
   await broker.close();
 });
 
-test("admin uploads as a human and downloads any file; stale uploads are cleaned", async () => {
-  const { broker, http } = await startBroker(
-    [{ name: "me", kind: "human" }, { name: "bot" }, { name: "boss", kind: "human", admin: true }],
+test("admin uploads as a human and downloads files of rooms and own DMs; stale uploads are cleaned", async () => {
+  const { broker, url, http } = await startBroker(
+    [{ name: "me", kind: "human", rooms: ["lab"] }, { name: "bot", rooms: ["lab"] }, { name: "boss", kind: "human", admin: true }],
   );
   const as = (path: string) => `/admin/api/files${path}`;
   let r = await upload(http, ADMIN, "from admin", "a.txt", "text/plain", as("?as=bot"));
@@ -117,8 +117,17 @@ test("admin uploads as a human and downloads any file; stale uploads are cleaned
     body: JSON.stringify({ as: "me", to: "bot", text: "see file", attachments: [f.id] }),
   });
   assert.equal(r.status, 201);
-  assert.equal((await get(http, ADMIN, f.id, true)).status, 200);
+  // a DM between "me" and "bot": not the admin's to read
+  assert.equal((await get(http, ADMIN, f.id, true)).status, 404);
   assert.equal((await get(http, tok("bot"), f.id)).status, 200);
+  const bot = await connect(url, "bot");
+  const inRoom = await uploaded(http, "bot", "room file");
+  await bot.send({ room: "lab", text: "r", attachments: [inRoom.id] });
+  assert.equal((await get(http, ADMIN, inRoom.id, true)).status, 200);
+  const toBoss = await uploaded(http, "bot", "for boss");
+  await bot.send({ to: "boss", text: "d", attachments: [toBoss.id] });
+  assert.equal((await get(http, ADMIN, toBoss.id, true)).status, 200);
+  bot.close();
 
   const loose = await uploaded(http, "bot", "never sent");
   assert.equal(await broker.cleanFiles(), 0);

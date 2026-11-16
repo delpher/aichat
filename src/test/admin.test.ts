@@ -14,16 +14,18 @@ const ADMIN = tok("boss");
 const feed = (url: string, token = ADMIN) => new BrokerClient({ url, token, observer: true, reconnect: false, log: () => {} });
 const auth = (token = ADMIN) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
 
-test("admin API: overview and messages see every room and DM", async () => {
+test("admin API: overview and messages see every room, but only the admin's own DMs", async () => {
   const { broker, url, http } = await startBroker(
     [{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }, { name: "c" }, BOSS],
   );
   const a = await connect(url, "a");
   const b = await connect(url, "b");
+  const c = await connect(url, "c");
   const first = await a.send({ room: "lab", text: "hello lab" });
   await b.send({ room: "lab", text: "hi", reply_to: first });
   await a.send({ to: "c", text: "secret to c" });
   await b.send({ to: "a", text: "dm b->a" });
+  await c.send({ to: "boss", text: "for boss" });
 
   let r = await fetch(`${http}/admin/api/overview`, { headers: auth() });
   assert.equal(r.status, 200);
@@ -38,16 +40,19 @@ test("admin API: overview and messages see every room and DM", async () => {
   assert.deepEqual(o.rooms.map(({ name, members, count }) => ({ name, members, count })), [
     { name: "lab", members: ["a", "b"], count: 2 },
   ]);
-  assert.deepEqual(o.dms.map((d) => [d.a, d.b, d.count]).sort(), [["a", "b", 1], ["a", "c", 1]]);
+  assert.deepEqual(o.dms.map((d) => [d.a, d.b, d.count]), [["boss", "c", 1]], "other people's DMs stay private");
 
   const get = async (qs: string) => {
     const res = await fetch(`${http}/admin/api/messages${qs}`, { headers: auth() });
     assert.equal(res.status, 200, qs);
     return ((await res.json()) as { messages: ChatMessage[] }).messages;
   };
-  assert.equal((await get("")).length, 4);
+  assert.deepEqual((await get("")).map((m) => m.text), ["hello lab", "hi", "for boss"]);
   assert.deepEqual((await get("?room=lab")).map((m) => m.text), ["hello lab", "hi"]);
-  assert.deepEqual((await get("?a=c&b=a")).map((m) => m.text), ["secret to c"]);
+  assert.deepEqual((await get("?a=c&b=boss")).map((m) => m.text), ["for boss"]);
+  assert.deepEqual((await get("?agent=a")).map((m) => m.text), ["hello lab"]);
+  r = await fetch(`${http}/admin/api/messages?a=c&b=a`, { headers: auth() });
+  assert.equal(r.status, 403, "someone else's direct conversation");
   const all = await get("");
   assert.deepEqual(all.map((m) => m.id), [...all.map((m) => m.id)].sort((x, y) => x - y));
   const older = await get(`?before=${all[2].id}&limit=1`);
@@ -60,7 +65,7 @@ test("admin API: overview and messages see every room and DM", async () => {
   // an agent token is not an admin token
   r = await fetch(`${http}/admin/api/overview`, { headers: auth("token-for-a-xxxxxxxxxxxx") });
   assert.equal(r.status, 401);
-  a.close(); b.close();
+  a.close(); b.close(); c.close();
   await broker.close();
 });
 
@@ -78,8 +83,8 @@ test("without any admin the admin API says how to create one; the old adminToken
   await broker.close();
 });
 
-test("admin WebSocket observes every message and presence, and is read-only", async () => {
-  const { broker, url } = await startBroker([{ name: "a" }, { name: "b" }, { name: "c" }, BOSS]);
+test("admin WebSocket observes rooms, own DMs and presence, not other people's DMs, and is read-only", async () => {
+  const { broker, url } = await startBroker([{ name: "a", rooms: ["lab"] }, { name: "b" }, { name: "c" }, BOSS]);
   const obs = feed(url);
   await obs.connect();
   assert.equal(obs.agent, "boss");
@@ -88,9 +93,15 @@ test("admin WebSocket observes every message and presence, and is read-only", as
   );
   const a = await connect(url, "a");
   assert.deepEqual(await presence, { agent: "a", online: true });
+  const seen: string[] = [];
+  obs.on("message", (m: ChatMessage) => seen.push(m.text));
   const got = nextMessage(obs);
   await a.send({ to: "b", text: "private" });
-  assert.equal((await got).text, "private");
+  await a.send({ room: "lab", text: "in the room" });
+  await a.send({ to: "boss", text: "to the admin" });
+  assert.equal((await got).text, "in the room");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(seen, ["in the room", "to the admin"]);
   await assert.rejects(obs.send({ to: "a", text: "x" }), /read-only/);
   obs.close(); a.close();
   await broker.close();
@@ -524,8 +535,9 @@ test("a human can be made an admin: own token opens the admin API and the observ
     }),
   );
   const bot = await connect(url, "bot");
-  await bot.send({ to: "c", text: "private bot->c" });
-  assert.equal((await seen).message.text, "private bot->c");
+  await bot.send({ to: "c", text: "private bot->c" }); // not hers to see
+  await bot.send({ to: "olena", text: "private bot->olena" });
+  assert.equal((await seen).message.text, "private bot->olena");
 
   // the admin human can manage others with her own token
   assert.equal((await patch("c", { admin: false }, olenaTok)).status, 200);

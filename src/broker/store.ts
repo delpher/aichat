@@ -64,6 +64,9 @@ function toGame(r: GameRow): GameRecord {
   };
 }
 
+/** Room messages, and direct messages only where the bound person (twice) is a side. */
+const OWN_DMS = "(room IS NOT NULL OR sender = ? OR recipient = ?)";
+
 function toMessage(r: Row): ChatMessage {
   const m: ChatMessage = { id: r.id, from: r.sender, text: r.text, ts: r.ts, hops: r.hops };
   if (r.recipient) m.to = r.recipient;
@@ -360,9 +363,18 @@ export class Store {
 
   /**
    * Messages whose text contains `text` (any case), newest first. `viewer` limits the search to what that
-   * agent may read: its rooms and its direct messages. `room` / `agent` narrow it further.
+   * agent may read: its rooms and its direct messages. `dmsOf` (an admin) keeps every room but only that
+   * person's direct messages. `room` / `agent` narrow it further.
    */
-  search(q: { text: string; viewer?: string; room?: string; agent?: string; before?: number; limit: number }): ChatMessage[] {
+  search(q: {
+    text: string;
+    viewer?: string;
+    dmsOf?: string;
+    room?: string;
+    agent?: string;
+    before?: number;
+    limit: number;
+  }): ChatMessage[] {
     const where = ["instr(fold(text), ?) > 0"];
     const args: (string | number)[] = [q.text.toLocaleLowerCase()];
     if (q.viewer) {
@@ -370,6 +382,10 @@ export class Store {
         "((room IS NOT NULL AND room IN (SELECT room FROM memberships WHERE agent = ?)) OR (room IS NULL AND (sender = ? OR recipient = ?)))",
       );
       args.push(q.viewer, q.viewer, q.viewer);
+    }
+    if (q.dmsOf) {
+      where.push(OWN_DMS);
+      args.push(q.dmsOf, q.dmsOf);
     }
     if (q.room) {
       where.push("room = ?");
@@ -394,10 +410,25 @@ export class Store {
     return rows.map(toMessage);
   }
 
-  /** Any messages for the admin view: one room, one DM pair, or everything; paged backwards with `before`. */
-  allMessages(q: { room?: string; a?: string; b?: string; agent?: string; before?: number; limit: number }): ChatMessage[] {
+  /**
+   * Any messages for the admin view: one room, one DM pair, or everything; paged backwards with `before`.
+   * `dmsOf` drops direct messages that person is not part of.
+   */
+  allMessages(q: {
+    room?: string;
+    a?: string;
+    b?: string;
+    agent?: string;
+    dmsOf?: string;
+    before?: number;
+    limit: number;
+  }): ChatMessage[] {
     const where: string[] = [];
     const args: (string | number)[] = [];
+    if (q.dmsOf) {
+      where.push(OWN_DMS);
+      args.push(q.dmsOf, q.dmsOf);
+    }
     if (q.room) {
       where.push("room = ?");
       args.push(q.room);

@@ -72,9 +72,13 @@ export function parseHash(hash: string): View | null {
   return null;
 }
 
-/** The view this session may show: people see only their own rooms and DMs; admins see everything. */
+/** The view this session may show: people see only their own rooms and DMs; admins every room, but only their own DMs. */
 export function resolveView(wanted: View | null, session: Session, overview: Overview): View {
-  if (session.mode === "admin") return wanted && wanted.kind !== "none" ? wanted : { kind: "all" };
+  if (session.mode === "admin") {
+    const me = session.admin.name;
+    if (!wanted || wanted.kind === "none" || (wanted.kind === "dm" && wanted.a !== me && wanted.b !== me)) return { kind: "all" };
+    return wanted;
+  }
   const me = session.me.name;
   if (wanted?.kind === "games" || wanted?.kind === "game") return wanted;
   if (wanted?.kind === "room" && overview.rooms.some((r) => r.name === wanted.room)) return wanted;
@@ -94,7 +98,7 @@ export function matchesView(m: ChatMessage, v: View): boolean {
   return false;
 }
 
-/** History endpoint for a view: the admin API sees any conversation, a person only their own. */
+/** History endpoint for a view: the admin API sees every room, a person only their own; both only their own DMs. */
 export function historyPath(v: View, session: Session, limit: number, before?: number): string {
   const q = new URLSearchParams({ limit: String(limit) });
   if (before) q.set("before", String(before));

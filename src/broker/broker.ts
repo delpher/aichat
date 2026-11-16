@@ -408,13 +408,16 @@ export class Broker {
     return file;
   }
 
-  /** The file if `agent` may download it: its uploader may, and whoever can see the message it is attached to. */
-  private visibleFile(agent: string | null, id: string): FileInfo | undefined {
+  /**
+   * The file if `agent` may download it: its uploader may, and whoever can see the message it is attached to.
+   * With `admin` the rules are an admin's: any room, but only their own direct messages.
+   */
+  private visibleFile(agent: string, id: string, admin = false): FileInfo | undefined {
     const f = FILE_ID_RE.test(id) ? this.store.file(id) : undefined;
     if (!f) return undefined;
-    if (agent === null || f.uploader === agent) return f; // null = admin
+    if (f.uploader === agent) return f;
     const m = f.message_id != null ? this.store.get(f.message_id) : undefined;
-    return m && this.canSee(agent, m) ? f : undefined;
+    return m && (admin ? this.adminCanSee(agent, m) : this.canSee(agent, m)) ? f : undefined;
   }
 
   private async serveFile(f: FileInfo, res: ServerResponse) {
@@ -451,6 +454,11 @@ export class Broker {
   private canSee(agent: string, m: ChatMessage) {
     if (m.room) return this.store.isMember(agent, m.room);
     return m.from === agent || m.to === agent;
+  }
+
+  /** Admins read every room, but direct messages only when they are one of the two sides. */
+  private adminCanSee(admin: string, m: ChatMessage) {
+    return !!m.room || m.from === admin || m.to === admin;
   }
 
   private checkRate(agent: string) {
@@ -625,7 +633,7 @@ export class Broker {
     if (!this.store.markDelivered(id, agent)) return;
     const f: ServerFrame = { type: "delivered", id, to: agent };
     for (const ws of this.sockets.get(m.from) ?? []) this.sendFrame(ws, f);
-    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
+    for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, f);
     // the session now reads it; hooks report the rest (no hook runs for a channel message itself)
     this.noteConversation(agent, m.room ? { room: m.room } : { with: m.from });
     const cur = this.work.get(agent);
@@ -647,8 +655,11 @@ export class Broker {
     throw new BrokerError("set `room` or `with`");
   }
 
-  /** Text search over the history; `viewer` limits it to what that agent may read (admins search everything). */
-  search(p: URLSearchParams, viewer?: string): ChatMessage[] {
+  /**
+   * Text search over the history, limited to what the viewer may read: an agent its rooms and direct messages,
+   * an admin every room and their own direct messages.
+   */
+  search(p: URLSearchParams, viewer: string | { admin: string }): ChatMessage[] {
     const text = (p.get("q") ?? "").trim();
     if (text.length < 2) throw new BrokerError("`q` must be at least 2 characters");
     if (text.length > 200) throw new BrokerError("`q` is longer than 200 characters");
@@ -659,7 +670,8 @@ export class Broker {
     const before = p.get("before") ? Number(p.get("before")) : undefined;
     if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
     const limit = Math.min(Math.max(Number(p.get("limit")) || 30, 1), 100);
-    return this.store.search({ text, viewer, room, agent, before, limit });
+    const who = typeof viewer === "string" ? { viewer } : { dmsOf: viewer.admin };
+    return this.store.search({ text, ...who, room, agent, before, limit });
   }
 
   /** What one agent may see: its rooms, its direct conversations, everyone's presence. */
@@ -712,7 +724,7 @@ export class Broker {
   }
 
   private deliver(m: ChatMessage) {
-    for (const ws of this.observers.keys()) this.sendFrame(ws, { type: "message", message: m });
+    for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, { type: "message", message: m });
     for (const name of this.recipients(m)) {
       const socks = this.sockets.get(name);
       if (socks?.size) {
@@ -1067,7 +1079,7 @@ export class Broker {
         return { ...a, webhook: !!c?.webhook, admin: !!c?.admin };
       });
     if (route === "GET /admin/api/overview")
-      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms(), max_hops: this.cfg.maxHops });
+      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms(me.name), max_hops: this.cfg.maxHops });
     const edit = (fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig => {
       if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
       try {
@@ -1346,9 +1358,12 @@ export class Broker {
       const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
       const before = q.before ? Number(q.before) : undefined;
       if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
-      return reply(200, { messages: this.store.allMessages({ room: q.room, a: q.a, b: q.b, agent: q.agent, before, limit }) });
+      // admins do not read other people's direct messages
+      if (q.a && q.a !== me.name && q.b !== me.name) throw new BrokerError("this is someone else's direct conversation", 403);
+      const query = { room: q.room, a: q.a, b: q.b, agent: q.agent, dmsOf: me.name, before, limit };
+      return reply(200, { messages: this.store.allMessages(query) });
     }
-    if (route === "GET /admin/api/search") return reply(200, { messages: this.search(url.searchParams) });
+    if (route === "GET /admin/api/search") return reply(200, { messages: this.search(url.searchParams, { admin: me.name }) });
     /** The human an admin writes as (the web UI may post only as people, never as AI agents). */
     const humanAs = (name: unknown) => {
       const as = this.cfg.agents.find((a) => a.name === name);
@@ -1371,7 +1386,7 @@ export class Broker {
     if (route === "POST /admin/api/files") return reply(201, { file: await this.upload(humanAs(url.searchParams.get("as")), req) });
     const fileMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)$/);
     if (req.method === "GET" && fileMatch) {
-      const f = this.visibleFile(null, decodeURIComponent(fileMatch[1]));
+      const f = this.visibleFile(me.name, decodeURIComponent(fileMatch[1]), true);
       if (!f) return reply(404, { error: "unknown file" });
       return await this.serveFile(f, res);
     }

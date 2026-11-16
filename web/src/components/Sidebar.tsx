@@ -7,7 +7,6 @@ import {
   Inbox,
   LayoutGrid,
   LogOut,
-  MessagesSquare,
   Monitor,
   Moon,
   Plus,
@@ -24,7 +23,7 @@ import type { Theme } from "../hooks/useTheme";
 import { fmtShort, kindLabel, plural } from "../lib/format";
 import { enableNotify, notifyOn, notifyPermission, setNotifyPref } from "../lib/notify";
 import { KEYS, storage } from "../lib/storage";
-import { dm, isGameRoom, pairKey, viewKey, type View } from "../lib/views";
+import { dm, isGameRoom, viewKey, type View } from "../lib/views";
 import { activityText, isActive, statusText } from "../lib/activity";
 import { Avatar } from "./Avatar";
 
@@ -209,7 +208,6 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
   const rooms = overview.rooms.filter((r) => !isGameRoom(r.name)).sort((x, y) => x.name.localeCompare(y.name));
   const mine = new Set(overview.rooms.map((r) => r.name));
   const others = admin ? [] : overview.all_rooms.filter((n) => !mine.has(n) && !isGameRoom(n)).sort();
-  const dms = [...overview.dms].sort((x, y) => String(y.last_ts ?? "").localeCompare(String(x.last_ts ?? "")));
   // online first; among agents, the ones doing something first
   const byPresence = (x: Agent, y: Agent) =>
     Number(y.online) - Number(x.online) ||
@@ -227,7 +225,6 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
       .filter(Boolean)
       .join(" · ") || (bots.length ? `${bots.filter((a) => a.online).length} онлайн` : "");
   const peopleOnline = people.filter((a) => a.online).length;
-  const kinds = new Map(overview.agents.map((a) => [a.name, a]));
   const who = sender;
   const { collapsed, toggle } = useCollapsed();
   const group = (id: string) => ({ id, collapsed: collapsed.has(id), onToggle: toggle });
@@ -343,39 +340,6 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
             </ul>
           </Group>
         )}
-
-        <Group {...group("dms")} title={admin ? "Особисті розмови" : "Особисті повідомлення"} unread={unreadOf("d:")}>
-          <ul className="nav-list">
-            {dms.map((d) => {
-              const key = `d:${pairKey(d.a, d.b)}`;
-              const other = !admin ? (d.a === sender ? d.b : d.a) : null;
-              return (
-                <Item
-                  key={key}
-                  active={cur === key}
-                  onClick={nav(dm(d.a, d.b))}
-                  icon={
-                    other ? (
-                      <Avatar
-                        name={other}
-                        kind={kinds.get(other)?.kind}
-                        online={kinds.get(other)?.online}
-                        activity={kinds.get(other)?.activity}
-                        size="sm"
-                      />
-                    ) : (
-                      <MessagesSquare size={16} />
-                    )
-                  }
-                  label={other ?? `${d.a} і ${d.b}`}
-                  badge={unread.get(key)}
-                  meta={fmtShort(d.last_ts)}
-                />
-              );
-            })}
-            {!dms.length && <li className="nav-empty">Розмов ще немає</li>}
-          </ul>
-        </Group>
 
         <Group
           {...group("agents")}
