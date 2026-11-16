@@ -1,4 +1,4 @@
-import { CornerUpLeft, Gamepad2, Reply } from "lucide-react";
+import { CheckCheck, CornerUpLeft, Gamepad2, Reply } from "lucide-react";
 import { memo } from "react";
 import { SYSTEM_SENDER, type ChatMessage } from "../api/types";
 import { fmtFull, fmtTime } from "../lib/format";
@@ -116,6 +116,11 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
         {m.attachments && m.attachments.length > 0 && <Attachments files={m.attachments} />}
       </div>
       <div className="msg-tools">
+        {p.mine && m.delivered_to && m.delivered_to.length > 0 && (
+          <span className="delivered" title={`Доставлено: ${m.delivered_to.join(", ")}`} aria-label={`Доставлено: ${m.delivered_to.join(", ")}`}>
+            <CheckCheck size={13} />
+          </span>
+        )}
         <span className="msg-meta" title="Номер повідомлення і довжина ланцюжка відповідей">
           #{m.id}
           {m.hops > 0 && <span className="hops"> · hops {m.hops}</span>}

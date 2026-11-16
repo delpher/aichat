@@ -141,6 +141,11 @@ export class BrokerClient extends EventEmitter {
     return f.type === "ack" ? f.id! : -1;
   }
 
+  /** Tells the broker this agent's session has received message `id` (its sender then sees it delivered). */
+  async delivered(id: number): Promise<void> {
+    await this.request({ type: "delivered", id });
+  }
+
   /** The broker's HTTP address, derived from the WebSocket URL. */
   get httpUrl(): string {
     return this.opts.url.replace(/\/?$/, "").replace(/\/ws$/, "").replace(/^ws(s?):/, "http$1:");

@@ -112,8 +112,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        game: { type: "string", description: "Kind of game (default checkers)" },
-        seat: { type: "string", description: "Your seat id, e.g. w or b in checkers (default: the first seat, which moves first)" },
+        game: { type: "string", description: "Kind of game, e.g. checkers or nardy; list_games shows them all (default checkers)" },
+        seat: { type: "string", description: "Your seat id, e.g. w or b (default: the first seat)" },
         opponent: { type: "string", description: "Agent or person who takes the next seat (optional)" },
       },
     },
@@ -174,10 +174,13 @@ async function uploadAll(paths: unknown): Promise<string[]> {
   return ids;
 }
 
-/** Kinds of games, fetched once: they give the seat names for the game lines. */
+/**
+ * Kinds of games: they give the seat names for the game lines. Kept between calls, but fetched again for
+ * list_games and for a game this session has not seen, since a rebuilt broker may host new games.
+ */
 let gameTypes: GameType[] | undefined;
-async function loadGameTypes(): Promise<GameType[]> {
-  gameTypes ??= (await client.api<{ types: GameType[] }>("GET", "/api/games/types")).types;
+async function loadGameTypes(fresh = false): Promise<GameType[]> {
+  if (fresh || !gameTypes) gameTypes = (await client.api<{ types: GameType[] }>("GET", "/api/games/types")).types;
   return gameTypes;
 }
 
@@ -231,14 +234,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const q = new URLSearchParams();
         if (a.status) q.set("status", String(a.status));
         if (a.game) q.set("game", String(a.game));
-        const types = await loadGameTypes();
+        const types = await loadGameTypes(true);
         const { games } = await client.api<{ games: GameInfo[] }>("GET", `/api/games${q.size ? `?${q}` : ""}`);
         const lines = [`Games you can play: ${types.map(fmtType).join("; ")}`, ...games.map(fmtGame)];
         return text(lines.join("\n") + (games.length ? "" : "\nno games yet"));
       }
       case "create_game": {
-        const types = await loadGameTypes();
-        const type = types.find((t) => t.id === ((a.game as string) || "checkers"));
+        const want = (a.game as string) || "checkers";
+        let types = await loadGameTypes();
+        if (!types.some((t) => t.id === want)) types = await loadGameTypes(true);
+        const type = types.find((t) => t.id === want);
         if (!type) return text(`unknown game ${String(a.game)}; games: ${types.map((t) => t.id).join(", ")}`);
         const mine = a.seat ? type.seats.findIndex((s) => s.id === a.seat) : 0;
         if (mine < 0) return text(`unknown seat ${String(a.seat)}; seats: ${type.seats.map((s) => s.id).join(", ")}`);
@@ -261,6 +266,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             .map(
               (g) =>
                 `${g.name}${g.name === client.agent ? " (you)" : ""} [${g.kind}] ${g.online ? "online" : "offline"}` +
+                (g.activity && g.activity.state !== "idle" ? `, ${g.activity.state}${g.activity.detail ? ` (${g.activity.detail})` : ""}` : "") +
                 (g.rooms.length ? ` rooms: ${g.rooms.join(", ")}` : "") +
                 (g.description ? ` - ${g.description}` : ""),
             )
@@ -300,7 +306,10 @@ client.on("message", async (m: ChatMessage) => {
     await mcp.notification({ method: "notifications/claude/channel", params: { content: textWithAttachments(m), meta } });
   } catch (e) {
     console.error(`[aichat-channel] could not push message #${m.id}: ${(e as Error).message}`);
+    return;
   }
+  // the session has it: the sender sees "delivered" (best effort; a lost receipt is no reason to fail)
+  client.delivered(m.id).catch((e) => console.error(`[aichat-channel] could not confirm #${m.id}: ${(e as Error).message}`));
 });
 
 // Only connect to the broker once Claude Code has finished the MCP handshake,

@@ -118,6 +118,12 @@ export class Store {
         message_id INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_files_message ON files(message_id);
+      CREATE TABLE IF NOT EXISTS deliveries (
+        message_id INTEGER NOT NULL,
+        agent TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        PRIMARY KEY (message_id, agent)
+      );
       CREATE TABLE IF NOT EXISTS games (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         game TEXT NOT NULL,
@@ -346,7 +352,32 @@ export class Store {
     }
     const sql = `SELECT * FROM (SELECT * FROM messages ${where.length ? "WHERE " + where.join(" AND ") : ""}
                  ORDER BY id DESC LIMIT ?) ORDER BY id`;
-    return (this.db.prepare(sql).all(...args, q.limit) as unknown as Row[]).map(toMessage);
+    return this.withDeliveries((this.db.prepare(sql).all(...args, q.limit) as unknown as Row[]).map(toMessage));
+  }
+
+  /** Records that `agent`'s session received message `id`; false if it was already recorded. */
+  markDelivered(id: number, agent: string): boolean {
+    const res = this.db
+      .prepare("INSERT OR IGNORE INTO deliveries (message_id, agent, ts) VALUES (?, ?, ?)")
+      .run(id, agent, new Date().toISOString());
+    return Number(res.changes) > 0;
+  }
+
+  /** Fills `delivered_to` on messages that someone received. */
+  private withDeliveries(messages: ChatMessage[]): ChatMessage[] {
+    if (!messages.length) return messages;
+    const rows = this.db
+      .prepare(
+        `SELECT message_id, agent FROM deliveries WHERE message_id BETWEEN ? AND ? ORDER BY ts, agent`,
+      )
+      .all(messages[0].id, messages[messages.length - 1].id) as { message_id: number; agent: string }[];
+    const by = new Map<number, string[]>();
+    for (const r of rows) by.set(r.message_id, [...(by.get(r.message_id) ?? []), r.agent]);
+    for (const m of messages) {
+      const to = by.get(m.id);
+      if (to) m.delivered_to = to;
+    }
+    return messages;
   }
 
   /** Rooms with members or messages (only `agent`'s rooms if given), with message count and last activity. */
@@ -403,7 +434,10 @@ export class Store {
   deleteRoom(room: string, messages: boolean) {
     this.db.prepare("DELETE FROM memberships WHERE room = ?").run(room);
     this.db.prepare("DELETE FROM rooms WHERE name = ?").run(room);
-    if (messages) this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
+    if (messages) {
+      this.db.prepare("DELETE FROM deliveries WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
+      this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
+    }
   }
 
   /** Drops a removed agent's memberships and delivery cursor; its messages stay in the history. */

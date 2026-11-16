@@ -43,6 +43,7 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     sender: "olena",
     subscribe: () => () => {},
     subscribeGames: () => () => {},
+    subscribeDelivered: () => () => {},
     addLive: vi.fn(),
     toast: vi.fn(),
     fail: vi.fn(),

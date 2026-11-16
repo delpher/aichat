@@ -1,5 +1,5 @@
 // Types of the broker's REST and WebSocket API, shared with the backend.
-export type { AgentInfo, ChatMessage, FileInfo, GameInfo, GameType, ServerFrame } from "../../../src/protocol";
+export type { AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameType, ServerFrame } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
 
 export { SYSTEM_SENDER } from "../../../src/protocol";

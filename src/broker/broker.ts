@@ -23,6 +23,7 @@ import {
   MAX_ATTACHMENTS,
   NAME_RE,
   ROOM_RE,
+  type AgentActivity,
   type AgentInfo,
   type ChatMessage,
   type ClientFrame,
@@ -30,6 +31,10 @@ import {
   type GameInfo,
   type ServerFrame,
 } from "../protocol.js";
+
+/** An agent busy or waiting with no news for this long is taken to be idle. */
+const ACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+const ACTIVITY_DETAIL_MAX = 200;
 
 export class BrokerError extends Error {
   constructor(
@@ -58,6 +63,8 @@ export interface BrokerOptions {
   bundleDir?: string;
   /** The games the broker hosts. Defaults to every game in src/games. */
   games?: GameDefinition[];
+  /** Dice for games of chance, [0, 1); defaults to Math.random. */
+  random?: () => number;
   /** Folder for uploaded files. Defaults to `files/` next to the database (a temp folder for `:memory:`). */
   filesDir?: string;
 }
@@ -69,7 +76,7 @@ const UNATTACHED_FILE_TTL_MS = 24 * 60 * 60 * 1000;
 const FILE_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const DEFAULT_BUNDLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle");
 /** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
-const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs"]);
+const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs", "aichat-hook.mjs"]);
 
 /** Who is using the admin API: a human agent with `admin: true`, by their own token. */
 export interface AdminIdentity {
@@ -137,6 +144,12 @@ export class Broker {
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
   /** Admin feed sockets; a human admin's feed also counts as that human being online. */
   private observers = new Map<WebSocket, string>();
+  /** What agents report they are doing (memory only), and when each last reported. */
+  private activity = new Map<string, AgentActivity>();
+  private activityTouched = new Map<string, number>();
+  /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
+  private hooked = new Set<string>();
+  private activityTimer?: NodeJS.Timeout;
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -163,6 +176,7 @@ export class Broker {
       },
       announce: (room, text) => this.announce(room, text),
       publish: (game) => this.broadcast({ type: "game", game }),
+      random: opts.random,
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
     this.syncConfiguredRooms();
@@ -445,16 +459,69 @@ export class Broker {
     change();
     const after = this.isOnline(name);
     if (before !== after) this.broadcastPresence(name, after);
+    // an agent that went away is not working on anything we can see
+    if (!after) this.setActivity(name, "idle");
   }
 
   agents(): AgentInfo[] {
-    return this.cfg.agents.map((a) => ({
-      name: a.name,
-      kind: a.kind,
-      ...(a.description ? { description: a.description } : {}),
-      online: this.isOnline(a.name),
-      rooms: this.store.roomsOf(a.name),
-    }));
+    return this.cfg.agents.map((a) => {
+      const activity = this.activity.get(a.name);
+      return {
+        name: a.name,
+        kind: a.kind,
+        ...(a.description ? { description: a.description } : {}),
+        online: this.isOnline(a.name),
+        rooms: this.store.roomsOf(a.name),
+        ...(activity ? { activity } : {}),
+      };
+    });
+  }
+
+  // ---------------- activity and delivery ----------------
+
+  /** Records what an agent is doing and tells every client when that changed. */
+  setActivity(agent: string, state: AgentActivity["state"], detail?: string) {
+    const cur = this.activity.get(agent);
+    if (state === "idle" && (!cur || cur.state === "idle")) return;
+    this.activityTouched.set(agent, Date.now());
+    if (cur && cur.state === state && cur.detail === detail) return;
+    const activity: AgentActivity = { state, ...(detail ? { detail } : {}), since: new Date().toISOString() };
+    this.activity.set(agent, activity);
+    const f: ServerFrame = { type: "activity", agent, activity };
+    for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
+  }
+
+  /** POST /api/activity from a Claude Code hook: {state, detail?}. */
+  private reportActivity(agent: string, b: Record<string, unknown>): AgentActivity {
+    const state = b.state;
+    if (state !== "idle" && state !== "busy" && state !== "waiting") throw new BrokerError("state must be idle, busy or waiting");
+    if (b.detail != null && typeof b.detail !== "string") throw new BrokerError("detail must be a string");
+    const detail = typeof b.detail === "string" ? b.detail.trim().slice(0, ACTIVITY_DETAIL_MAX) : undefined;
+    this.hooked.add(agent);
+    this.setActivity(agent, state, detail || undefined);
+    return this.activity.get(agent) ?? { state: "idle", since: new Date().toISOString() };
+  }
+
+  /** Busy or waiting with no news for a long time: the hook that would have said "idle" never ran. */
+  private expireActivity() {
+    const cutoff = Date.now() - ACTIVITY_TIMEOUT_MS;
+    for (const [agent, a] of this.activity)
+      if (a.state !== "idle" && (this.activityTouched.get(agent) ?? 0) < cutoff) this.setActivity(agent, "idle");
+  }
+
+  /** The adapter of `agent` passed message `id` into its session. */
+  private markDelivered(agent: string, id: number) {
+    const m = this.store.get(id);
+    if (!m) throw new BrokerError(`unknown message: ${id}`, 404);
+    if (!this.recipients(m).includes(agent)) throw new BrokerError(`message ${id} was not sent to you`, 403);
+    if (!this.store.markDelivered(id, agent)) return;
+    const f: ServerFrame = { type: "delivered", id, to: agent };
+    for (const ws of this.sockets.get(m.from) ?? []) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
+    // the session now reads it; hooks report the rest (no hook runs for a channel message itself)
+    const cur = this.activity.get(agent);
+    if (this.hooked.has(agent) && (!cur || cur.state === "idle")) this.setActivity(agent, "busy", "читає повідомлення");
   }
 
   history(agent: string, q: { room?: string; with?: string; limit?: number; before?: number }): ChatMessage[] {
@@ -671,6 +738,9 @@ export class Broker {
         return { type: "agents", agents: this.agents(), ref };
       case "history":
         return { type: "history", messages: this.history(agent, f), ref };
+      case "delivered":
+        this.markDelivered(agent, Number(f.id));
+        return { type: "ack", ref };
       case "ping":
         return { type: "pong", ref };
       case "auth":
@@ -707,6 +777,7 @@ export class Broker {
       if (route === "GET /api/me") return reply(200, { name: me, kind: agent.kind, rooms: this.store.roomsOf(me) });
       if (route === "GET /api/overview") return reply(200, this.overview(agent));
       if (route === "GET /api/agents") return reply(200, { agents: this.agents() });
+      if (route === "POST /api/activity") return reply(200, { activity: this.reportActivity(me, await body()) });
       if (route === "POST /api/messages") {
         const b = await body();
         const m = this.send(me, b as unknown as SendArgs);
@@ -1132,6 +1203,8 @@ export class Broker {
     const clean = () => this.cleanFiles().catch((e) => this.log(`file cleanup failed: ${(e as Error).message}`));
     this.cleanupTimer = setInterval(clean, 60 * 60 * 1000);
     this.cleanupTimer.unref();
+    this.activityTimer = setInterval(() => this.expireActivity(), 60 * 1000);
+    this.activityTimer.unref();
     void clean();
     return new Promise((resolve) => {
       this.http!.listen(port, host, () => {
@@ -1142,6 +1215,7 @@ export class Broker {
   }
 
   async close() {
+    clearInterval(this.activityTimer);
     clearInterval(this.retryTimer);
     clearInterval(this.cleanupTimer);
     clearInterval(this.configTimer);
