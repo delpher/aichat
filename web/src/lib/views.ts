@@ -7,8 +7,8 @@ export type View =
   | { kind: "room"; room: string }
   | { kind: "dm"; a: string; b: string }
   | { kind: PanelKind }
-  /** Mini-games: the lobby and game history. */
-  | { kind: "games" }
+  /** Mini-games: the tiles, or one game's lobby and history. */
+  | { kind: "games"; game?: string }
   | { kind: "game"; id: number }
   | { kind: "none" };
 
@@ -29,6 +29,7 @@ export function viewKey(v: View): string {
   if (v.kind === "room") return `r:${v.room}`;
   if (v.kind === "dm") return `d:${pairKey(v.a, v.b)}`;
   if (v.kind === "game") return `g:${v.id}`;
+  if (v.kind === "games" && v.game) return `games:${v.game}`;
   return v.kind;
 }
 
@@ -43,6 +44,7 @@ export function hashFor(v: View): string {
   if (v.kind === "room") return `#room/${encodeURIComponent(v.room)}`;
   if (v.kind === "dm") return `#dm/${encodeURIComponent(v.a)}/${encodeURIComponent(v.b)}`;
   if (v.kind === "game") return `#game/${v.id}`;
+  if (v.kind === "games" && v.game) return `#games/${encodeURIComponent(v.game)}`;
   if (v.kind === "none") return "";
   return `#${v.kind}`;
 }
@@ -60,7 +62,7 @@ export function parseHash(hash: string): View | null {
     });
   if ((PANELS as string[]).includes(parts[0])) return { kind: parts[0] as PanelKind };
   if (parts[0] === "all") return { kind: "all" };
-  if (parts[0] === "games") return { kind: "games" };
+  if (parts[0] === "games") return parts[1] ? { kind: "games", game: parts[1] } : { kind: "games" };
   if (parts[0] === "game" && /^\d+$/.test(parts[1] ?? "")) return { kind: "game", id: Number(parts[1]) };
   if (parts[0] === "room" && parts[1]) return { kind: "room", room: parts[1] };
   if (parts[0] === "dm" && parts[1] && parts[2]) return dm(parts[1], parts[2]);

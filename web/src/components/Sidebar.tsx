@@ -159,7 +159,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
         <ul className="nav-list">
           {admin && <Item active={cur === "all"} onClick={nav({ kind: "all" })} icon={<Inbox size={16} />} label="Усі повідомлення" />}
           <Item
-            active={cur === "games" || cur.startsWith("g:")}
+            active={cur === "games" || cur.startsWith("games:") || cur.startsWith("g:")}
             onClick={nav({ kind: "games" })}
             icon={<Gamepad2 size={16} />}
             label="Міні-ігри"

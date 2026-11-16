@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage, FileInfo, GameInfo } from "../protocol.js";
+import type { ChatMessage, FileInfo } from "../protocol.js";
+import type { GameOutcome } from "../games/game.js";
 
 interface Row {
   id: number;
@@ -21,25 +22,46 @@ export interface FileRow extends FileInfo {
   message_id: number | null;
 }
 
-/** A game as stored; `moves` in game notation, `result` as the game module reports it. */
+/** A game as stored: players by seat, `moves` in the game's notation, `result` as the game reported it. */
 export interface GameRecord {
   id: number;
   game: string;
-  white: string | null;
-  black: string | null;
+  players: (string | null)[];
   created_by: string;
   moves: string[];
   status: "open" | "active" | "finished";
-  result: NonNullable<GameInfo["result"]> | null;
+  result: GameOutcome | null;
   draw_offer: string | null;
   created_ts: string;
   updated_ts: string;
 }
 
-type GameRow = Omit<GameRecord, "moves" | "result"> & { moves: string; result: string | null };
+interface GameRow {
+  id: number;
+  game: string;
+  players: string;
+  created_by: string;
+  moves: string;
+  status: GameRecord["status"];
+  result: string | null;
+  draw_offer: string | null;
+  created_ts: string;
+  updated_ts: string;
+}
 
 function toGame(r: GameRow): GameRecord {
-  return { ...r, moves: JSON.parse(r.moves), result: r.result ? JSON.parse(r.result) : null };
+  return {
+    id: r.id,
+    game: r.game,
+    players: JSON.parse(r.players),
+    created_by: r.created_by,
+    moves: JSON.parse(r.moves),
+    status: r.status,
+    result: r.result ? JSON.parse(r.result) : null,
+    draw_offer: r.draw_offer,
+    created_ts: r.created_ts,
+    updated_ts: r.updated_ts,
+  };
 }
 
 function toMessage(r: Row): ChatMessage {
@@ -99,8 +121,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS games (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         game TEXT NOT NULL,
-        white TEXT,
-        black TEXT,
+        players TEXT NOT NULL DEFAULT '[]',
         created_by TEXT NOT NULL,
         moves TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL,
@@ -114,6 +135,32 @@ export class Store {
     // databases created before attachments existed
     const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "attachments")) this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
+    this.migrateGameSeats();
+  }
+
+  /**
+   * Games stored before seats existed had `white` / `black` columns and results with winner "w" / "b".
+   * They were all checkers: white is seat 0, black seat 1. The old columns stay, unused.
+   */
+  private migrateGameSeats() {
+    const cols = this.db.prepare("PRAGMA table_info(games)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "players")) return;
+    this.db.exec("ALTER TABLE games ADD COLUMN players TEXT NOT NULL DEFAULT '[]'");
+    const rows = this.db.prepare("SELECT id, white, black, result FROM games").all() as {
+      id: number;
+      white: string | null;
+      black: string | null;
+      result: string | null;
+    }[];
+    const update = this.db.prepare("UPDATE games SET players = ?, result = ? WHERE id = ?");
+    for (const r of rows) {
+      let result = r.result;
+      if (result) {
+        const old = JSON.parse(result) as { winner: string | null; reason: string };
+        result = JSON.stringify({ winner: old.winner === "w" ? 0 : old.winner === "b" ? 1 : null, reason: old.reason });
+      }
+      update.run(JSON.stringify([r.white, r.black]), result, r.id);
+    }
   }
 
   close() {
@@ -177,10 +224,10 @@ export class Store {
     const ts = new Date().toISOString();
     const res = this.db
       .prepare(
-        `INSERT INTO games (game, white, black, created_by, moves, status, result, draw_offer, created_ts, updated_ts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO games (game, players, created_by, moves, status, result, draw_offer, created_ts, updated_ts)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(g.game, g.white, g.black, g.created_by, JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, ts, ts);
+      .run(g.game, JSON.stringify(g.players), g.created_by, JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, ts, ts);
     return this.game(Number(res.lastInsertRowid))!;
   }
 
@@ -194,17 +241,21 @@ export class Store {
     this.db.prepare("DELETE FROM games WHERE id = ?").run(id);
   }
 
-  games(q: { status?: string; limit?: number } = {}): GameRecord[] {
+  games(q: { status?: string; game?: string; limit?: number } = {}): GameRecord[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (q.status) where.push("status = ?"), args.push(q.status);
+    if (q.game) where.push("game = ?"), args.push(q.game);
     const rows = this.db
-      .prepare(`SELECT * FROM games ${q.status ? "WHERE status = ?" : ""} ORDER BY id DESC LIMIT ?`)
-      .all(...(q.status ? [q.status] : []), q.limit ?? 200) as unknown as GameRow[];
+      .prepare(`SELECT * FROM games ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`)
+      .all(...args, q.limit ?? 200) as unknown as GameRow[];
     return rows.map(toGame);
   }
 
   updateGame(g: GameRecord): GameRecord {
     this.db
-      .prepare("UPDATE games SET white = ?, black = ?, moves = ?, status = ?, result = ?, draw_offer = ?, updated_ts = ? WHERE id = ?")
-      .run(g.white, g.black, JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, new Date().toISOString(), g.id);
+      .prepare("UPDATE games SET players = ?, moves = ?, status = ?, result = ?, draw_offer = ?, updated_ts = ? WHERE id = ?")
+      .run(JSON.stringify(g.players), JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, new Date().toISOString(), g.id);
     return this.game(g.id)!;
   }
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   newGame, legalMoves, play, replay, outcome, parseMove, renderBoard, square,
   type CheckersState, type Cell,
-} from "../games/checkers.js";
+} from "../games/checkers/engine.js";
 
 /** Builds a position from {square: cell}. */
 function position(pieces: Record<string, Cell>, turn: "w" | "b" = "w"): CheckersState {

@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthError, detectSession, makeApi } from "./api/http";
 import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
 import { ChatView } from "./components/ChatView";
-import { GameView } from "./components/games/GameView";
-import { GamesPanel } from "./components/games/GamesPanel";
+import { GameLobby } from "./games/GameLobby";
+import { GamePage } from "./games/GamePage";
+import { GamesHome } from "./games/GamesHome";
 import { Header } from "./components/Header";
 import { Login } from "./components/Login";
 import { PeoplePanel } from "./components/panels/PeoplePanel";
@@ -320,8 +321,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "people") main = <PeoplePanel onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
-  else if (view.kind === "games") main = <GamesPanel key={epoch} />;
-  else if (view.kind === "game") main = <GameView key={`${view.id}:${epoch}`} id={view.id} />;
+  else if (view.kind === "games")
+    main = view.game ? <GameLobby key={`${view.game}:${epoch}`} type={view.game} /> : <GamesHome key={epoch} />;
+  else if (view.kind === "game") main = <GamePage key={`${view.id}:${epoch}`} id={view.id} />;
   else
     main = (
       <div className="empty big">
