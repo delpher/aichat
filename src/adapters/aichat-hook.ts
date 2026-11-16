@@ -13,12 +13,62 @@ const TIMEOUT_MS = 2000;
 interface HookInput {
   hook_event_name?: string;
   tool_name?: string;
+  tool_input?: Record<string, unknown>;
   message?: string;
   notification_type?: string;
   cwd?: string;
 }
 
-type Report = { state: "idle" | "busy" | "waiting"; detail?: string } | null;
+type Report = { state: "idle" | "busy" | "waiting"; detail?: string; target?: string } | null;
+
+/** Longest target sent: enough for a file name or the start of a command. */
+const TARGET_MAX = 48;
+
+const short = (s: string) => {
+  const one = s.split("\n")[0].replace(/\s+/g, " ").trim();
+  return one.length > TARGET_MAX ? `${one.slice(0, TARGET_MAX - 1)}…` : one;
+};
+const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
+
+/**
+ * What a tool works on, short enough for a status line: the file name (not the path, which may be private),
+ * the start of a command, the search, the site. Nothing for tools whose input says nothing useful.
+ */
+export function targetOf(tool: string | undefined, input: Record<string, unknown> | undefined): string | undefined {
+  if (!tool || !input) return undefined;
+  const str = (k: string) => (typeof input[k] === "string" && (input[k] as string).trim() ? (input[k] as string) : undefined);
+  const file = str("file_path") ?? str("notebook_path") ?? str("path");
+  switch (tool) {
+    case "Read":
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+    case "NotebookEdit":
+      return file ? baseName(file) : undefined;
+    case "Bash":
+    case "PowerShell":
+      return str("description") ? short(str("description")!) : str("command") ? short(str("command")!) : undefined;
+    case "Grep":
+    case "Glob":
+      return str("pattern") ? short(str("pattern")!) : undefined;
+    case "WebFetch": {
+      const url = str("url");
+      if (!url) return undefined;
+      try {
+        return new URL(url).hostname;
+      } catch {
+        return short(url);
+      }
+    }
+    case "WebSearch":
+      return str("query") ? short(str("query")!) : undefined;
+    case "Agent":
+    case "Task":
+      return str("description") ? short(str("description")!) : undefined;
+    default:
+      return undefined;
+  }
+}
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -38,8 +88,10 @@ export function reportFor(e: HookInput): Report {
   switch (e.hook_event_name) {
     case "UserPromptSubmit":
       return { state: "busy", detail: "думає" };
-    case "PreToolUse":
-      return { state: "busy", ...(e.tool_name ? { detail: toolLabel(e.tool_name) } : {}) };
+    case "PreToolUse": {
+      const target = targetOf(e.tool_name, e.tool_input);
+      return { state: "busy", ...(e.tool_name ? { detail: toolLabel(e.tool_name) } : {}), ...(target ? { target } : {}) };
+    }
     case "Notification": {
       // "waiting for your input" only means the session sits at its prompt: that is idle, not a request
       if (e.notification_type === "idle_prompt" || /waiting for your input/i.test(e.message ?? "")) return { state: "idle" };

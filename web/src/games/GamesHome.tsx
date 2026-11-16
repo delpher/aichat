@@ -1,6 +1,6 @@
-import { LoaderCircle } from "lucide-react";
 import { useChat } from "../context";
 import { hashFor } from "../lib/views";
+import { ListSkeleton } from "../components/Skeleton";
 import { findGame } from "./registry";
 import { useGameList, useGameTypes } from "./useGames";
 
@@ -13,9 +13,7 @@ export function GamesHome() {
   if (!types)
     return (
       <div className="panel">
-        <div className="empty big">
-          <LoaderCircle className="spin" size={24} />
-        </div>
+        <ListSkeleton avatar={false} label="Завантаження ігор" />
       </div>
     );
   const playable = types.filter((t) => findGame(t.id));

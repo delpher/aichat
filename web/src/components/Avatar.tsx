@@ -1,10 +1,9 @@
-import { Bot } from "lucide-react";
 import type { AgentActivity } from "../api/types";
 import { hueFor, initials } from "../lib/format";
 
 interface Props {
   name: string;
-  /** Agent kind: anything but "human" gets a small bot badge. */
+  /** Agent kind: anything but "human" is drawn as a rounded square instead of a circle. */
   kind?: string | null;
   online?: boolean;
   /** busy: pulsing dot; waiting: amber dot (needs a person). */
@@ -12,18 +11,21 @@ interface Props {
   size?: "sm" | "md" | "lg";
 }
 
+/** Number of avatar colours in the palette (--av-0 … --av-7 in tokens.css). */
+const COLOURS = 8;
+
 export function Avatar({ name, kind, online, activity, size = "md" }: Props) {
-  const hue = hueFor(name);
   const bot = kind != null && kind !== "human";
   return (
-    <span className={`avatar avatar-${size}`} style={{ "--hue": hue } as React.CSSProperties} aria-hidden="true">
+    <span
+      className={`avatar avatar-${size}${bot ? " bot" : ""}`}
+      style={{ "--av": `var(--av-${hueFor(name) % COLOURS})` } as React.CSSProperties}
+      aria-hidden="true"
+    >
       <span className="avatar-face">{initials(name)}</span>
-      {bot && (
-        <span className="avatar-bot" title="AI-агент">
-          <Bot size={10} strokeWidth={2.5} />
-        </span>
+      {online !== undefined && (
+        <span className={`presence${online ? " on" : ""}${online && activity && activity.state !== "idle" ? ` ${activity.state}` : ""}`} />
       )}
-      {online !== undefined && <span className={`presence${online ? " on" : ""}${online && activity && activity.state !== "idle" ? ` ${activity.state}` : ""}`} />}
     </span>
   );
 }

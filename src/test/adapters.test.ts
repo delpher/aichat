@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,8 +53,22 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "list_agents",
     "list_games",
     "read_history",
+    "room_info",
     "send_message",
+    "set_room_brief",
+    "set_status",
   ]);
+
+  // briefs: joining a room shows its brief
+  const call = async (name: string, args: Record<string, unknown>) =>
+    ((await client.callTool({ name, arguments: args })).content as { text: string }[])[0].text;
+  assert.match(await call("join_room", { room: "lab" }), /joined #lab[\s\S]*No brief\./);
+  assert.equal(await call("set_room_brief", { room: "lab", text: "Ship the validator." }), "brief of #lab updated");
+  const info = await call("room_info", { room: "lab" });
+  assert.match(info, /Brief \(by claude1\):\nShip the validator\./);
+  // the agent says what it works on; the place defaults to its latest conversation
+  assert.equal(await call("set_status", { topic: "validator", room: "lab" }), "status: validator in #lab");
+  assert.equal(await call("set_status", { topic: "" }), "status cleared");
   const games = await client.callTool({ name: "list_games", arguments: {} });
   assert.equal((games.content as { text: string }[])[0].text, "Games you can play: checkers (Шашки): seats w=білі, b=чорні; nardy (Нарди): seats w=білі, b=чорні\nno games yet");
   // the agent sits where it asks; the seat names come from the game type
@@ -168,4 +183,61 @@ test("OpenAI-compatible agent answers through the model and can call tools", asy
   alice.close(); carol.close();
   await broker.close();
   api.close();
+});
+
+test("claude-channel install writes .mcp.json and keeps other servers", async () => {
+  const adapter = fileURLToPath(new URL("../adapters/claude-channel.js", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "aichat-install-"));
+  const run = (...args: string[]) => spawnSync(process.execPath, [adapter, "install", ...args], { cwd: dir, encoding: "utf8", env: { ...process.env, AICHAT_TOKEN: "" } });
+  try {
+    writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
+    let r = run("--url", "ws://broker.lan:8787", "--token", "tok-1");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /claude --dangerously-load-development-channels server:aichat/);
+    const cfg = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
+    assert.deepEqual(cfg.mcpServers.other, { command: "x" });
+    assert.deepEqual(cfg.mcpServers.aichat, {
+      command: "node",
+      args: [adapter.replace(/\\/g, "/")],
+      env: { AICHAT_URL: "ws://broker.lan:8787", AICHAT_TOKEN: "tok-1" },
+    });
+
+    // missing flags and bad URLs fail without touching the file
+    assert.equal(run("--url", "ws://x").status, 2);
+    assert.equal(run("--url", "http://x", "--token", "t").status, 2);
+    // a broken .mcp.json is left alone
+    writeFileSync(join(dir, ".mcp.json"), "{ not json");
+    r = run("--url", "ws://x:1", "--token", "t");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /not valid JSON/);
+    assert.equal(readFileSync(join(dir, ".mcp.json"), "utf8"), "{ not json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install registers the status hook and keeps other hooks", async () => {
+  const { installHooks } = await import("../adapters/install.js");
+  const dir = mkdtempSync(join(tmpdir(), "aichat-hooks-"));
+  try {
+    const path = join(dir, ".claude", "settings.local.json");
+    // a project hook that must stay, and an old aichat hook that must be replaced, not doubled
+    mkdirSync(join(dir, ".claude"));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        permissions: { allow: ["Bash(ls)"] },
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "echo done" }] }, { hooks: [{ type: "command", command: 'node "/old/aichat-hook.mjs"' }] }] },
+      }),
+    );
+    await installHooks({ dir, hook: "C:\\aichat\\aichat-hook.mjs" });
+    const s = JSON.parse(readFileSync(path, "utf8"));
+    assert.deepEqual(s.permissions, { allow: ["Bash(ls)"] });
+    assert.deepEqual(Object.keys(s.hooks).sort(), ["Notification", "PreToolUse", "Stop", "UserPromptSubmit"]);
+    const stop = s.hooks.Stop.map((g: { hooks: { command: string }[] }) => g.hooks[0].command);
+    assert.deepEqual(stop, ["echo done", 'node "C:/aichat/aichat-hook.mjs"']);
+    assert.equal(s.hooks.PreToolUse[0].matcher, "*");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

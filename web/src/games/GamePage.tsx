@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronFirst, ChevronLast, ChevronLeft, ChevronRight, Eye, Flag, Handshake, Hash, LoaderCircle, LogIn } from "lucide-react";
+import { ArrowLeft, ChevronFirst, ChevronLast, ChevronLeft, ChevronRight, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { GameInfo, GameType } from "../api/types";
 import { ChatView } from "../components/ChatView";
@@ -113,7 +113,7 @@ export function GamePage({ id }: { id: number }) {
   return (
     <div className="panel">
       <div className="lobby-head">
-        <a className="btn sm ghost" href={lobby}>
+        <a className="btn sm quiet" href={lobby}>
           <ArrowLeft size={14} /> {t?.title ?? "Ігри"}
         </a>
       </div>
@@ -126,109 +126,124 @@ export function GamePage({ id }: { id: number }) {
             <m.Play game={game} ply={shownPly} canMove={canMove} bottom={bottom} onMove={(move) => void act("move", { move })} />
           ) : (
             <div className="empty">
-              <p>
-                Гра «{t?.title ?? game.game}» поки не має дошки на сайті. Хід партії видно в чаті нижче.
-              </p>
+              <p>Гра «{t?.title ?? game.game}» поки не має дошки на сайті. Хід партії видно в чаті нижче.</p>
             </div>
           )}
           <PlayerBar name={game.players[bottom]} seat={bottom} label={seatName(t, bottom)} turn={live && game.turn === bottom} />
         </div>
 
         <aside className="card game-side">
-          <div>
-            <h2>{gameStatus(game, t)}</h2>
-            <p className="muted small">
-              {t?.title ?? game.game} · почато {fmtShort(game.created_ts)} · створив {game.created_by}
-            </p>
+          <div className="game-side-group">
+            <div>
+              <h2>{gameStatus(game, t)}</h2>
+              <p className="muted small num">
+                {t?.title ?? game.game} · почато {fmtShort(game.created_ts)} · створив {game.created_by}
+              </p>
+            </div>
+            {game.status === "open" && (
+              <p className="turn-hint">
+                {canJoin(game, sender) ? "Місце вільне: приєднуйтеся, і партія почнеться." : "Чекаємо, поки хтось приєднається…"}
+              </p>
+            )}
+            {canJoin(game, sender) && freeSeat >= 0 && (
+              <div className="actions">
+                <button type="button" className="btn primary" disabled={busy} onClick={() => void act("join", {})}>
+                  {busy && <LoaderCircle className="spin" size={16} />} Грати за {joinAs(t, freeSeat)}
+                </button>
+              </div>
+            )}
+            {mySeat === null && game.status === "active" && <p className="turn-hint">Ви дивитеся партію як глядач.</p>}
+            {live && mySeat !== null && (
+              <p className={`turn-hint${canMove !== null ? " mine" : ""}`}>
+                {canMove !== null ? "Ваш хід." : `Чекаємо на хід ${waitingFor ?? "суперника"}…`}
+              </p>
+            )}
+            {game.draw_offer && game.status === "active" && (
+              <p className="warn">{game.draw_offer === sender ? "Ви запропонували нічию." : `${game.draw_offer} пропонує нічию.`}</p>
+            )}
+            {game.status === "active" && mySeat !== null && (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="btn sm ghost"
+                  disabled={busy || game.draw_offer === sender}
+                  onClick={() => void act("draw")}
+                >
+                  {drawOfferedToMe ? "Прийняти нічию" : "Запропонувати нічию"}
+                </button>
+                <button
+                  type="button"
+                  className="btn sm danger-text"
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirm("Здатися в цій партії?")) void act("resign");
+                  }}
+                >
+                  Здатися
+                </button>
+              </div>
+            )}
           </div>
-          {game.status === "open" && (
-            <p className="turn-hint">
-              {canJoin(game, sender) ? "Місце вільне: приєднуйтеся, і партія почнеться." : "Чекаємо, поки хтось приєднається…"}
-            </p>
-          )}
-          {canJoin(game, sender) && freeSeat >= 0 && (
-            <div className="actions">
-              <button type="button" className="btn primary" disabled={busy} onClick={() => void act("join", {})}>
-                <LogIn size={16} /> Приєднатися за {joinAs(t, freeSeat)}
-              </button>
-            </div>
-          )}
-          {mySeat === null && game.status === "active" && (
-            <p className="turn-hint">
-              <Eye size={14} /> Ви дивитеся партію як глядач.
-            </p>
-          )}
-          {live && mySeat !== null && (
-            <p className={`turn-hint${canMove !== null ? " mine" : ""}`}>
-              {canMove !== null ? "Ваш хід." : `Чекаємо на хід ${waitingFor ?? "суперника"}…`}
-            </p>
-          )}
-          {game.draw_offer && game.status === "active" && (
-            <p className="warn">{game.draw_offer === sender ? "Ви запропонували нічию." : `${game.draw_offer} пропонує нічию.`}</p>
-          )}
-          {game.status === "active" && mySeat !== null && (
-            <div className="actions">
-              <button type="button" className="btn sm ghost" disabled={busy || game.draw_offer === sender} onClick={() => void act("draw")}>
-                <Handshake size={14} /> {drawOfferedToMe ? "Прийняти нічию" : "Запропонувати нічию"}
-              </button>
-              <button
-                type="button"
-                className="btn sm danger-text"
-                disabled={busy}
-                onClick={() => {
-                  if (confirm("Здатися в цій партії?")) void act("resign");
-                }}
-              >
-                <Flag size={14} /> Здатися
-              </button>
-            </div>
-          )}
 
-          <div className="moves-head">
-            <h3>Ходи</h3>
-            <div className="replay" aria-label="Перегляд ходів">
-              <button type="button" className="icon-btn sm" onClick={() => setPly(0)} disabled={shownPly === 0} aria-label="На початок">
-                <ChevronFirst size={14} />
-              </button>
-              <button type="button" className="icon-btn sm" onClick={() => setPly(Math.max(0, shownPly - 1))} disabled={shownPly === 0} aria-label="Назад">
-                <ChevronLeft size={14} />
-              </button>
-              <span className="muted small">
-                {shownPly}/{latest}
-              </span>
-              <button
-                type="button"
-                className="icon-btn sm"
-                onClick={() => setPly(shownPly + 1 >= latest ? null : shownPly + 1)}
-                disabled={shownPly === latest}
-                aria-label="Вперед"
-              >
-                <ChevronRight size={14} />
-              </button>
-              <button type="button" className="icon-btn sm" onClick={() => setPly(null)} disabled={shownPly === latest} aria-label="До останнього ходу">
-                <ChevronLast size={14} />
-              </button>
+          <div className="game-side-group">
+            <div className="moves-head">
+              <h3>Ходи</h3>
+              <div className="replay" aria-label="Перегляд ходів">
+                <button type="button" className="icon-btn sm" onClick={() => setPly(0)} disabled={shownPly === 0} aria-label="На початок">
+                  <ChevronFirst size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn sm"
+                  onClick={() => setPly(Math.max(0, shownPly - 1))}
+                  disabled={shownPly === 0}
+                  aria-label="Назад"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <span className="muted small num">
+                  {shownPly}/{latest}
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn sm"
+                  onClick={() => setPly(shownPly + 1 >= latest ? null : shownPly + 1)}
+                  disabled={shownPly === latest}
+                  aria-label="Вперед"
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn sm"
+                  onClick={() => setPly(null)}
+                  disabled={shownPly === latest}
+                  aria-label="До останнього ходу"
+                >
+                  <ChevronLast size={14} />
+                </button>
+              </div>
             </div>
+            <ol className="moves">
+              {rounds.map((r) => (
+                <li key={r.n}>
+                  <span className="muted">{r.n}.</span>
+                  {r.moves.map((mv) => (
+                    <button key={mv.ply} type="button" className={shownPly === mv.ply ? "on" : ""} onClick={() => setPly(mv.ply)}>
+                      {mv.text}
+                    </button>
+                  ))}
+                </li>
+              ))}
+              {!rounds.length && <li className="muted none">Ходів ще не було.</li>}
+            </ol>
           </div>
-          <ol className="moves">
-            {rounds.map((r) => (
-              <li key={r.n}>
-                <span className="muted">{r.n}.</span>
-                {r.moves.map((mv) => (
-                  <button key={mv.ply} type="button" className={shownPly === mv.ply ? "on" : ""} onClick={() => setPly(mv.ply)}>
-                    {mv.text}
-                  </button>
-                ))}
-              </li>
-            ))}
-            {!rounds.length && <li className="muted small">Ходів ще не було.</li>}
-          </ol>
 
-          {m?.toText && (
-            <div className="actions">
+          <div className="game-side-foot">
+            {m?.toText && (
               <button
                 type="button"
-                className="btn sm ghost"
+                className="btn sm quiet"
                 onClick={() => {
                   const text = `${gameStatus(game, t)}\n\n${m.toText!(game.moves.slice(0, shownPly))}`;
                   navigator.clipboard.writeText(text).then(
@@ -239,18 +254,16 @@ export function GamePage({ id }: { id: number }) {
               >
                 Копіювати як текст
               </button>
-            </div>
-          )}
-          <DeleteGame game={game} onDeleted={() => go({ kind: "games", game: game.game })} />
+            )}
+            <DeleteGame game={game} onDeleted={() => go({ kind: "games", game: game.game })} />
+          </div>
         </aside>
       </div>
 
       <section className="card game-chat">
         <div className="card-head">
-          <h2>
-            <Hash size={15} /> Чат партії
-          </h2>
-          <button type="button" className="btn sm ghost" onClick={() => go({ kind: "room", room: game.room })} disabled={!inRoom}>
+          <h2>Чат партії</h2>
+          <button type="button" className="btn sm quiet" onClick={() => go({ kind: "room", room: game.room })} disabled={!inRoom}>
             Відкрити на весь екран
           </button>
         </div>
@@ -275,7 +288,7 @@ function PlayerBar({ name, seat, label, turn }: { name: string | null; seat: num
   return (
     <div className={`player-bar${turn ? " turn" : ""}`}>
       <span className={`seat-dot seat-${seat}`} />
-      {name ? <b>{name}</b> : <i className="muted">{FREE_SEAT}</i>}
+      {name ? <b>{name}</b> : <span className="free-seat">{FREE_SEAT}</span>}
       <span className="muted small">{label}</span>
       {turn && <span className="turn-dot" title="Зараз ходить" />}
     </div>

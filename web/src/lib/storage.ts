@@ -29,4 +29,6 @@ export const KEYS = {
   projectDir: "aichat.projectDir",
   theme: "aichat.theme",
   navCollapsed: "aichat.navCollapsed",
+  threads: "aichat.threads",
+  notify: "aichat.notify",
 };

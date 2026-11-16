@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { adminSession, msg, overview, userSession } from "../test/render";
-import { fmtDay, fmtSize, hueFor, initials } from "./format";
+import { fmtDay, fmtSize, hueFor, initials, plural } from "./format";
+import { atHopLimit, buildThreads, threadOf } from "./threads";
 import { applyFormat } from "./markdownEdit";
 import { dm, gameIdOfRoom, hashFor, historyPath, matchesView, parseHash, resolveView, viewKey } from "./views";
 
@@ -84,5 +85,51 @@ describe("game rooms", () => {
     expect(gameIdOfRoom("lobby")).toBeNull();
     expect(matchesView(m, { kind: "game", id: 4 })).toBe(true);
     expect(matchesView(m, { kind: "game", id: 5 })).toBe(false);
+  });
+});
+
+describe("threads", () => {
+  it("groups reply chains under their first loaded message", () => {
+    const list = [
+      msg({ id: 1, from: "olena", text: "plan?" }),
+      msg({ id: 2, from: "claude", text: "draft", reply_to: 1, hops: 1 }),
+      msg({ id: 3, from: "olena", text: "unrelated" }),
+      msg({ id: 4, from: "bot", text: "review", reply_to: 2, hops: 2 }),
+      msg({ id: 5, from: "claude", text: "fixed", reply_to: 4, hops: 3 }),
+      msg({ id: 6, from: "bot", text: "to an old one", reply_to: 99, hops: 4 }),
+    ];
+    const t = buildThreads(list);
+    expect(t.rootOf.get(5)).toBe(1);
+    expect(t.rootOf.get(3)).toBe(3);
+    expect(t.rootOf.get(6)).toBe(6); // parent not loaded: starts its own thread
+    expect([...t.byRoot.keys()]).toEqual([1]);
+    const th = t.byRoot.get(1)!;
+    expect(th.replies.map((m) => m.id)).toEqual([2, 4, 5]);
+    expect(th.participants).toEqual(["claude", "bot"]);
+    expect(th.last.id).toBe(5);
+    expect(threadOf(t, 4)).toBe(th);
+    expect(threadOf(t, 3)).toBeUndefined();
+  });
+
+  it("marks messages that reached the hop limit, except in game rooms", () => {
+    expect(atHopLimit(msg({ id: 1, hops: 8 }), 8)).toBe(true);
+    expect(atHopLimit(msg({ id: 1, hops: 7 }), 8)).toBe(false);
+    expect(atHopLimit(msg({ id: 1, hops: 9, room: "game-3" }), 8)).toBe(false);
+    expect(atHopLimit(msg({ id: 1, hops: 9 }), undefined)).toBe(false);
+  });
+
+  it("picks Ukrainian plural forms", () => {
+    const f: [string, string, string] = ["відповідь", "відповіді", "відповідей"];
+    expect([1, 2, 5, 11, 12, 21, 22, 25, 111].map((n) => plural(n, f))).toEqual([
+      "відповідь",
+      "відповіді",
+      "відповідей",
+      "відповідей",
+      "відповідей",
+      "відповідь",
+      "відповіді",
+      "відповідей",
+      "відповідей",
+    ]);
   });
 });

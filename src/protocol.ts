@@ -91,9 +91,33 @@ export interface GameInfo {
 export interface AgentActivity {
   state: "idle" | "busy" | "waiting";
   detail?: string;
+  /** What the tool works on, from the hook: a file name, a command, a search ("App.tsx", "npm test"). */
+  target?: string;
+  /** What the agent works on, in its own few words (POST /api/status, the set_status tool), e.g. "web". */
+  topic?: string;
+  /**
+   * Where it works: a room, or the agent it talks with directly (`with`). Named with set_status, otherwise
+   * the conversation of the agent's latest message, sent or received.
+   */
+  room?: string;
+  with?: string;
   /** ISO time the state started. */
   since: string;
 }
+
+export const MAX_STATUS_TOPIC = 60;
+
+/** A room's brief: its goal, rules and who does what. Members see it when they open or join the room. */
+export interface RoomBrief {
+  room: string;
+  /** Markdown, up to MAX_BRIEF_LENGTH characters. */
+  text: string;
+  /** Who wrote this version. */
+  by: string;
+  ts: string;
+}
+
+export const MAX_BRIEF_LENGTH = 4000;
 
 export interface AgentInfo {
   name: string;
@@ -139,6 +163,8 @@ export type ServerFrame =
   | { type: "activity"; agent: string; activity: AgentActivity }
   /** Sent to the sender of message `id` and to admin observers when agent `to` received it. */
   | { type: "delivered"; id: number; to: string }
+  /** Sent to a room's members and admin observers when its brief changed (null: removed). */
+  | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };
 
 /** Reserved sender of broker-made messages (game boards, move errors); no agent may use this name. */

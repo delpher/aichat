@@ -16,7 +16,7 @@ if (!existsSync(path)) {
 const config = new ConfigFile(path);
 if (config.get().adminToken)
   console.error(
-    "[broker] adminToken in the config is no longer used and is ignored: admins are people with \"admin\": true " +
+    '[broker] adminToken in the config is no longer used and is ignored: admins are people with "admin": true ' +
       "(npm run admin -- <name>). You can delete it from the file.",
   );
 if (!config.get().agents.some((a) => a.admin && a.kind === "human"))
@@ -28,6 +28,14 @@ const withEnv = (c: BrokerConfig): BrokerConfig => ({
   port: Number(process.env.AICHAT_PORT) || c.port,
   db: process.env.AICHAT_DB || c.db,
 });
+/** dist/bundle next to this file's dist/broker; under tsx (src/broker) the built adapters are still in dist/bundle. */
+function bundleDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return (
+    [resolve(here, "..", "bundle"), resolve(here, "..", "..", "dist", "bundle")].find((d) => existsSync(d)) ?? resolve(here, "..", "bundle")
+  );
+}
+
 // Set by the launcher (node dist/launcher.js): installed versions live there and the broker may update itself.
 const home = process.env.AICHAT_LAUNCHER ? process.env.AICHAT_HOME : undefined;
 let broker: Broker;
@@ -53,7 +61,7 @@ broker = new Broker({
       : // under the launcher the version folders come and go; the built-in copy's path stays the same
         process.env.AICHAT_BUILTIN_DIR
         ? resolve(process.env.AICHAT_BUILTIN_DIR, "dist", "bundle")
-        : resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle")),
+        : bundleDir()),
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();

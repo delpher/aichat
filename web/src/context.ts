@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Api } from "./api/http";
-import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, Overview, RoomBrief, Session } from "./api/types";
 import type { View } from "./lib/views";
 
 export interface ChatContextValue {
@@ -18,12 +18,26 @@ export interface ChatContextValue {
   subscribeGames: (fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => () => void;
   /** Delivery receipts (agent `to` received message `id`); returns an unsubscribe function. */
   subscribeDelivered: (fn: (id: number, to: string) => void) => () => void;
+  /** Live brief changes of rooms; returns an unsubscribe function. */
+  subscribeBoard: (fn: (e: BoardEvent) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */
   addLive: (m: ChatMessage) => void;
   toast: (text: string, error?: boolean) => void;
   /** Shows an error, or ends the session if the token stopped working. */
   fail: (err: unknown, where: string) => void;
+  /** Opens a room from a #room reference: joins it first when a person is not a member yet. */
+  openRoom: (room: string) => void;
+  /** Opens a message's conversation and scrolls to it (loading older pages if needed). */
+  openMessage: (m: ChatMessage) => void;
+  /** A message to show once its conversation is open (`key` is the conversation's viewKey). */
+  focus: { key: string; id: number } | null;
+  clearFocus: () => void;
+  /** Replies folded into threads (true) or shown in the feed. */
+  threaded: boolean;
+  setThreaded: (on: boolean) => void;
 }
+
+export type BoardEvent = { kind: "brief"; room: string; brief: RoomBrief | null };
 
 export const ChatContext = createContext<ChatContextValue | null>(null);
 

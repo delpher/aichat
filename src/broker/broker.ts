@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, createWriteStream, mkdirSync, mkdtempSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -21,9 +21,11 @@ import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
+import { Board, BoardError } from "./board.js";
 import {
   INLINE_IMAGE_TYPES,
   MAX_ATTACHMENTS,
+  MAX_STATUS_TOPIC,
   NAME_RE,
   ROOM_RE,
   type AgentActivity,
@@ -38,6 +40,7 @@ import {
 /** An agent busy or waiting with no news for this long is taken to be idle. */
 const ACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTIVITY_DETAIL_MAX = 200;
+const ACTIVITY_TARGET_MAX = 80;
 
 export class BrokerError extends Error {
   constructor(
@@ -79,7 +82,9 @@ const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "
 /** Uploads that were never attached to a message are removed after this long. */
 const UNATTACHED_FILE_TTL_MS = 24 * 60 * 60 * 1000;
 const FILE_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
-const DEFAULT_BUNDLE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bundle");
+const HERE = dirname(fileURLToPath(import.meta.url));
+// dist/broker → dist/bundle; under `npm run dev:broker` (tsx, src/broker) the adapters are still in dist/bundle.
+const DEFAULT_BUNDLE_DIR = [resolve(HERE, "..", "bundle"), resolve(HERE, "..", "..", "dist", "bundle")].find((d) => existsSync(d)) ?? resolve(HERE, "..", "bundle");
 /** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
 const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs", "aichat-hook.mjs"]);
 
@@ -146,12 +151,20 @@ export class Broker {
   readonly store: Store;
   readonly updater: Updater;
   readonly games: Games;
+  readonly board: Board;
   private sockets = new Map<string, Set<WebSocket>>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
   /** Admin feed sockets; a human admin's feed also counts as that human being online. */
   private observers = new Map<WebSocket, string>();
   /** What agents report they are doing (memory only), and when each last reported. */
+  /** What every client was last told about each agent's activity. */
   private activity = new Map<string, AgentActivity>();
+  /** What the hooks report: state, tool, target. */
+  private work = new Map<string, { state: AgentActivity["state"]; detail?: string; target?: string; since: string }>();
+  /** What the agent says it works on (set_status). */
+  private focus = new Map<string, { topic: string; room?: string; with?: string; since: string }>();
+  /** The conversation of the agent's latest message, sent or received. */
+  private lastConv = new Map<string, { room?: string; with?: string }>();
   private activityTouched = new Map<string, number>();
   /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
   private hooked = new Set<string>();
@@ -184,6 +197,17 @@ export class Broker {
       announce: (room, text) => this.announce(room, text),
       publish: (game) => this.broadcast({ type: "game", game }),
       random: opts.random,
+    });
+    this.board = new Board({
+      store: this.store,
+      mayUse: (agent, room) => this.store.isMember(agent, room) || this.isAdminName(agent),
+      checkRoom: (room) => {
+        if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
+        if (GAME_ROOM_RE.test(room)) throw new BrokerError(`${room} is a game room; it has no brief`, 409);
+        if (!this.store.roomExists(room)) throw new BrokerError(`unknown room: ${room}`, 404);
+      },
+      announce: (room, text) => this.announce(room, text),
+      publishBrief: (room, brief) => this.publishRoom(room, { type: "brief", room, brief }),
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
     this.syncConfiguredRooms();
@@ -282,6 +306,7 @@ export class Broker {
 
     this.checkRate(from);
     const msg = this.store.insert({ from, to: args.to, room: args.room, text, reply_to: args.reply_to, hops, attachments });
+    this.noteConversation(from, msg.room ? { room: msg.room } : { with: msg.to });
     const files = attachments.length ? `, ${attachments.length} file(s)` : "";
     this.log(`#${msg.id} ${from} -> ${msg.to ?? "#" + msg.room} (hops ${hops}${files})`);
     this.deliver(msg);
@@ -294,6 +319,16 @@ export class Broker {
     const msg = this.store.insert({ from: SYSTEM_SENDER, room, text, hops: 0 });
     this.deliver(msg);
     return msg;
+  }
+
+  /** A frame for a room's members and the admin feeds. */
+  private publishRoom(room: string, f: ServerFrame) {
+    for (const name of this.store.membersOf(room)) for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
+  }
+
+  private isAdminName(name: string): boolean {
+    return this.cfg.agents.some((a) => a.name === name && a.admin && a.kind === "human");
   }
 
   /** A frame for every connected client, participants and admin feeds alike. */
@@ -466,8 +501,13 @@ export class Broker {
     change();
     const after = this.isOnline(name);
     if (before !== after) this.broadcastPresence(name, after);
-    // an agent that went away is not working on anything we can see
-    if (!after) this.setActivity(name, "idle");
+    // an agent that went away is not working on anything we can see, and its session's topic ended with it
+    if (!after) {
+      this.focus.delete(name);
+      this.lastConv.delete(name);
+      this.setActivity(name, "idle");
+      this.publishActivity(name);
+    }
   }
 
   agents(): AgentInfo[] {
@@ -486,28 +526,88 @@ export class Broker {
 
   // ---------------- activity and delivery ----------------
 
-  /** Records what an agent is doing and tells every client when that changed. */
-  setActivity(agent: string, state: AgentActivity["state"], detail?: string) {
-    const cur = this.activity.get(agent);
-    if (state === "idle" && (!cur || cur.state === "idle")) return;
-    this.activityTouched.set(agent, Date.now());
-    if (cur && cur.state === state && cur.detail === detail) return;
-    const activity: AgentActivity = { state, ...(detail ? { detail } : {}), since: new Date().toISOString() };
-    this.activity.set(agent, activity);
-    const f: ServerFrame = { type: "activity", agent, activity };
+  /**
+   * An agent's activity is put together from three sources: what its hooks report (state, tool, target),
+   * what it says it works on (topic and place, set_status), and the conversation of its latest message,
+   * which stands in for the place when it named none.
+   */
+  private composeActivity(agent: string): AgentActivity | undefined {
+    const work = this.work.get(agent);
+    const focus = this.focus.get(agent);
+    if (!work && !focus) return undefined;
+    const where = focus?.room || focus?.with ? focus : this.lastConv.get(agent);
+    return {
+      state: work?.state ?? "idle",
+      ...(work?.detail ? { detail: work.detail } : {}),
+      ...(work?.target ? { target: work.target } : {}),
+      ...(focus?.topic ? { topic: focus.topic } : {}),
+      ...(where?.room ? { room: where.room } : where?.with ? { with: where.with } : {}),
+      since: work?.since ?? focus!.since,
+    };
+  }
+
+  /** Tells every client the agent's activity, when it differs from what they were told last. */
+  private publishActivity(agent: string) {
+    const activity = this.composeActivity(agent);
+    const before = this.activity.get(agent);
+    if (JSON.stringify(activity) === JSON.stringify(before)) return;
+    if (activity) this.activity.set(agent, activity);
+    else this.activity.delete(agent);
+    const f: ServerFrame = { type: "activity", agent, activity: activity ?? { state: "idle", since: new Date().toISOString() } };
     for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, f);
     for (const ws of this.observers.keys()) this.sendFrame(ws, f);
   }
 
-  /** POST /api/activity from a Claude Code hook: {state, detail?}. */
+  /** Records what an agent is doing (from its hooks or adapter) and tells every client when that changed. */
+  setActivity(agent: string, state: AgentActivity["state"], detail?: string, target?: string) {
+    const cur = this.work.get(agent);
+    if (state === "idle" && (!cur || cur.state === "idle") && !this.focus.has(agent)) return;
+    this.activityTouched.set(agent, Date.now());
+    // the clock runs from when the state began, not from the latest tool
+    const since = cur && cur.state === state ? cur.since : new Date().toISOString();
+    this.work.set(agent, { state, ...(detail ? { detail } : {}), ...(target ? { target } : {}), since });
+    this.publishActivity(agent);
+  }
+
+  /** The conversation an agent last wrote in or received from: where it works unless it named a place. */
+  private noteConversation(agent: string, where: { room?: string; with?: string }) {
+    const cur = this.lastConv.get(agent);
+    if (cur?.room === where.room && cur?.with === where.with) return;
+    this.lastConv.set(agent, where);
+    if (this.work.has(agent) || this.focus.has(agent)) this.publishActivity(agent);
+  }
+
+  /** POST /api/activity from a Claude Code hook: {state, detail?, target?}. */
   private reportActivity(agent: string, b: Record<string, unknown>): AgentActivity {
     const state = b.state;
     if (state !== "idle" && state !== "busy" && state !== "waiting") throw new BrokerError("state must be idle, busy or waiting");
     if (b.detail != null && typeof b.detail !== "string") throw new BrokerError("detail must be a string");
+    if (b.target != null && typeof b.target !== "string") throw new BrokerError("target must be a string");
     const detail = typeof b.detail === "string" ? b.detail.trim().slice(0, ACTIVITY_DETAIL_MAX) : undefined;
+    const target = typeof b.target === "string" ? b.target.trim().replace(/\s+/g, " ").slice(0, ACTIVITY_TARGET_MAX) : undefined;
     this.hooked.add(agent);
-    this.setActivity(agent, state, detail || undefined);
+    this.setActivity(agent, state, detail || undefined, target || undefined);
     return this.activity.get(agent) ?? { state: "idle", since: new Date().toISOString() };
+  }
+
+  /**
+   * POST /api/status: what the agent works on and where, in its own words: {topic, room?} or {topic, with?}.
+   * An empty topic clears it. Without a place, the conversation of its latest message is used.
+   */
+  private reportStatus(agent: string, b: Record<string, unknown>): AgentActivity | null {
+    if (typeof b.topic !== "string") throw new BrokerError("topic must be a string (empty to clear)");
+    const topic = b.topic.trim().replace(/\s+/g, " ");
+    if (topic.length > MAX_STATUS_TOPIC) throw new BrokerError(`topic is longer than ${MAX_STATUS_TOPIC} characters`);
+    if (b.room != null && b.with != null) throw new BrokerError("set `room` or `with`, not both");
+    const room = typeof b.room === "string" && b.room ? b.room.replace(/^#/, "") : undefined;
+    const peer = typeof b.with === "string" && b.with ? b.with.replace(/^@/, "") : undefined;
+    if (room && !this.store.isMember(agent, room)) throw new BrokerError(`you are not in room ${room}`, 403);
+    if (peer && !this.cfg.agents.some((a) => a.name === peer)) throw new BrokerError(`unknown agent: ${peer}`, 404);
+    if (!topic) this.focus.delete(agent);
+    else this.focus.set(agent, { topic, ...(room ? { room } : peer ? { with: peer } : {}), since: new Date().toISOString() });
+    this.activityTouched.set(agent, Date.now());
+    this.publishActivity(agent);
+    return this.activity.get(agent) ?? null;
   }
 
   /** Busy or waiting with no news for a long time: the hook that would have said "idle" never ran. */
@@ -527,7 +627,8 @@ export class Broker {
     for (const ws of this.sockets.get(m.from) ?? []) this.sendFrame(ws, f);
     for (const ws of this.observers.keys()) this.sendFrame(ws, f);
     // the session now reads it; hooks report the rest (no hook runs for a channel message itself)
-    const cur = this.activity.get(agent);
+    this.noteConversation(agent, m.room ? { room: m.room } : { with: m.from });
+    const cur = this.work.get(agent);
     if (this.hooked.has(agent) && (!cur || cur.state === "idle")) this.setActivity(agent, "busy", "читає повідомлення");
   }
 
@@ -546,6 +647,21 @@ export class Broker {
     throw new BrokerError("set `room` or `with`");
   }
 
+  /** Text search over the history; `viewer` limits it to what that agent may read (admins search everything). */
+  search(p: URLSearchParams, viewer?: string): ChatMessage[] {
+    const text = (p.get("q") ?? "").trim();
+    if (text.length < 2) throw new BrokerError("`q` must be at least 2 characters");
+    if (text.length > 200) throw new BrokerError("`q` is longer than 200 characters");
+    const room = p.get("room") || undefined;
+    const agent = p.get("agent") || undefined;
+    if (room && !ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
+    if (agent && !NAME_RE.test(agent)) throw new BrokerError(`invalid agent name: ${agent}`);
+    const before = p.get("before") ? Number(p.get("before")) : undefined;
+    if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
+    const limit = Math.min(Math.max(Number(p.get("limit")) || 30, 1), 100);
+    return this.store.search({ text, viewer, room, agent, before, limit });
+  }
+
   /** What one agent may see: its rooms, its direct conversations, everyone's presence. */
   overview(agent: AgentConfig) {
     return {
@@ -554,6 +670,8 @@ export class Broker {
       rooms: this.store.rooms(agent.name),
       dms: this.store.dms(agent.name),
       all_rooms: this.store.allRoomNames(),
+      // Reply chains stop at this length; the web UI marks chains that reached it.
+      max_hops: this.cfg.maxHops,
     };
   }
 
@@ -785,6 +903,7 @@ export class Broker {
       if (route === "GET /api/overview") return reply(200, this.overview(agent));
       if (route === "GET /api/agents") return reply(200, { agents: this.agents() });
       if (route === "POST /api/activity") return reply(200, { activity: this.reportActivity(me, await body()) });
+      if (route === "POST /api/status") return reply(200, { activity: this.reportStatus(me, await body()) });
       if (route === "POST /api/messages") {
         const b = await body();
         const m = this.send(me, b as unknown as SendArgs);
@@ -798,7 +917,10 @@ export class Broker {
         return await this.serveFile(f, res);
       }
       if (url.pathname === "/api/games" || url.pathname.startsWith("/api/games/")) return await this.onGameRequest(req, url, me, reply);
+      const briefMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/brief$/);
+      if (briefMatch) return await this.onBriefRequest(req, me, reply, briefMatch);
       if (route === "GET /api/inbox") return reply(200, { messages: this.inbox(me) });
+      if (route === "GET /api/search") return reply(200, { messages: this.search(url.searchParams, me) });
       if (route === "GET /api/history") {
         const q = Object.fromEntries(url.searchParams);
         return reply(200, {
@@ -815,6 +937,25 @@ export class Broker {
       const status = e instanceof BrokerError ? e.status : 500;
       if (status === 500) this.log(`HTTP error: ${(e as Error).stack}`);
       return reply(status, { error: (e as Error).message });
+    }
+  }
+
+  // ---------------- room briefs ----------------
+
+  private async onBriefRequest(req: IncomingMessage, me: string, reply: (status: number, body: unknown) => void, path: RegExpMatchArray) {
+    try {
+      let room: string;
+      try {
+        room = decodeURIComponent(path[1]);
+      } catch {
+        throw new BrokerError("invalid room name");
+      }
+      if (req.method === "GET") return reply(200, { brief: this.board.brief(me, room) });
+      if (req.method === "PUT") return reply(200, { brief: this.board.setBrief(me, room, (await readJson(req)).text) });
+      return reply(405, { error: "use GET or PUT" });
+    } catch (e) {
+      if (e instanceof BoardError) throw new BrokerError(e.message, e.status);
+      throw e;
     }
   }
 
@@ -926,7 +1067,7 @@ export class Broker {
         return { ...a, webhook: !!c?.webhook, admin: !!c?.admin };
       });
     if (route === "GET /admin/api/overview")
-      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms() });
+      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms(), max_hops: this.cfg.maxHops });
     const edit = (fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig => {
       if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
       try {
@@ -1201,11 +1342,13 @@ export class Broker {
       const q = Object.fromEntries(url.searchParams);
       if (!!q.a !== !!q.b) throw new BrokerError("set both `a` and `b` for a direct conversation");
       if (q.room && q.a) throw new BrokerError("set either `room` or `a`+`b`, not both");
+      if (q.agent && q.a) throw new BrokerError("`agent` filters the whole history or a room, not a direct conversation");
       const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
       const before = q.before ? Number(q.before) : undefined;
       if (before !== undefined && !(before > 0)) throw new BrokerError("`before` must be a positive message id");
-      return reply(200, { messages: this.store.allMessages({ room: q.room, a: q.a, b: q.b, before, limit }) });
+      return reply(200, { messages: this.store.allMessages({ room: q.room, a: q.a, b: q.b, agent: q.agent, before, limit }) });
     }
+    if (route === "GET /admin/api/search") return reply(200, { messages: this.search(url.searchParams) });
     /** The human an admin writes as (the web UI may post only as people, never as AI agents). */
     const humanAs = (name: unknown) => {
       const as = this.cfg.agents.find((a) => a.name === name);

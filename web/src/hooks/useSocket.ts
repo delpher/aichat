@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentActivity, ChatMessage, GameInfo, ServerFrame, Session } from "../api/types";
+import type { AgentActivity, ChatMessage, GameInfo, RoomBrief, ServerFrame, Session } from "../api/types";
 
 export type ConnStatus = "connecting" | "online" | "offline";
 
@@ -21,6 +21,8 @@ export interface SocketHandlers {
   onActivity?: (agent: string, activity: AgentActivity) => void;
   /** Agent `to` received message `id`. */
   onDelivered?: (id: number, to: string) => void;
+  /** A room's brief changed (null: removed). */
+  onBrief?: (room: string, brief: RoomBrief | null) => void;
 }
 
 /**
@@ -78,6 +80,9 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             break;
           case "delivered":
             h.current.onDelivered?.(f.id, f.to);
+            break;
+          case "brief":
+            h.current.onBrief?.(f.room, f.brief);
             break;
           case "game_deleted":
             h.current.onGameDeleted?.(f.id);

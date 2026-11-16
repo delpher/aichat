@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage, FileInfo } from "../protocol.js";
+import type { ChatMessage, FileInfo, RoomBrief } from "../protocol.js";
 import type { GameOutcome } from "../games/game.js";
 
 interface Row {
@@ -137,7 +137,15 @@ export class Store {
         updated_ts TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_games_status ON games(status, id);
+      CREATE TABLE IF NOT EXISTS briefs (
+        room TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
     `);
+    // Case-insensitive search for any script: SQLite's own lower()/LIKE fold only ASCII.
+    this.db.function("fold", { deterministic: true }, (t) => (t == null ? null : String(t).toLocaleLowerCase()));
     // databases created before attachments existed
     const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "attachments")) this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
@@ -222,6 +230,28 @@ export class Store {
 
   deleteFile(id: string) {
     this.db.prepare("DELETE FROM files WHERE id = ?").run(id);
+  }
+
+  // ---- room briefs ----
+
+  brief(room: string): RoomBrief | null {
+    const r = this.db.prepare("SELECT room, text, author, ts FROM briefs WHERE room = ?").get(room) as
+      | { room: string; text: string; author: string; ts: string }
+      | undefined;
+    return r ? { room: r.room, text: r.text, by: r.author, ts: r.ts } : null;
+  }
+
+  /** Stores a room's brief; empty text removes it. */
+  setBrief(room: string, text: string, by: string): RoomBrief | null {
+    if (!text) {
+      this.db.prepare("DELETE FROM briefs WHERE room = ?").run(room);
+      return null;
+    }
+    const ts = new Date().toISOString();
+    this.db
+      .prepare("INSERT INTO briefs (room, text, author, ts) VALUES (?, ?, ?, ?) ON CONFLICT(room) DO UPDATE SET text = ?, author = ?, ts = ?")
+      .run(room, text, by, ts, text, by, ts);
+    return { room, text, by, ts };
   }
 
   // ---- games ----
@@ -328,6 +358,35 @@ export class Store {
     return rows.map(toMessage);
   }
 
+  /**
+   * Messages whose text contains `text` (any case), newest first. `viewer` limits the search to what that
+   * agent may read: its rooms and its direct messages. `room` / `agent` narrow it further.
+   */
+  search(q: { text: string; viewer?: string; room?: string; agent?: string; before?: number; limit: number }): ChatMessage[] {
+    const where = ["instr(fold(text), ?) > 0"];
+    const args: (string | number)[] = [q.text.toLocaleLowerCase()];
+    if (q.viewer) {
+      where.push(
+        "((room IS NOT NULL AND room IN (SELECT room FROM memberships WHERE agent = ?)) OR (room IS NULL AND (sender = ? OR recipient = ?)))",
+      );
+      args.push(q.viewer, q.viewer, q.viewer);
+    }
+    if (q.room) {
+      where.push("room = ?");
+      args.push(q.room);
+    }
+    if (q.agent) {
+      where.push("(sender = ? OR recipient = ?)");
+      args.push(q.agent, q.agent);
+    }
+    if (q.before) {
+      where.push("id < ?");
+      args.push(q.before);
+    }
+    const sql = `SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY id DESC LIMIT ?`;
+    return (this.db.prepare(sql).all(...args, q.limit) as unknown as Row[]).map(toMessage);
+  }
+
   roomHistory(room: string, limit: number): ChatMessage[] {
     const rows = this.db
       .prepare("SELECT * FROM (SELECT * FROM messages WHERE room = ? ORDER BY id DESC LIMIT ?) ORDER BY id")
@@ -336,7 +395,7 @@ export class Store {
   }
 
   /** Any messages for the admin view: one room, one DM pair, or everything; paged backwards with `before`. */
-  allMessages(q: { room?: string; a?: string; b?: string; before?: number; limit: number }): ChatMessage[] {
+  allMessages(q: { room?: string; a?: string; b?: string; agent?: string; before?: number; limit: number }): ChatMessage[] {
     const where: string[] = [];
     const args: (string | number)[] = [];
     if (q.room) {
@@ -345,6 +404,11 @@ export class Store {
     } else if (q.a && q.b) {
       where.push("((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))");
       args.push(q.a, q.b, q.b, q.a);
+    }
+    if (q.agent) {
+      // everything the agent wrote, and the direct messages it received
+      where.push("(sender = ? OR recipient = ?)");
+      args.push(q.agent, q.agent);
     }
     if (q.before) {
       where.push("id < ?");
@@ -430,13 +494,15 @@ export class Store {
     this.db.prepare("INSERT OR IGNORE INTO rooms (name, created) VALUES (?, ?)").run(room, new Date().toISOString());
   }
 
-  /** Removes a room's members and its record; with `messages` also its history. */
+  /** Removes a room's members and its record; with `messages` also its history and brief. */
   deleteRoom(room: string, messages: boolean) {
     this.db.prepare("DELETE FROM memberships WHERE room = ?").run(room);
     this.db.prepare("DELETE FROM rooms WHERE name = ?").run(room);
     if (messages) {
+      // the room is gone for good: its deliveries and brief go with its history
       this.db.prepare("DELETE FROM deliveries WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
       this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
+      this.db.prepare("DELETE FROM briefs WHERE room = ?").run(room);
     }
   }
 

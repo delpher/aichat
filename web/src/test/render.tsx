@@ -44,9 +44,16 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     subscribe: () => () => {},
     subscribeGames: () => () => {},
     subscribeDelivered: () => () => {},
+    subscribeBoard: () => () => {},
     addLive: vi.fn(),
     toast: vi.fn(),
     fail: vi.fn(),
+    openMessage: vi.fn(),
+    openRoom: vi.fn(),
+    focus: null,
+    clearFocus: vi.fn(),
+    threaded: false,
+    setThreaded: vi.fn(),
     ...over,
   };
   return { ...render(<ChatContext.Provider value={value}>{ui}</ChatContext.Provider>), ctx: value };

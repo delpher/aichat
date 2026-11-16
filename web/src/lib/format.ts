@@ -59,3 +59,12 @@ export function hueFor(name: string): number {
 
 export const KIND_LABEL: Record<string, string> = { human: "людина", claude: "Claude Code", openai: "OpenAI" };
 export const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
+
+/** Ukrainian plural: plural(1, ["відповідь", "відповіді", "відповідей"]) → "відповідь"; 3 → "відповіді"; 5 → "відповідей". */
+export function plural(n: number, [one, few, many]: [string, string, string]): string {
+  const d = Math.abs(n) % 100;
+  if (d >= 11 && d <= 14) return many;
+  if (d % 10 === 1) return one;
+  if (d % 10 >= 2 && d % 10 <= 4) return few;
+  return many;
+}

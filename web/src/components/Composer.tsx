@@ -2,6 +2,7 @@ import {
   Bold,
   Code,
   FileText,
+  Hash,
   Italic,
   Link,
   List,
@@ -15,11 +16,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MAX_ATTACHMENTS, type ChatMessage } from "../api/types";
+import { MAX_ATTACHMENTS, type Agent, type ChatMessage } from "../api/types";
 import { useChat } from "../context";
 import { fmtSize, kindLabel } from "../lib/format";
-import { applyFormat, insertMention, mentionQuery, type FormatKind } from "../lib/markdownEdit";
-import type { View } from "../lib/views";
+import { applyFormat, insertMention, insertRef, refQuery, type FormatKind } from "../lib/markdownEdit";
+import { knownRooms, type View } from "../lib/views";
 import { isImage } from "./Attachments";
 import { Avatar } from "./Avatar";
 import { snippet } from "./MessageItem";
@@ -51,9 +52,17 @@ interface Props {
   onDroppedTaken: () => void;
   /** A name to insert as @name at the caret (a new seq inserts again). */
   mention?: { name: string; seq: number } | null;
+  /** In a thread: every message answers `replyTo` (the thread's newest), with no reply bar to cancel. */
+  threadReply?: boolean;
+  /** Why writing is not possible here (shown instead of the placeholder). */
+  blockedReason?: string;
+  placeholder?: string;
 }
 
 let pendingSeq = 0;
+
+/** A suggestion while typing "@name" or "#room". */
+type Candidate = { type: "agent"; name: string; agent: Agent } | { type: "room"; name: string };
 
 /**
  * Touch keyboards have no Shift+Enter, so there Enter makes a new line and the send button sends.
@@ -67,7 +76,17 @@ export const enterSends = () => {
   }
 };
 
-export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken, mention }: Props) {
+export function Composer({
+  view,
+  replyTo,
+  onCancelReply,
+  dropped,
+  onDroppedTaken,
+  mention,
+  threadReply,
+  blockedReason,
+  placeholder,
+}: Props) {
   const { session, api, overview, sender, addLive, fail, toast } = useChat();
   const admin = session.mode === "admin";
   const [text, setText] = useState("");
@@ -99,18 +118,25 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
     placeCaret(r.caret);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mention?.seq]);
-  const query = mentionQuery(text, caret);
+  // "@" offers people and agents, "#" offers rooms
+  const query = refQuery(text, caret);
   const q = query ? query.query.toLowerCase() : null;
-  const candidates = useMemo(
-    () =>
-      q === null
-        ? []
-        : overview.agents
-            .filter((a) => a.name !== sender && a.name.toLowerCase().startsWith(q))
-            .sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name))
-            .slice(0, 8),
-    [q, overview.agents, sender],
-  );
+  const sigil = query?.sigil ?? "@";
+  const myRooms = useMemo(() => new Set(overview.rooms.map((r) => r.name)), [overview.rooms]);
+  const candidates = useMemo<Candidate[]>(() => {
+    if (q === null) return [];
+    if (sigil === "#")
+      return knownRooms(overview)
+        .filter((n) => n.toLowerCase().startsWith(q))
+        .sort((x, y) => Number(myRooms.has(y)) - Number(myRooms.has(x)) || x.localeCompare(y))
+        .slice(0, 8)
+        .map((name) => ({ type: "room", name }));
+    return overview.agents
+      .filter((a) => a.name !== sender && a.name.toLowerCase().startsWith(q))
+      .sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name))
+      .slice(0, 8)
+      .map((a) => ({ type: "agent", name: a.name, agent: a }));
+  }, [q, sigil, overview, sender, myRooms]);
   const picking = !pickClosed && candidates.length > 0;
   useEffect(() => {
     setPickIdx(0);
@@ -118,33 +144,38 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
   }, [query?.start, q]);
   const pick = (name: string) => {
     if (!query) return;
-    const r = insertMention(text, query.start, caret, name);
+    const r = insertRef(text, query.start, caret, query.sigil, name);
     setText(r.text);
     placeCaret(r.caret);
   };
   const picker = useRef<HTMLInputElement>(null);
 
   // "All messages" (admin): pick the conversation to write to
+  // "Кому" lists people and agents; to write to a room, open the room. Only a reply keeps its room as the target.
   const targets = useMemo(() => {
     if (view.kind !== "all") return [];
-    const rooms = [...overview.rooms].sort((x, y) => x.name.localeCompare(y.name)).map((r) => `#${r.name}`);
     const people = overview.agents
       .map((a) => a.name)
       .filter((n) => n !== sender)
       .sort()
       .map((n) => `@${n}`);
-    return [...rooms, ...people];
-  }, [view.kind, overview, sender]);
+    return replyTo?.room ? [`#${replyTo.room}`, ...people] : people;
+  }, [view.kind, overview, sender, replyTo?.room]);
   useEffect(() => {
-    if (view.kind === "all" && targets.length && !targets.includes(to)) setTo(targets[0]);
+    if (view.kind === "all" && targets.length && !targets.includes(to)) {
+      // filtered to one participant: write to them by default
+      const preferred = view.agent && view.agent !== sender ? `@${view.agent}` : "";
+      setTo(targets.includes(preferred) ? preferred : targets[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- view.agent is part of the view key; the composer remounts with it
   }, [targets, to, view.kind]);
   useEffect(() => {
     if (replyTo && view.kind === "all") {
       const t = replyTo.room ? `#${replyTo.room}` : `@${replyTo.from === sender ? replyTo.to : replyTo.from}`;
       if (targets.includes(t)) setTo(t);
     }
-    if (replyTo) area.current?.focus();
-  }, [replyTo, view.kind, sender, targets]);
+    if (replyTo && !threadReply) area.current?.focus();
+  }, [replyTo, view.kind, sender, targets, threadReply]);
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
@@ -173,7 +204,7 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
       return cur.filter((x) => x.key !== key);
     });
 
-  let blocked = "";
+  let blocked = blockedReason ?? "";
   if (view.kind === "dm" && sender !== view.a && sender !== view.b)
     blocked = "Це чужа особиста розмова: ви її бачите як адмін, але писати в неї не можете.";
 
@@ -255,7 +286,7 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
       void send();
       return;
     }
-    if (e.key === "Escape" && replyTo) onCancelReply();
+    if (e.key === "Escape" && replyTo && !threadReply) onCancelReply();
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
       if (tool) {
@@ -305,12 +336,18 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
         </div>
       )}
       <div className={`composer-box${blocked ? " blocked" : ""}`}>
-        {replyTo && (
+        {replyTo && !threadReply && (
           <div className="reply-bar">
             <span>
               Відповідь <strong>{replyTo.from}</strong>: <span className="reply-text">{snippet(replyTo)}</span>
             </span>
-            <button type="button" className="icon-btn sm" onClick={onCancelReply} title="Скасувати відповідь" aria-label="Скасувати відповідь">
+            <button
+              type="button"
+              className="icon-btn sm"
+              onClick={onCancelReply}
+              title="Скасувати відповідь"
+              aria-label="Скасувати відповідь"
+            >
               <X size={14} />
             </button>
           </div>
@@ -339,22 +376,34 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
           </ul>
         )}
         {picking && (
-          <ul className="mentions" id="mention-list" role="listbox" aria-label="Кого згадати">
-            {candidates.map((a, i) => (
-              <li key={a.name} role="option" aria-selected={i === pickIdx}>
+          <ul className="mentions" id="mention-list" role="listbox" aria-label={sigil === "#" ? "Яку кімнату згадати" : "Кого згадати"}>
+            {candidates.map((c, i) => (
+              <li key={c.name} role="option" aria-selected={i === pickIdx}>
                 <button
                   type="button"
                   tabIndex={-1}
                   className={i === pickIdx ? "on" : ""}
                   onMouseDown={(e) => {
                     e.preventDefault();
-                    pick(a.name);
+                    pick(c.name);
                   }}
                   onMouseEnter={() => setPickIdx(i)}
                 >
-                  <Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />
-                  <span>{a.name}</span>
-                  {a.kind !== "human" && <span className="muted small">{kindLabel(a.kind)}</span>}
+                  {c.type === "room" ? (
+                    <>
+                      <span className="mention-icon">
+                        <Hash size={14} />
+                      </span>
+                      <span>{c.name}</span>
+                      {!myRooms.has(c.name) && <span className="muted small">ви не в кімнаті</span>}
+                    </>
+                  ) : (
+                    <>
+                      <Avatar name={c.agent.name} kind={c.agent.kind} online={c.agent.online} size="sm" />
+                      <span>{c.name}</span>
+                      {c.agent.kind !== "human" && <span className="muted small">{kindLabel(c.agent.kind)}</span>}
+                    </>
+                  )}
                 </button>
               </li>
             ))}
@@ -377,7 +426,15 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
           aria-controls={picking ? "mention-list" : undefined}
           onPaste={onPaste}
           disabled={disabled}
-          placeholder={blocked || (enterSends() ? "Повідомлення… Enter надіслати, Shift+Enter новий рядок" : "Повідомлення…")}
+          placeholder={
+            blocked ||
+            placeholder ||
+            (view.kind === "room"
+              ? `Написати в #${view.room}`
+              : view.kind === "dm"
+                ? `Написати ${sender === view.a ? view.b : view.a}`
+                : "Написати повідомлення")
+          }
           enterKeyHint={enterSends() ? "send" : "enter"}
           aria-label="Повідомлення"
         />
@@ -425,7 +482,7 @@ export function Composer({ view, replyTo, onCancelReply, dropped, onDroppedTaken
             type="submit"
             className="send"
             disabled={disabled || (!text.trim() && !files.length)}
-            title="Надіслати (Enter)"
+            title={enterSends() ? "Надіслати (Enter). Новий рядок: Shift+Enter" : "Надіслати"}
             aria-label="Надіслати"
           >
             {busy ? <LoaderCircle className="spin" size={18} /> : <SendHorizontal size={18} />}

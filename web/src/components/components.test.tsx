@@ -57,9 +57,9 @@ describe("MessageItem", () => {
         { id: "f2aaaaaaaaaaaaaaaa", name: "pic.png", mime: "image/png", size: 10 },
       ],
     });
-    renderWithChat(<ol><MessageItem {...base} message={m} onReply={onReply} /></ol>);
+    const { container } = renderWithChat(<ol><MessageItem {...base} message={m} onReply={onReply} /></ol>);
     expect(screen.getByText("claude")).toBeInTheDocument();
-    expect(screen.getByText("AI")).toBeInTheDocument();
+    expect(container.querySelector(".avatar.bot")).not.toBeNull(); // agents get a square avatar instead of an "AI" badge
     expect(screen.getByText("this").tagName).toBe("STRONG");
     expect(screen.getByText("report.pdf")).toBeInTheDocument();
     expect(await screen.findByAltText("pic.png")).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe("MessageList", () => {
       msg({ id: 4, ts: "2026-11-15T09:02:00Z", from: "olena", text: "mine" }),
     ];
     const { container } = renderWithChat(
-      <MessageList messages={messages} loading={false} hasOlder={false} olderLoads={0} onLoadOlder={() => {}} showWhere={false} emptyText="" />,
+      <MessageList messages={messages} loading={false} hasOlder={false} olderLoads={0} onLoadOlder={() => {}} showWhere={false} emptyTitle="" emptyText="" />,
     );
     expect(container.querySelectorAll(".day")).toHaveLength(2);
     expect(container.querySelector('[data-id="3"]')).toHaveClass("compact");
@@ -101,7 +101,7 @@ describe("MessageList", () => {
   it("shows the empty text and the older button", () => {
     const onLoadOlder = vi.fn();
     renderWithChat(
-      <MessageList messages={[]} loading={false} hasOlder olderLoads={0} onLoadOlder={onLoadOlder} showWhere={false} emptyText="Порожньо" />,
+      <MessageList messages={[]} loading={false} hasOlder olderLoads={0} onLoadOlder={onLoadOlder} showWhere={false} emptyTitle="Порожньо" emptyText="" />,
     );
     expect(screen.getByText("Порожньо")).toBeInTheDocument();
     fireEvent.click(screen.getByText(/Завантажити старіші/));
@@ -179,6 +179,19 @@ describe("Composer", () => {
     await waitFor(() => expect(api.send).toHaveBeenCalledWith("POST", "/admin/api/messages", { as: "alexey", to: "claude", text: "hi" }));
   });
 
+  it("lists only people and agents under Кому; a reply keeps its room", () => {
+    const { unmount } = renderWithChat(<Composer {...props} view={{ kind: "all" }} />, { session: adminSession, sender: "alexey" });
+    const options = () => [...(screen.getByLabelText("Кому") as HTMLSelectElement).options].map((o) => o.value);
+    expect(options()).toEqual(["@claude", "@olena"]);
+    unmount();
+    renderWithChat(<Composer {...props} view={{ kind: "all" }} replyTo={msg({ id: 4, room: "lobby" })} />, {
+      session: adminSession,
+      sender: "alexey",
+    });
+    expect(options()).toEqual(["#lobby", "@claude", "@olena"]);
+    expect(screen.getByLabelText("Кому")).toHaveValue("#lobby");
+  });
+
   it("refuses more than 10 files", async () => {
     const { ctx } = renderWithChat(<Composer {...props} />);
     const files = Array.from({ length: 11 }, (_, i) => new File(["x"], `f${i}.txt`));
@@ -189,12 +202,12 @@ describe("Composer", () => {
 });
 
 describe("Sidebar", () => {
-  const props = { unread: new Map([["r:lobby", 3]]), conn: { status: "online" as const, retryIn: 0 }, theme: "system" as const, onTheme: vi.fn(), onLogout: vi.fn(), onJoin: vi.fn() };
+  const props = { unread: new Map([["r:lobby", 3]]), conn: { status: "online" as const, retryIn: 0 }, theme: "system" as const, onTheme: vi.fn(), onLogout: vi.fn(), onJoin: vi.fn(), onSearch: vi.fn() };
 
   it("lists rooms with unread badges, people with presence, and rooms to join", async () => {
     const { ctx, container } = renderWithChat(<Sidebar {...props} />);
     expect(container.querySelector(".nav-item .badge")).toHaveTextContent("3");
-    expect(screen.getByText("olena (ви)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^olena\s*онлайн\s*ви$/ })).toBeInTheDocument();
     expect(container.querySelectorAll(".presence.on")).toHaveLength(2);
     expect(screen.queryByText("Налаштування")).toBeNull();
     await userEvent.click(screen.getByText("random"));
@@ -242,7 +255,7 @@ describe("Login", () => {
   it("submits the token and shows errors", async () => {
     const onLogin = vi.fn(async () => {});
     const { rerender } = render(<Login onLogin={onLogin} error="" />);
-    await userEvent.type(screen.getByPlaceholderText("ваш особистий токен"), "  secret-token  ");
+    await userEvent.type(screen.getByLabelText(/Особистий токен/), "  secret-token  ");
     await userEvent.click(screen.getByRole("button", { name: /Увійти/ }));
     expect(onLogin).toHaveBeenCalledWith("secret-token", true);
     rerender(<Login onLogin={onLogin} error="Невірний токен." />);

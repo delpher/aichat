@@ -1,4 +1,4 @@
-import { Download, ExternalLink, LoaderCircle, RefreshCw, Save, X } from "lucide-react";
+import { ExternalLink, LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthError } from "../../api/http";
 import type { UpdateStatus } from "../../api/types";
@@ -6,7 +6,8 @@ import { useChat } from "../../context";
 import { Markdown } from "../Markdown";
 import { Status, type StatusValue } from "./Status";
 
-const fmtDate = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString("uk-UA", { dateStyle: "medium", timeStyle: "short" }) : "");
+const fmtDate = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleString("uk-UA", { dateStyle: "medium", timeStyle: "short" }) : "";
 
 /** Waits until /health reports `version` (the broker restarted into it), up to `ms`. */
 async function waitForVersion(version: string, ms: number, sleep = 2000): Promise<boolean> {
@@ -38,7 +39,8 @@ export function UpdateBox({ reload = () => window.location.reload(), pollMs }: {
     setForm({ repo: d.repo, token: "", prerelease: d.prerelease });
   }, []);
   const oops = useCallback(
-    (err: unknown, what: string) => (err instanceof AuthError ? fail(err, "") : setStatus({ text: `${what}: ${(err as Error).message}`, error: true })),
+    (err: unknown, what: string) =>
+      err instanceof AuthError ? fail(err, "") : setStatus({ text: `${what}: ${(err as Error).message}`, error: true }),
     [fail],
   );
 
@@ -134,19 +136,18 @@ export function UpdateBox({ reload = () => window.location.reload(), pollMs }: {
       <div className="card-head">
         <h2>Версія</h2>
         <button type="button" className="btn ghost sm" disabled={!!busy} onClick={() => void check()}>
-          {busy === "check" ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} Перевірити
+          {busy === "check" && <LoaderCircle size={15} className="spin" />} Перевірити
         </button>
       </div>
       <p>
-        Працює версія <b>{s.current}</b>.
-        {s.checkedAt && <span className="muted"> Перевірено {fmtDate(s.checkedAt)}.</span>}
+        Працює версія <b>{s.current}</b>.{s.checkedAt && <span className="muted"> Перевірено {fmtDate(s.checkedAt)}.</span>}
       </p>
       {s.failed && (
         <div className="warn actions">
           <span>
             Оновлення до {s.failed.version} не вдалося ({s.failed.reason}), тому повернуто версію {s.failed.previous}.
           </span>
-          <button type="button" className="btn ghost sm" onClick={() => void dismiss()} aria-label="Сховати">
+          <button type="button" className="icon-btn sm" onClick={() => void dismiss()} aria-label="Сховати" title="Сховати">
             <X size={14} />
           </button>
         </div>
@@ -171,7 +172,7 @@ export function UpdateBox({ reload = () => window.location.reload(), pollMs }: {
           <div className="actions">
             {!confirm ? (
               <button type="button" className="btn primary" disabled={!!busy || !!blocker} onClick={() => setConfirm(true)}>
-                {busy === "install" ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />} Оновити до {l.version}
+                {busy === "install" && <LoaderCircle size={16} className="spin" />} Оновити до {l.version}
               </button>
             ) : (
               <>
@@ -221,21 +222,21 @@ export function UpdateBox({ reload = () => window.location.reload(), pollMs }: {
                 onChange={(e) => setForm({ ...form, token: e.target.value })}
               />
               <small>
-                Потрібен, поки репозиторій приватний: fine-grained токен з правом Contents: Read-only на цей репозиторій. Зберігається в agents.json і
-                назад не показується.
+                Потрібен, поки репозиторій приватний: fine-grained токен з правом Contents: Read-only на цей репозиторій. Зберігається в
+                agents.json і назад не показується.
               </small>
             </label>
           </div>
           <label className="check">
-            <input type="checkbox" checked={form.prerelease} onChange={(e) => setForm({ ...form, prerelease: e.target.checked })} /> Пропонувати
-            пре-релізи (v1.2.3-rc.1)
+            <input type="checkbox" checked={form.prerelease} onChange={(e) => setForm({ ...form, prerelease: e.target.checked })} />{" "}
+            Пропонувати пре-релізи (v1.2.3-rc.1)
           </label>
           <div className="actions">
             <button type="submit" className="btn" disabled={!!busy || !changedSettings}>
-              <Save size={16} /> Зберегти
+              {busy === "save" && <LoaderCircle size={16} className="spin" />} Зберегти
             </button>
             {s.hasToken && !s.tokenFromEnv && (
-              <button type="button" className="btn ghost danger-text" disabled={!!busy} onClick={() => void save({ token: "" })}>
+              <button type="button" className="btn danger-text" disabled={!!busy} onClick={() => void save({ token: "" })}>
                 Видалити токен
               </button>
             )}

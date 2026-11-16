@@ -1,10 +1,11 @@
-import { BookOpen, KeyRound, ShieldCheck, ShieldOff, Trash2, UserPlus } from "lucide-react";
+import { LoaderCircle, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AuthError } from "../../api/http";
 import { ROOM_RE, type Agent, type Setup } from "../../api/types";
 import { useChat } from "../../context";
 import { kindLabel } from "../../lib/format";
 import { Avatar } from "../Avatar";
+import { ListSkeleton } from "../Skeleton";
 import { SetupBox } from "./SetupBox";
 import { Status, type StatusValue } from "./Status";
 
@@ -12,17 +13,24 @@ type Action = "delete" | "rotate" | "grant" | "revoke";
 
 const enc = encodeURIComponent;
 
+const CONFIRM_LABEL: Record<Action, string> = {
+  delete: "Видалити",
+  rotate: "Перевидати токен",
+  grant: "Зробити адміном",
+  revoke: "Зняти права",
+};
+
 export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
   const { api, session, overview, fail, reloadOverview } = useChat();
-  const [list, setList] = useState<Agent[]>([]);
+  const [list, setList] = useState<Agent[] | null>(null);
   const [editable, setEditable] = useState(true);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<{ name: string; action: Action } | null>(null);
   const [status, setStatus] = useState<StatusValue>(null);
-  const [setup, setSetup] = useState<{ title: string; setup: Setup; fresh: boolean } | null>(null);
+  const [setup, setSetup] = useState<{ name: string; title: string; setup: Setup; fresh: boolean } | null>(null);
   const [form, setForm] = useState({ name: "", kind: "human", custom: "bot", webhook: "", description: "", rooms: "" });
   const me = session.mode === "admin" ? session.admin.name : null;
-  const adminCount = list.filter((a) => a.admin).length;
+  const adminCount = (list ?? []).filter((a) => a.admin).length;
 
   const load = useCallback(async () => {
     try {
@@ -35,6 +43,7 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
       if (s.editable === false) setStatus({ text: "Брокер запущено без файлу конфігурації, тому список змінювати не можна." });
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
+      setList((cur) => cur ?? []);
       setStatus({ text: `Не вдалося завантажити список: ${(err as Error).message}`, error: true });
     }
   }, [api, fail]);
@@ -68,7 +77,8 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
     const webhook = form.kind === "human" || form.kind === "claude" ? "" : form.webhook.trim();
     if (!ROOM_RE.test(name)) return setStatus({ text: "Ім'я: латиниця, цифри, - і _ (до 64 символів).", error: true });
     if (!ROOM_RE.test(kind)) return setStatus({ text: "Назва типу: латиниця, цифри, - і _.", error: true });
-    if (webhook && !/^https?:\/\/\S+$/.test(webhook)) return setStatus({ text: "Webhook має бути адресою http:// або https://", error: true });
+    if (webhook && !/^https?:\/\/\S+$/.test(webhook))
+      return setStatus({ text: "Webhook має бути адресою http:// або https://", error: true });
     const bad = rooms.find((r) => !ROOM_RE.test(r));
     if (bad) return setStatus({ text: `Погана назва кімнати: ${bad}`, error: true });
     void run(async () => {
@@ -80,7 +90,12 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
         ...(webhook ? { webhook } : {}),
       });
       setForm({ ...form, name: "", webhook: "", description: "", rooms: "" });
-      setSetup({ title: kind === "human" ? `Вхід для ${d.agent.name}` : `Як запустити ${d.agent.name}`, setup: d.setup, fresh: true });
+      setSetup({
+        name: d.agent.name,
+        title: kind === "human" ? `Вхід для ${d.agent.name}` : `Як запустити ${d.agent.name}`,
+        setup: d.setup,
+        fresh: true,
+      });
     }, `Додано: ${name}.`);
   };
 
@@ -93,7 +108,7 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
     if (action === "rotate")
       return run(async () => {
         const d = await api.send<{ token: string; setup?: Setup }>("POST", `/admin/api/agents/${enc(name)}/token`);
-        setSetup({ title: `Новий токен для ${name}`, setup: d.setup ?? { steps: [{ title: "Токен", code: d.token }] }, fresh: true });
+        setSetup({ name, title: `Новий токен для ${name}`, setup: d.setup ?? { steps: [{ title: "Токен", code: d.token }] }, fresh: true });
       }, `Токен ${name} перевидано.`);
     const admin = action === "grant";
     if (!admin && name === me) {
@@ -117,7 +132,7 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
   const showSetup = async (name: string) => {
     try {
       const d = await api.get<{ setup: Setup }>(`/admin/api/agents/${enc(name)}/setup`);
-      setSetup({ title: `Як підключити ${name}`, setup: d.setup, fresh: false });
+      setSetup({ name, title: `Як підключити ${name}`, setup: d.setup, fresh: false });
       setStatus({ text: "Токен в інструкції замінено на <TOKEN>. Якщо токен загубився, натисніть «Новий токен»." });
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
@@ -126,7 +141,7 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
   };
 
   const online = new Map(overview.agents.map((a) => [a.name, a.online]));
-  const sorted = [...list].sort((x, y) =>
+  const sorted = [...(list ?? [])].sort((x, y) =>
     (x.kind === "human") === (y.kind === "human") ? x.name.localeCompare(y.name) : x.kind === "human" ? -1 : 1,
   );
   const locked = !editable || busy;
@@ -156,24 +171,25 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
             <input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="olena або claude-c"
+              placeholder="claude-c"
               maxLength={64}
               required
               disabled={locked}
             />
+            <small>Латиниця, цифри, - і _</small>
           </label>
           <label className="field">
             <span>Тип</span>
             <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} disabled={locked}>
-              <option value="human">людина (вхід у веб)</option>
+              <option value="human">Людина</option>
               <option value="claude">Claude Code</option>
               <option value="openai">OpenAI-сумісна модель</option>
-              <option value="other">інший (REST / webhook)</option>
+              <option value="other">Інший (REST або webhook)</option>
             </select>
           </label>
           {form.kind === "other" && (
             <label className="field">
-              <span>Назва типу</span>
+              <span>Тип агента</span>
               <input value={form.custom} onChange={(e) => setForm({ ...form, custom: e.target.value })} maxLength={64} disabled={locked} />
             </label>
           )}
@@ -183,37 +199,45 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
               <input
                 value={form.webhook}
                 onChange={(e) => setForm({ ...form, webhook: e.target.value })}
-                placeholder="необов'язково, https://…"
+                placeholder="https://…"
                 disabled={locked}
               />
             </label>
           )}
           <label className="field">
-            <span>Опис</span>
+            <span>Опис, необов'язково</span>
             <input
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
               maxLength={200}
-              placeholder="необов'язково"
+              placeholder="Пише код"
               disabled={locked}
             />
           </label>
           <label className="field">
             <span>Кімнати</span>
-            <input value={form.rooms} onChange={(e) => setForm({ ...form, rooms: e.target.value })} placeholder="lobby, team" disabled={locked} />
+            <input
+              value={form.rooms}
+              onChange={(e) => setForm({ ...form, rooms: e.target.value })}
+              placeholder="lobby, team"
+              disabled={locked}
+            />
+            <small>Через кому</small>
           </label>
         </div>
         <div className="actions">
           <button type="submit" className="btn primary" disabled={locked}>
-            <UserPlus size={16} /> Додати
+            {busy && <LoaderCircle className="spin" size={16} />} Додати й отримати токен
           </button>
           <Status value={status} />
         </div>
-        <p className="muted small">Ім'я: латиниця, цифри, - і _. Кімнати через кому. Після додавання з'являться токен і інструкція запуску.</p>
       </form>
 
-      <section className="card">
-        <h2>Усі учасники</h2>
+      <section className="section">
+        <div className="section-head">
+          <h2>Учасники{list && <span className="count">{list.length}</span>}</h2>
+        </div>
+        {!list && <ListSkeleton label="Завантаження учасників" />}
         <ul className="people">
           {sorted.map((a) => {
             const isOn = online.get(a.name) ?? a.online;
@@ -222,16 +246,21 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                 <Avatar name={a.name} kind={a.kind} online={isOn} />
                 <div className="person-info">
                   <div className="person-name">
-                    <strong>{a.name}</strong>
-                    {a.admin && <span className="tag tag-admin">адмін</span>}
-                    {a.name === me && <span className="muted small">(ви)</span>}
+                    {a.name}
+                    {a.name === me && <span className="muted small">ви</span>}
                   </div>
-                  <div className="muted small">
-                    {kindLabel(a.kind)} · {isOn ? "онлайн" : "офлайн"}
-                    {a.rooms.length ? ` · ${a.rooms.map((r) => "#" + r).join(", ")}` : ""}
-                    {a.webhook ? " · webhook" : ""}
+                  <div className="person-meta">
+                    {[
+                      kindLabel(a.kind),
+                      a.admin ? "адміністратор" : "",
+                      isOn ? "онлайн" : "офлайн",
+                      a.rooms.length ? a.rooms.map((r) => "#" + r).join(", ") : "",
+                      a.webhook ? "webhook" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </div>
-                  {a.description && <div className="small">{a.description}</div>}
+                  {a.description && <div className="person-desc">{a.description}</div>}
                 </div>
                 {confirm?.name === a.name ? (
                   <div className="confirm">
@@ -243,10 +272,10 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                         onClick={() => void doAction(a.name, confirm.action)}
                         disabled={busy}
                       >
-                        Так
+                        {busy && <LoaderCircle className="spin" size={14} />} {CONFIRM_LABEL[confirm.action]}
                       </button>
                       <button type="button" className="btn sm ghost" onClick={() => setConfirm(null)}>
-                        Ні
+                        Скасувати
                       </button>
                     </div>
                   </div>
@@ -256,27 +285,37 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                       (a.admin ? (
                         <button
                           type="button"
-                          className="btn sm ghost"
+                          className="btn sm quiet"
                           disabled={locked || adminCount <= 1}
                           title={adminCount <= 1 ? "Це єдиний адмін: спершу зробіть адміном когось іще" : undefined}
                           onClick={() => setConfirm({ name: a.name, action: "revoke" })}
                         >
-                          <ShieldOff size={14} /> Зняти адміна
+                          Зняти адміна
                         </button>
                       ) : (
-                        <button type="button" className="btn sm ghost" disabled={locked} onClick={() => setConfirm({ name: a.name, action: "grant" })}>
-                          <ShieldCheck size={14} /> Зробити адміном
+                        <button
+                          type="button"
+                          className="btn sm quiet"
+                          disabled={locked}
+                          onClick={() => setConfirm({ name: a.name, action: "grant" })}
+                        >
+                          Зробити адміном
                         </button>
                       ))}
-                    <button type="button" className="btn sm ghost" onClick={() => void showSetup(a.name)}>
-                      <BookOpen size={14} /> Інструкція
-                    </button>
-                    <button type="button" className="btn sm ghost" disabled={locked} onClick={() => setConfirm({ name: a.name, action: "rotate" })}>
-                      <KeyRound size={14} /> Новий токен
+                    <button type="button" className="btn sm quiet" onClick={() => void showSetup(a.name)}>
+                      Інструкція
                     </button>
                     <button
                       type="button"
-                      className="btn sm ghost danger-text"
+                      className="btn sm quiet"
+                      disabled={locked}
+                      onClick={() => setConfirm({ name: a.name, action: "rotate" })}
+                    >
+                      Новий токен
+                    </button>
+                    <button
+                      type="button"
+                      className="btn sm danger-text icon-only"
                       disabled={locked || (!!a.admin && adminCount <= 1)}
                       onClick={() => setConfirm({ name: a.name, action: "delete" })}
                       title={`Видалити ${a.name}`}

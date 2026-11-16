@@ -1,13 +1,31 @@
-import { ChevronDown, Gamepad2, Hash, Inbox, LogOut, Monitor, Moon, Plus, Settings, Sun, Users } from "lucide-react";
+import {
+  Bell,
+  BellOff,
+  ChevronDown,
+  Gamepad2,
+  Hash,
+  Inbox,
+  LayoutGrid,
+  LogOut,
+  MessagesSquare,
+  Monitor,
+  Moon,
+  Plus,
+  Search,
+  Settings,
+  Sun,
+  UserCog,
+} from "lucide-react";
 import { useCallback, useState } from "react";
-import { ROOM_RE } from "../api/types";
+import { ROOM_RE, type Agent } from "../api/types";
 import { useChat } from "../context";
 import type { ConnStatus } from "../hooks/useSocket";
 import type { Theme } from "../hooks/useTheme";
-import { fmtShort, kindLabel } from "../lib/format";
+import { fmtShort, kindLabel, plural } from "../lib/format";
+import { enableNotify, notifyOn, notifyPermission, setNotifyPref } from "../lib/notify";
 import { KEYS, storage } from "../lib/storage";
 import { dm, isGameRoom, pairKey, viewKey, type View } from "../lib/views";
-import { activityShort, activityText } from "../lib/activity";
+import { activityText, isActive, statusText } from "../lib/activity";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -17,6 +35,8 @@ interface Props {
   onTheme: () => void;
   onLogout: () => void;
   onJoin: (room: string) => void;
+  /** Opens the Ctrl+K search and jump palette. */
+  onSearch: () => void;
 }
 
 const THEME_ICON = { system: Monitor, light: Sun, dark: Moon };
@@ -27,6 +47,7 @@ function Item({
   onClick,
   icon,
   label,
+  sub,
   badge,
   meta,
   title,
@@ -35,6 +56,8 @@ function Item({
   onClick?: () => void;
   icon: React.ReactNode;
   label: string;
+  /** A second line under the label (kind and status of a participant). */
+  sub?: React.ReactNode;
   badge?: number;
   meta?: string;
   title?: string;
@@ -43,17 +66,42 @@ function Item({
     <li>
       <button
         type="button"
-        className={`nav-item${active ? " active" : ""}${badge ? " has-unread" : ""}`}
+        className={`nav-item${sub ? " two-line" : ""}${active ? " active" : ""}${badge ? " has-unread" : ""}`}
         onClick={onClick}
         disabled={!onClick}
         title={title}
         aria-current={active ? "page" : undefined}
       >
         <span className="nav-icon">{icon}</span>
-        <span className="nav-label">{label}</span>
+        {sub ? (
+          <span className="nav-text">
+            <span className="nav-label">{label}</span>
+            <span className="nav-sub">{sub}</span>
+          </span>
+        ) : (
+          <span className="nav-label">{label}</span>
+        )}
         {badge ? <span className="badge">{badge}</span> : meta ? <span className="nav-meta">{meta}</span> : null}
       </button>
     </li>
+  );
+}
+
+/** "Claude Code · Працює над web у #lobby": the kind, then what the agent does now, coloured by state. */
+function AgentSub({ a, me }: { a: Agent; me: string }) {
+  const status = a.online ? statusText(a.activity, me) : "";
+  return (
+    <>
+      {kindLabel(a.kind)}
+      {status ? (
+        <>
+          {" · "}
+          <span className={`nav-status ${a.activity!.state}`}>{status}</span>
+        </>
+      ) : !a.online ? (
+        " · офлайн"
+      ) : null}
+    </>
   );
 }
 
@@ -82,7 +130,7 @@ function useCollapsed() {
 function Group({
   id,
   title,
-  count,
+  hint,
   unread = 0,
   collapsed,
   onToggle,
@@ -90,7 +138,8 @@ function Group({
 }: {
   id: string;
   title: string;
-  count?: number;
+  /** Short state on the right of the title, e.g. "2 працюють". */
+  hint?: string;
   unread?: number;
   collapsed: boolean;
   onToggle: (id: string) => void;
@@ -101,10 +150,9 @@ function Group({
     <section className={`nav-group${collapsed ? " collapsed" : ""}`}>
       <h2 className="nav-title">
         <button type="button" onClick={() => onToggle(id)} aria-expanded={!collapsed} aria-controls={bodyId}>
-          <ChevronDown size={13} className="nav-chevron" />
+          <ChevronDown size={14} className="nav-chevron" />
           <span>{title}</span>
-          {count !== undefined && <span className="nav-count">{count}</span>}
-          {collapsed && unread > 0 && <span className="badge">{unread}</span>}
+          {collapsed && unread > 0 ? <span className="badge">{unread}</span> : hint ? <span className="nav-hint num">{hint}</span> : null}
         </button>
       </h2>
       {!collapsed && <div id={bodyId}>{children}</div>}
@@ -112,7 +160,44 @@ function Group({
   );
 }
 
-export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Props) {
+/** Turns browser notifications for @mentions and direct messages on and off. */
+function NotifyButton() {
+  const { toast } = useChat();
+  const [on, setOn] = useState(notifyOn);
+  const perm = notifyPermission();
+  if (perm === "unsupported") return null;
+  const label =
+    perm === "denied"
+      ? "Сповіщення заблоковано в налаштуваннях браузера"
+      : on
+        ? "Сповіщення про згадки й особисті повідомлення увімкнено. Натисніть, щоб вимкнути"
+        : "Увімкнути сповіщення про згадки й особисті повідомлення";
+  return (
+    <button
+      type="button"
+      className={`icon-btn${on ? " toggle on" : ""}`}
+      aria-pressed={on}
+      title={label}
+      aria-label={label}
+      onClick={async () => {
+        if (on) {
+          setNotifyPref(false);
+          setOn(false);
+          return;
+        }
+        const p = await enableNotify();
+        if (p === "granted") {
+          setOn(true);
+          toast("Сповіщення увімкнено: браузер покаже, коли вас згадають або напишуть особисто.");
+        } else toast("Браузер не дозволив сповіщення. Їх можна дозволити в налаштуваннях сайту.", true);
+      }}
+    >
+      {on ? <Bell size={16} /> : <BellOff size={16} />}
+    </button>
+  );
+}
+
+export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSearch }: Props) {
   const { session, overview, view, go, sender } = useChat();
   const admin = session.mode === "admin";
   const cur = viewKey(view);
@@ -125,7 +210,23 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
   const mine = new Set(overview.rooms.map((r) => r.name));
   const others = admin ? [] : overview.all_rooms.filter((n) => !mine.has(n) && !isGameRoom(n)).sort();
   const dms = [...overview.dms].sort((x, y) => String(y.last_ts ?? "").localeCompare(String(x.last_ts ?? "")));
-  const agents = [...overview.agents].sort((x, y) => Number(y.online) - Number(x.online) || x.name.localeCompare(y.name));
+  // online first; among agents, the ones doing something first
+  const byPresence = (x: Agent, y: Agent) =>
+    Number(y.online) - Number(x.online) ||
+    Number(isActive(y.online, y.activity)) - Number(isActive(x.online, x.activity)) ||
+    x.name.localeCompare(y.name);
+  const bots = overview.agents.filter((a) => a.kind !== "human").sort(byPresence);
+  const people = overview.agents.filter((a) => a.kind === "human").sort(byPresence);
+  const working = bots.filter((a) => a.online && a.activity?.state === "busy").length;
+  const waiting = bots.filter((a) => a.online && a.activity?.state === "waiting").length;
+  const botsHint =
+    [
+      working ? `${working} ${plural(working, ["працює", "працюють", "працюють"])}` : "",
+      waiting ? `${waiting} ${plural(waiting, ["чекає", "чекають", "чекають"])}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ") || (bots.length ? `${bots.filter((a) => a.online).length} онлайн` : "");
+  const peopleOnline = people.filter((a) => a.online).length;
   const kinds = new Map(overview.agents.map((a) => [a.name, a]));
   const who = sender;
   const { collapsed, toggle } = useCollapsed();
@@ -143,22 +244,36 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
         </span>
         <span
           className={`conn ${conn.status}`}
-          title={
-            conn.status === "online"
-              ? "Наживо: нові повідомлення з'являються автоматично"
-              : conn.status === "offline"
-                ? `Немає з'єднання, повтор через ${conn.retryIn} с`
-                : "З'єднуюсь…"
-          }
-        />
+          role="status"
+          title={conn.status === "online" ? "Наживо: нові повідомлення з'являються автоматично" : undefined}
+        >
+          {conn.status === "offline" ? (
+            <span className="num">Офлайн · {conn.retryIn} с</span>
+          ) : conn.status === "connecting" ? (
+            "З'єднання…"
+          ) : null}
+        </span>
         <button type="button" className="icon-btn" onClick={onTheme} title={THEME_LABEL[theme]} aria-label={THEME_LABEL[theme]}>
           <ThemeIcon size={16} />
         </button>
       </header>
 
+      <button type="button" className="side-search" onClick={onSearch} title="Пошук і перехід (Ctrl+K)">
+        <Search size={16} />
+        <span>Пошук</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+
       <nav className="side-nav">
         <ul className="nav-list">
-          {admin && <Item active={cur === "all"} onClick={nav({ kind: "all" })} icon={<Inbox size={16} />} label="Усі повідомлення" />}
+          {admin && (
+            <Item
+              active={cur === "all" || cur.startsWith("all:")}
+              onClick={nav({ kind: "all" })}
+              icon={<Inbox size={16} />}
+              label="Усі повідомлення"
+            />
+          )}
           <Item
             active={cur === "games" || cur.startsWith("games:") || cur.startsWith("g:")}
             onClick={nav({ kind: "games" })}
@@ -169,21 +284,21 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
           />
         </ul>
 
-        <Group {...group("rooms")} title="Кімнати" count={rooms.length} unread={unreadOf("r:")}>
+        <Group {...group("rooms")} title="Кімнати" unread={unreadOf("r:")}>
           <ul className="nav-list">
-          {rooms.map((r) => (
-            <Item
-              key={r.name}
-              active={cur === `r:${r.name}`}
-              onClick={nav({ kind: "room", room: r.name })}
-              icon={<Hash size={16} />}
-              label={r.name}
-              badge={unread.get(`r:${r.name}`)}
-              meta={fmtShort(r.last_ts)}
-              title={`Учасники: ${r.members.join(", ") || "—"}`}
-            />
-          ))}
-          {!rooms.length && <li className="nav-empty">{admin ? "немає" : "ви ще не в жодній кімнаті"}</li>}
+            {rooms.map((r) => (
+              <Item
+                key={r.name}
+                active={cur === `r:${r.name}`}
+                onClick={nav({ kind: "room", room: r.name })}
+                icon={<Hash size={16} />}
+                label={r.name}
+                badge={unread.get(`r:${r.name}`)}
+                meta={fmtShort(r.last_ts)}
+                title={`Учасники: ${r.members.join(", ") || "—"}`}
+              />
+            ))}
+            {!rooms.length && <li className="nav-empty">{admin ? "Кімнат ще немає" : "Ви ще не в жодній кімнаті"}</li>}
           </ul>
           {!admin && (
             <form
@@ -213,72 +328,106 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
         </Group>
 
         {!admin && others.length > 0 && (
-          <Group {...group("other-rooms")} title="Інші кімнати" count={others.length}>
+          <Group {...group("other-rooms")} title="Можна приєднатися">
             <ul className="nav-list">
               {others.map((n) => (
-                <Item key={n} onClick={() => onJoin(n)} icon={<Plus size={16} />} label={n} meta="приєднатися" title={`Приєднатися до #${n}`} />
+                <Item
+                  key={n}
+                  onClick={() => onJoin(n)}
+                  icon={<Plus size={16} />}
+                  label={n}
+                  meta="приєднатися"
+                  title={`Приєднатися до #${n}`}
+                />
               ))}
             </ul>
           </Group>
         )}
 
-        <Group {...group("dms")} title="Особисті" count={dms.length} unread={unreadOf("d:")}>
+        <Group {...group("dms")} title={admin ? "Особисті розмови" : "Особисті повідомлення"} unread={unreadOf("d:")}>
           <ul className="nav-list">
-          {dms.map((d) => {
-            const key = `d:${pairKey(d.a, d.b)}`;
-            const other = !admin ? (d.a === sender ? d.b : d.a) : null;
-            return (
-              <Item
-                key={key}
-                active={cur === key}
-                onClick={nav(dm(d.a, d.b))}
-                icon={
-                  other ? (
-                    <Avatar name={other} kind={kinds.get(other)?.kind} online={kinds.get(other)?.online} activity={kinds.get(other)?.activity} size="sm" />
-                  ) : (
-                    <Users size={16} />
-                  )
-                }
-                label={other ?? `${d.a} ↔ ${d.b}`}
-                badge={unread.get(key)}
-                meta={fmtShort(d.last_ts)}
-              />
-            );
-          })}
-          {!dms.length && <li className="nav-empty">немає</li>}
+            {dms.map((d) => {
+              const key = `d:${pairKey(d.a, d.b)}`;
+              const other = !admin ? (d.a === sender ? d.b : d.a) : null;
+              return (
+                <Item
+                  key={key}
+                  active={cur === key}
+                  onClick={nav(dm(d.a, d.b))}
+                  icon={
+                    other ? (
+                      <Avatar
+                        name={other}
+                        kind={kinds.get(other)?.kind}
+                        online={kinds.get(other)?.online}
+                        activity={kinds.get(other)?.activity}
+                        size="sm"
+                      />
+                    ) : (
+                      <MessagesSquare size={16} />
+                    )
+                  }
+                  label={other ?? `${d.a} і ${d.b}`}
+                  badge={unread.get(key)}
+                  meta={fmtShort(d.last_ts)}
+                />
+              );
+            })}
+            {!dms.length && <li className="nav-empty">Розмов ще немає</li>}
           </ul>
         </Group>
 
-        <Group {...group("people")} title="Учасники" count={agents.length}>
+        <Group
+          {...group("agents")}
+          title="Агенти"
+          hint={botsHint}
+        >
           <ul className="nav-list">
-          {agents.map((a) => {
-            const canDm = sender !== a.name;
-            return (
+            {bots.map((a) => (
               <Item
                 key={a.name}
-                onClick={canDm ? nav(dm(sender, a.name)) : undefined}
+                onClick={nav(dm(sender, a.name))}
                 icon={<Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />}
-                label={a.name === sender ? `${a.name} (ви)` : a.name}
-                meta={a.online && a.activity && a.activity.state !== "idle" ? activityShort(a.activity) : a.kind === "human" ? undefined : kindLabel(a.kind)}
+                label={a.name}
+                sub={<AgentSub a={a} me={sender} />}
                 title={[
                   a.description,
-                  a.online ? (a.activity && a.activity.state !== "idle" ? activityText(a.name, a.activity) : "онлайн") : "офлайн",
+                  a.online ? (isActive(a.online, a.activity) ? activityText(a.name, a.activity) : "онлайн") : "офлайн",
                   a.rooms.length ? `кімнати: ${a.rooms.map((r) => "#" + r).join(", ")}` : "",
-                  canDm ? `натисніть, щоб написати ${a.name}` : "",
+                  `натисніть, щоб написати ${a.name}`,
                 ]
                   .filter(Boolean)
                   .join("\n")}
               />
-            );
-          })}
+            ))}
+            {!bots.length && <li className="nav-empty">Агентів ще немає</li>}
+          </ul>
+        </Group>
+
+        <Group {...group("people")} title="Люди" hint={people.length ? `${peopleOnline} онлайн` : ""}>
+          <ul className="nav-list">
+            {people.map((a) => {
+              const self = a.name === sender;
+              return (
+                <Item
+                  key={a.name}
+                  onClick={self ? undefined : nav(dm(sender, a.name))}
+                  icon={<Avatar name={a.name} kind={a.kind} online={a.online} size="sm" />}
+                  label={a.name}
+                  sub={a.online ? "онлайн" : "офлайн"}
+                  meta={self ? "ви" : undefined}
+                  title={self ? undefined : `натисніть, щоб написати ${a.name}`}
+                />
+              );
+            })}
           </ul>
         </Group>
 
         {admin && (
           <Group {...group("admin")} title="Адміністрування">
             <ul className="nav-list">
-              <Item active={cur === "people"} onClick={nav({ kind: "people" })} icon={<Users size={16} />} label="Агенти й люди" />
-              <Item active={cur === "rooms"} onClick={nav({ kind: "rooms" })} icon={<Hash size={16} />} label="Кімнати" />
+              <Item active={cur === "people"} onClick={nav({ kind: "people" })} icon={<UserCog size={16} />} label="Агенти й люди" />
+              <Item active={cur === "rooms"} onClick={nav({ kind: "rooms" })} icon={<LayoutGrid size={16} />} label="Керування кімнатами" />
               <Item active={cur === "settings"} onClick={nav({ kind: "settings" })} icon={<Settings size={16} />} label="Налаштування" />
             </ul>
           </Group>
@@ -286,11 +435,12 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin }: Prop
       </nav>
 
       <footer className="side-foot">
-        <Avatar name={who} kind="human" size="sm" />
+        <Avatar name={who} kind="human" />
         <span className="me">
           <span className="me-name">{who}</span>
           <span className="me-role">{admin ? "адміністратор" : "учасник"}</span>
         </span>
+        <NotifyButton />
         <button type="button" className="icon-btn" onClick={onLogout} title="Вийти" aria-label="Вийти">
           <LogOut size={16} />
         </button>

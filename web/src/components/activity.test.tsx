@@ -10,6 +10,7 @@ const NOW = Date.parse("2026-11-15T10:00:00Z");
 const busy = (detail?: string, minutes = 0): AgentActivity => ({
   state: "busy",
   detail,
+  room: "lobby",
   since: new Date(NOW - minutes * 60000).toISOString(),
 });
 
@@ -40,7 +41,7 @@ describe("activity bar", () => {
     expect(screen.getByRole("status")).toHaveTextContent("claude працює: читає файл");
     unmount();
 
-    const waiting = withActivity("claude", { state: "waiting", detail: "дозволу на Bash", since: new Date().toISOString() });
+    const waiting = withActivity("claude", { state: "waiting", detail: "дозволу на Bash", room: "lobby", since: new Date().toISOString() });
     const { unmount: u2 } = renderWithChat(<ActivityBar view={{ kind: "room", room: "lobby" }} />, { overview: waiting });
     expect(screen.getByRole("status").firstElementChild).toHaveClass("waiting");
     u2();

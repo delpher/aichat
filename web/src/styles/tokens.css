@@ -1,0 +1,177 @@
+/*
+ * Design tokens. Everything else in the stylesheets uses these, never raw values.
+ *
+ * Type:    12 / 13 / 14 / 15 (chat text) / 16 / 20 / 28, weights 400 / 500 / 600.
+ * Space:   a 4px grid.
+ * Radius:  6 / 10 / 14 / full. A shape nested in another uses outer radius minus the padding between them.
+ * Colour:  lavender-tinted neutrals plus one accent, an electric violet. The accent marks what you can act on or what is new:
+ *          the primary action, the current place, unread counts, mentions. Nothing decorative.
+ * Every text colour passes WCAG AA (4.5:1) on the backgrounds it is used on, in both themes.
+ */
+:root {
+  --font: "Inter Variable", "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-chat: 15px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-strong: 600;
+  --leading: 1.5;
+  --leading-tight: 1.25;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+
+  --control-h: 36px;
+  --control-h-sm: 28px;
+  --side-w: 272px;
+  --content-w: 880px;
+
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+
+  /* light */
+  --bg: #f8f7fc;
+  --surface: #ffffff;
+  --surface-2: #f2f0fa;
+  --side: #f3f1fb;
+  --text: #16131f;
+  --text-2: #433d57;
+  --muted: #625c78;
+  --line: #e6e3f2;
+  --line-2: #d7d3ea;
+  --hover: rgba(40, 24, 110, 0.05);
+  --active: #e6dfff;
+  --mine: #f6f3ff;
+  --flash: #fdf3c7;
+
+  --accent: #6236ff;
+  --accent-hover: #5226ec;
+  --on-accent: #ffffff;
+  --accent-fg: #6236ff;
+  --accent-soft: #ece7ff;
+  --accent-soft-fg: #4f22e0;
+
+  --ok: #15803d;
+  --bad: #c8312f;
+  --warn: #b45309;
+  --code-bg: #f4f2fa;
+  /* syntax highlighting, AA on --code-bg */
+  --syn-keyword: #8b2fc9;
+  --syn-string: #2f6e1a;
+  --syn-number: #a8510b;
+  --syn-comment: #63636e;
+  --syn-title: #1f5fbf;
+  --syn-type: #0f766e;
+  --syn-attr: #9a3412;
+  --syn-tag: #be123c;
+  --syn-regexp: #a14a00;
+
+  --av-0: #2563eb;
+  --av-1: #7c3aed;
+  --av-2: #be185d;
+  --av-3: #c2410c;
+  --av-4: #a16207;
+  --av-5: #15803d;
+  --av-6: #0e7490;
+  --av-7: #475569;
+
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --scrim: rgba(9, 9, 11, 0.4);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0b14;
+    --surface: #15121f;
+    --surface-2: #1d1929;
+    --side: #120f1b;
+    --text: #eeebf7;
+    --text-2: #bdb6d3;
+    --muted: #8f88a8;
+    --line: #2a2538;
+    --line-2: #362f48;
+    --hover: rgba(200, 185, 255, 0.06);
+    --active: #2b2252;
+    --mine: #1b1630;
+    --flash: #3a3214;
+    --accent: #6a45f5;
+    --accent-hover: #5b38e8;
+    --on-accent: #ffffff;
+    --accent-fg: #b3a1ff;
+    --accent-soft: #251d45;
+    --accent-soft-fg: #c4b6ff;
+    --ok: #4ade80;
+    --bad: #f2706c;
+    --warn: #e3a33b;
+    --code-bg: #1d1929;
+    --syn-keyword: #d19cff;
+    --syn-string: #a5d68a;
+    --syn-number: #f0a868;
+    --syn-comment: #8c8c96;
+    --syn-title: #7fb4ff;
+    --syn-type: #5fd3c3;
+    --syn-attr: #f5a97f;
+    --syn-tag: #ff8fa3;
+    --syn-regexp: #f2c46d;
+    --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 28px rgba(0, 0, 0, 0.45);
+    --scrim: rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0b14;
+  --surface: #15121f;
+  --surface-2: #1d1929;
+  --side: #120f1b;
+  --text: #eeebf7;
+  --text-2: #bdb6d3;
+  --muted: #8f88a8;
+  --line: #2a2538;
+  --line-2: #362f48;
+  --hover: rgba(200, 185, 255, 0.06);
+  --active: #2b2252;
+  --mine: #1b1630;
+  --flash: #3a3214;
+  --accent: #6a45f5;
+  --accent-hover: #5b38e8;
+  --on-accent: #ffffff;
+  --accent-fg: #b3a1ff;
+  --accent-soft: #251d45;
+  --accent-soft-fg: #c4b6ff;
+  --ok: #4ade80;
+  --bad: #f2706c;
+  --warn: #e3a33b;
+  --code-bg: #1d1929;
+  --syn-keyword: #d19cff;
+  --syn-string: #a5d68a;
+  --syn-number: #f0a868;
+  --syn-comment: #8c8c96;
+  --syn-title: #7fb4ff;
+  --syn-type: #5fd3c3;
+  --syn-attr: #f5a97f;
+  --syn-tag: #ff8fa3;
+  --syn-regexp: #f2c46d;
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 28px rgba(0, 0, 0, 0.45);
+  --scrim: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}

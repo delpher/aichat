@@ -8,6 +8,9 @@
 //
 // Env: AICHAT_URL (default ws://127.0.0.1:8787), AICHAT_TOKEN (required).
 // stdout belongs to MCP, so all logging goes to stderr.
+//
+// `node claude-channel.mjs install --url ws://host:8787 --token <token>` instead writes .mcp.json in the
+// current folder (keeping other servers in it) and exits; see install.ts.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -15,9 +18,13 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
 import { mimeFor, textWithAttachments } from "../client/attachments.js";
-import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type ChatMessage, type GameInfo, type GameType } from "../protocol.js";
+import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type ChatMessage, type GameInfo, type GameType, type RoomBrief } from "../protocol.js";
+import { runInstall } from "./install.js";
+
+if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
 
 /** Where downloaded attachments are saved (AICHAT_FILES_DIR overrides). */
 const FILES_DIR = resolve(process.env.AICHAT_FILES_DIR ?? join(tmpdir(), "aichat-attachments"));
@@ -42,6 +49,12 @@ Messages from other agents arrive as <channel source="aichat" from="..." msg_id=
 - Files sent with a message appear as [attachment file_id=... name=... type=... size=...] lines. Use
   get_attachment(file_id) to look at one: images come back as images, every file is saved to a local path.
 - To send files, pass their local paths in send_message(files=[...]).
+- People see what you work on: when you start a piece of work for a room or a person, call
+  set_status(topic, room) with a topic of 1-4 words ("web", "settings validation"); call it again when you
+  switch, and with an empty topic when you are done. Your current file or command is added automatically.
+- "#name" in a message refers to the room of that name.
+- Rooms can have a brief (goal, rules, who does what). Call room_info when you join a room or are unsure
+  what a room is for, and follow its brief. Change it with set_room_brief only when your user asks.
 - Mini-games: list_games shows the kinds of games (with their seats) and the games going on; create_game
   and join_game take a seat. Each game has a room game-<id> where the broker ("aichat") posts the board
   and the legal moves. Move by writing "move <move>" there (e.g. "move c3-d4"; also "resign", "draw"),
@@ -128,6 +141,35 @@ const TOOLS = [
     },
   },
   {
+    name: "set_status",
+    description:
+      "Tell people what you are working on and where: a topic of 1-4 words and the room (or the agent you work with). " +
+      "Shown next to your name and in that room. An empty topic clears it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: 'e.g. "web", "settings validation"; empty to clear' },
+        room: { type: "string", description: "Room you work in (default: the conversation of your latest message)" },
+        with: { type: "string", description: "Or the agent you work with directly" },
+      },
+      required: ["topic"],
+    },
+  },
+  {
+    name: "room_info",
+    description: "Read a room's brief (its goal and rules) and its members.",
+    inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
+  },
+  {
+    name: "set_room_brief",
+    description: "Replace a room's brief (Markdown; empty text removes it). Only when your user asks.",
+    inputSchema: {
+      type: "object",
+      properties: { room: { type: "string" }, text: { type: "string" } },
+      required: ["room", "text"],
+    },
+  },
+  {
     name: "list_agents",
     description: "List the agents on AIChat with their kind, online status and rooms.",
     inputSchema: { type: "object", properties: {} },
@@ -192,6 +234,21 @@ function fmtGame(g: GameInfo): string {
   const turn = g.turn !== null ? `, to move: ${g.players[g.turn]}` : "";
   return `#${g.id} ${g.game} [${g.status}] ${players}, moves: ${g.moves.length}${turn}` + (g.result ? `, ${g.result.text}` : "") + ` - room ${g.room}`;
 }
+
+const enc = encodeURIComponent;
+async function roomInfo(room: string): Promise<string> {
+  const [{ brief }, agents] = await Promise.all([
+    client.api<{ brief: RoomBrief | null }>("GET", `/api/rooms/${enc(room)}/brief`),
+    client.listAgents(),
+  ]);
+  const members = agents.filter((g) => g.rooms.includes(room)).map((g) => `${g.name}${g.online ? "" : " (offline)"}`);
+  return [
+    `#${room}`,
+    brief ? `Brief (by ${brief.by}):\n${brief.text}` : "No brief.",
+    `Members: ${members.join(", ") || "none"}`,
+  ].join("\n\n");
+}
+
 
 /** Remembered from incoming messages so get_attachment knows a file's name and type. */
 const known = new Map<string, { name: string; mime: string }>();
@@ -275,7 +332,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case "join_room":
         await client.join(String(a.room));
-        return text(`joined #${a.room}`);
+        return text(`joined #${a.room}\n\n${await roomInfo(String(a.room)).catch(() => "")}`.trim());
+      case "set_status": {
+        const body: Record<string, unknown> = { topic: String(a.topic ?? "") };
+        if (a.room) body.room = a.room;
+        else if (a.with) body.with = a.with;
+        const { activity } = await client.api<{ activity: { topic?: string; room?: string; with?: string } | null }>("POST", "/api/status", body);
+        if (!activity?.topic) return text("status cleared");
+        const where = activity.room ? ` in #${activity.room}` : activity.with ? ` with ${activity.with}` : "";
+        return text(`status: ${activity.topic}${where}`);
+      }
+      case "room_info":
+        return text(await roomInfo(String(a.room)));
+      case "set_room_brief": {
+        const { brief } = await client.api<{ brief: RoomBrief | null }>("PUT", `/api/rooms/${enc(String(a.room))}/brief`, {
+          text: String(a.text ?? ""),
+        });
+        return text(brief ? `brief of #${a.room} updated` : `brief of #${a.room} removed`);
+      }
       case "leave_room":
         await client.leave(String(a.room));
         return text(`left #${a.room}`);

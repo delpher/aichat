@@ -1,18 +1,32 @@
-import { Hash, Plus, Trash2, X } from "lucide-react";
+import { Hash, LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AuthError } from "../../api/http";
 import { ROOM_RE, type Agent, type RoomInfo } from "../../api/types";
 import { useChat } from "../../context";
 import { fmtShort, kindLabel } from "../../lib/format";
 import { hashFor, isGameRoom } from "../../lib/views";
+import { ListSkeleton } from "../Skeleton";
 import { Status, type StatusValue } from "./Status";
 
 const enc = encodeURIComponent;
 
-function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]; busy: boolean; run: (fn: () => Promise<unknown>, ok: string) => void }) {
+function RoomCard({
+  room,
+  agents,
+  busy,
+  run,
+}: {
+  room: RoomInfo;
+  agents: Agent[];
+  busy: boolean;
+  run: (fn: () => Promise<unknown>, ok: string) => void;
+}) {
   const { api } = useChat();
   const [confirm, setConfirm] = useState(false);
-  const notIn = agents.map((a) => a.name).filter((n) => !room.members.includes(n)).sort();
+  const notIn = agents
+    .map((a) => a.name)
+    .filter((n) => !room.members.includes(n))
+    .sort();
   const [pick, setPick] = useState("");
   const kind = (n: string) => kindLabel(agents.find((a) => a.name === n)?.kind ?? "");
   const members = (n?: string) => `/admin/api/rooms/${enc(room.name)}/members${n ? `/${enc(n)}` : ""}`;
@@ -23,7 +37,7 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
           <Hash size={16} />
           {room.name}
         </a>
-        <span className="muted small">
+        <span className="muted small num">
           {room.count} повідомл.{room.last_ts ? ` · ${fmtShort(room.last_ts)}` : ""}
         </span>
       </div>
@@ -43,7 +57,7 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
             </button>
           </span>
         ))}
-        {!room.members.length && <span className="muted small">учасників немає</span>}
+        {!room.members.length && <span className="muted small">Учасників немає</span>}
       </div>
       {notIn.length > 0 && (
         <div className="inline-form">
@@ -63,7 +77,7 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
               run(() => api.send("POST", members(), { name: n }), `${n} додано до #${room.name}.`);
             }}
           >
-            <Plus size={14} /> Додати
+            Додати
           </button>
         </div>
       )}
@@ -75,7 +89,12 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
               type="button"
               className="btn sm ghost"
               disabled={busy}
-              onClick={() => run(() => api.send("DELETE", `/admin/api/rooms/${enc(room.name)}`), `З #${room.name} прибрано всіх учасників, історія лишилась.`)}
+              onClick={() =>
+                run(
+                  () => api.send("DELETE", `/admin/api/rooms/${enc(room.name)}`),
+                  `З #${room.name} прибрано всіх учасників, історія лишилась.`,
+                )
+              }
             >
               Прибрати всіх учасників (історія лишиться)
             </button>
@@ -84,7 +103,10 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
               className="btn sm danger"
               disabled={busy}
               onClick={() =>
-                run(() => api.send("DELETE", `/admin/api/rooms/${enc(room.name)}?messages=1`), `Кімнату #${room.name} видалено разом з повідомленнями.`)
+                run(
+                  () => api.send("DELETE", `/admin/api/rooms/${enc(room.name)}?messages=1`),
+                  `Кімнату #${room.name} видалено разом з повідомленнями.`,
+                )
               }
             >
               Видалити разом з повідомленнями
@@ -96,8 +118,8 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
         </div>
       ) : (
         <div className="actions">
-          <button type="button" className="btn sm ghost danger-text" disabled={busy} onClick={() => setConfirm(true)}>
-            <Trash2 size={14} /> Видалити кімнату…
+          <button type="button" className="btn sm danger-text" disabled={busy} onClick={() => setConfirm(true)}>
+            Видалити кімнату…
           </button>
         </div>
       )}
@@ -107,7 +129,7 @@ function RoomCard({ room, agents, busy, run }: { room: RoomInfo; agents: Agent[]
 
 export function RoomsPanel() {
   const { api, overview, fail, reloadOverview } = useChat();
-  const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [rooms, setRooms] = useState<RoomInfo[] | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusValue>(null);
@@ -116,12 +138,16 @@ export function RoomsPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [r, a] = await Promise.all([api.get<{ rooms: RoomInfo[] }>("/admin/api/rooms"), api.get<{ agents: Agent[] }>("/admin/api/agents")]);
+      const [r, a] = await Promise.all([
+        api.get<{ rooms: RoomInfo[] }>("/admin/api/rooms"),
+        api.get<{ agents: Agent[] }>("/admin/api/agents"),
+      ]);
       // Game rooms belong to their game: they go away when the game is deleted (games tab).
       setRooms((r.rooms ?? []).filter((x) => !isGameRoom(x.name)));
       setAgents(a.agents ?? []);
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
+      setRooms((cur) => cur ?? []);
       setStatus({ text: `Не вдалося завантажити кімнати: ${(err as Error).message}`, error: true });
     }
   }, [api, fail]);
@@ -146,11 +172,14 @@ export function RoomsPanel() {
     if (!ROOM_RE.test(n)) return setStatus({ text: "Назва: латиниця, цифри, - і _ (до 64 символів).", error: true });
     if (isGameRoom(n)) return setStatus({ text: "Назви game-<число> зайняті кімнатами партій.", error: true });
     const members = [...picked];
-    run(async () => {
-      await api.send("POST", "/admin/api/rooms", members.length ? { name: n, members } : { name: n });
-      setName("");
-      setPicked(new Set());
-    }, `Кімнату #${n} створено${members.length ? ` з учасниками: ${members.join(", ")}` : ""}.`);
+    run(
+      async () => {
+        await api.send("POST", "/admin/api/rooms", members.length ? { name: n, members } : { name: n });
+        setName("");
+        setPicked(new Set());
+      },
+      `Кімнату #${n} створено${members.length ? ` з учасниками: ${members.join(", ")}` : ""}.`,
+    );
   };
 
   return (
@@ -162,18 +191,18 @@ export function RoomsPanel() {
           create();
         }}
       >
-        <h2>Створити кімнату</h2>
+        <h2>Нова кімната</h2>
         <div className="inline-form">
           <label className="field grow">
             <span>Назва</span>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="team" maxLength={64} required disabled={busy} />
           </label>
           <button type="submit" className="btn primary" disabled={busy}>
-            <Plus size={16} /> Створити
+            {busy && <LoaderCircle className="spin" size={16} />} Створити
           </button>
         </div>
         <fieldset className="pick">
-          <legend>Учасники (необов'язково)</legend>
+          <legend>Учасники</legend>
           {[...agents]
             .sort((x, y) => x.name.localeCompare(y.name))
             .map((a) => (
@@ -194,14 +223,24 @@ export function RoomsPanel() {
         </fieldset>
         <Status value={status} />
       </form>
-      <div className="room-grid">
-        {[...rooms]
-          .sort((x, y) => x.name.localeCompare(y.name))
-          .map((r) => (
-            <RoomCard key={r.name} room={r} agents={agents} busy={busy} run={run} />
-          ))}
-        {!rooms.length && <p className="muted">Кімнат поки немає.</p>}
-      </div>
+      <section className="section">
+        <div className="section-head">
+          <h2>Кімнати{rooms && <span className="count">{rooms.length}</span>}</h2>
+        </div>
+        {!rooms ? (
+          <ListSkeleton avatar={false} label="Завантаження кімнат" />
+        ) : rooms.length ? (
+          <div className="room-grid">
+            {[...rooms]
+              .sort((x, y) => x.name.localeCompare(y.name))
+              .map((r) => (
+                <RoomCard key={r.name} room={r} agents={agents} busy={busy} run={run} />
+              ))}
+          </div>
+        ) : (
+          <p className="muted">Кімнат ще немає. Створіть першу вище.</p>
+        )}
+      </section>
     </div>
   );
 }

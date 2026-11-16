@@ -12,11 +12,14 @@ import { PeoplePanel } from "./components/panels/PeoplePanel";
 import { RoomsPanel } from "./components/panels/RoomsPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
 import { Sidebar } from "./components/Sidebar";
-import { ChatContext, type ChatContextValue } from "./context";
+import { CommandPalette } from "./components/CommandPalette";
+import { snippet } from "./components/MessageItem";
+import { needsMe, notifyOn } from "./lib/notify";
+import { ChatContext, type BoardEvent, type ChatContextValue } from "./context";
 import { useSocket } from "./hooks/useSocket";
 import { useTheme } from "./hooks/useTheme";
 import { KEYS, storage } from "./lib/storage";
-import { hashFor, matchesView, messageKey, parseHash, resolveView, viewKey, type View } from "./lib/views";
+import { hashFor, matchesView, messageKey, parseHash, resolveView, viewKey, viewOfMessage, type View } from "./lib/views";
 import { viewTitle } from "./components/Header";
 
 export function toOverview(d: Record<string, unknown>): Overview {
@@ -25,6 +28,7 @@ export function toOverview(d: Record<string, unknown>): Overview {
     rooms: (d.rooms as Overview["rooms"]) ?? [],
     dms: (d.dms as Overview["dms"]) ?? [],
     all_rooms: (d.all_rooms as string[]) ?? [],
+    max_hops: typeof d.max_hops === "number" ? d.max_hops : undefined,
   };
 }
 
@@ -32,7 +36,12 @@ interface Toast {
   id: number;
   text: string;
   error?: boolean;
+  /** Playing its exit animation; removed when it ends. */
+  leaving?: boolean;
 }
+
+/** Length of the toast exit animation (--dur-fast in tokens.css). */
+const TOAST_EXIT_MS = 120;
 
 /** Login, and re-login when access changes; the chat itself is <ChatApp>. */
 export function App() {
@@ -127,16 +136,29 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   /** Bumped after a reconnect so the open conversation reloads its history. */
   const [epoch, setEpoch] = useState(0);
   const { theme, next: nextTheme } = useTheme();
+  /** Replies fold into threads under their first message (on) or stay in the feed (off); remembered per browser. */
+  const [threaded, setThreadedState] = useState(() => storage.get(KEYS.threads) !== "flat");
+  const setThreaded = useCallback((on: boolean) => {
+    setThreadedState(on);
+    storage.set(KEYS.threads, on ? "threads" : "flat");
+  }, []);
   const subscribers = useRef(new Set<(m: ChatMessage) => void>());
   const seen = useRef(new Set<number>());
 
   // ---- toasts and errors ----
   const toastSeq = useRef(0);
-  const toast = useCallback((text: string, error?: boolean) => {
-    const id = ++toastSeq.current;
-    setToasts((t) => [...t.slice(-3), { id, text, error }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), error ? 8000 : 4500);
+  const dismiss = useCallback((id: number) => {
+    setToasts((t) => t.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), TOAST_EXIT_MS);
   }, []);
+  const toast = useCallback(
+    (text: string, error?: boolean) => {
+      const id = ++toastSeq.current;
+      setToasts((t) => [...t.slice(-3), { id, text, error }]);
+      setTimeout(() => dismiss(id), error ? 8000 : 4500);
+    },
+    [dismiss],
+  );
   const fail = useCallback(
     (err: unknown, where: string) => {
       if (err instanceof AuthError) onLogout("Сесія завершилась: токен більше не дійсний. Увійдіть знову.");
@@ -176,10 +198,17 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
       if (view.kind === "game") n.delete(`r:game-${view.id}`);
       return n;
     });
-    const { title } = viewTitle(view, session.mode === "user" ? session.me.name : null);
-    document.title = view.kind === "room" ? `#${title} · AIChat` : title === "AIChat" ? title : `${title} · AIChat`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  const [focus, setFocus] = useState<{ key: string; id: number } | null>(null);
+  const clearFocus = useCallback(() => setFocus(null), []);
+  /** Opens a message's conversation and scrolls to the message there. */
+  const openMessage = (m: ChatMessage) => {
+    setFocus({ key: messageKey(m), id: m.id });
+    go(viewOfMessage(m));
+  };
+  const openMessageRef = useRef(openMessage);
+  openMessageRef.current = openMessage;
   const go = useCallback(
     (v: View) => {
       setMenuOpen(false);
@@ -192,6 +221,28 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
 
   // ---- everyone writes as themselves ----
   const sender = session.mode === "user" ? session.me.name : session.admin.name;
+
+  // ---- tab title: the open view, with the number of unread messages in front ----
+  const unreadTotal = [...unread.values()].reduce((a, b) => a + b, 0);
+  const { title: viewName } = viewTitle(view, session.mode === "user" ? session.me.name : null);
+  useEffect(() => {
+    const base = view.kind === "room" ? `#${viewName} · AIChat` : viewName === "AIChat" ? viewName : `${viewName} · AIChat`;
+    document.title = unreadTotal ? `(${unreadTotal}) ${base}` : base;
+  }, [view.kind, viewName, unreadTotal]);
+
+  // ---- Ctrl+K: jump anywhere, search messages ----
+  const [palette, setPalette] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // the composer uses Ctrl+K for links and marks the event as handled
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k" && !e.defaultPrevented) {
+        e.preventDefault();
+        setPalette((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ---- live messages ----
   const addLive = useCallback(
@@ -221,6 +272,23 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
         setUnread((u) => new Map(u).set(k, (u.get(k) ?? 0) + 1));
       }
       for (const fn of subscribers.current) fn(m);
+      // a browser notification when someone @mentions me or writes to me, unless I am looking at it
+      const me = session.mode === "user" ? session.me.name : session.admin.name;
+      if (notifyOn() && needsMe(m, me) && (document.hidden || !matchesView(m, viewRef.current))) {
+        try {
+          const n = new Notification(m.room ? `${m.from} у #${m.room}` : `${m.from} пише вам`, {
+            body: snippet(m).slice(0, 200),
+            tag: `aichat-${m.id}`,
+          });
+          n.onclick = () => {
+            window.focus();
+            openMessageRef.current(m);
+            n.close();
+          };
+        } catch {
+          /* some browsers allow notifications only from a service worker */
+        }
+      }
     },
     [session],
   );
@@ -232,6 +300,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   const subscribeDelivered = useCallback((fn: (id: number, to: string) => void) => {
     deliveredSubscribers.current.add(fn);
     return () => void deliveredSubscribers.current.delete(fn);
+  }, []);
+  const boardSubscribers = useRef(new Set<(e: BoardEvent) => void>());
+  const subscribeBoard = useCallback((fn: (e: BoardEvent) => void) => {
+    boardSubscribers.current.add(fn);
+    return () => void boardSubscribers.current.delete(fn);
   }, []);
   const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
   const gameDeletedSubscribers = useRef(new Set<(id: number) => void>());
@@ -275,6 +348,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     },
     onAccessChanged: () => void onRelogin(),
     onError: (e) => toast(`Брокер: ${e}`, true),
+    onBrief: (room, brief) => {
+      for (const fn of boardSubscribers.current) fn({ kind: "brief", room, brief });
+    },
     onGame: (g) => {
       for (const fn of gameSubscribers.current) fn(g);
     },
@@ -326,9 +402,19 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribe,
     subscribeGames,
     subscribeDelivered,
+    subscribeBoard,
     addLive,
     toast,
     fail,
+    threaded,
+    setThreaded,
+    openMessage,
+    openRoom: (room: string) => {
+      if (session.mode === "admin" || overview.rooms.some((r) => r.name === room)) go({ kind: "room", room });
+      else void joinRoom(room);
+    },
+    focus,
+    clearFocus,
   };
 
   let main: React.ReactNode;
@@ -342,24 +428,34 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else
     main = (
       <div className="empty big">
-        <p>Ви ще не в жодній кімнаті. Приєднайтеся до кімнати зліва або напишіть комусь зі списку «Учасники».</p>
+        <strong>Ви ще не в жодній кімнаті</strong>
+        <p>Приєднайтеся до кімнати зліва або напишіть комусь зі списку «Учасники».</p>
       </div>
     );
 
   return (
     <ChatContext.Provider value={ctx}>
       <div className={`app${menuOpen ? " menu-open" : ""}`}>
-        <Sidebar unread={unread} conn={conn} theme={theme} onTheme={nextTheme} onLogout={() => onLogout()} onJoin={joinRoom} />
+        <Sidebar
+          unread={unread}
+          conn={conn}
+          theme={theme}
+          onTheme={nextTheme}
+          onLogout={() => onLogout()}
+          onJoin={joinRoom}
+          onSearch={() => setPalette(true)}
+        />
         <div className="scrim" onClick={() => setMenuOpen(false)} />
         <main className="main">
           <Header onMenu={() => setMenuOpen((o) => !o)} onLeave={leaveRoom} />
           {main}
         </main>
+        {palette && <CommandPalette onClose={() => setPalette(false)} />}
         <div className="toasts" aria-live="assertive">
           {toasts.map((t) => (
-            <div key={t.id} className={`toast${t.error ? " error" : ""}`} role={t.error ? "alert" : "status"}>
+            <div key={t.id} className={`toast${t.error ? " error" : ""}${t.leaving ? " leaving" : ""}`} role={t.error ? "alert" : "status"}>
               <span>{t.text}</span>
-              <button type="button" className="icon-btn sm" onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))} aria-label="Закрити">
+              <button type="button" className="icon-btn sm" onClick={() => dismiss(t.id)} aria-label="Закрити">
                 <X size={14} />
               </button>
             </div>

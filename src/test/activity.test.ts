@@ -155,3 +155,76 @@ test("hook script end to end: Claude Code runs it, the broker hears it, it print
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("status: topic and place from the agent, target from the hook, place inferred from the latest message", async () => {
+  const b = await startBroker([
+    { name: "olena", kind: "human", rooms: ["web", "ops"] },
+    { name: "bot1", kind: "claude", rooms: ["web", "ops"] },
+  ]);
+  const post = async (path: string, body: unknown) => {
+    const r = await fetch(`${b.http}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tok("bot1")}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, body: (await r.json()) as { activity: Record<string, unknown> | null } };
+  };
+  const bot1 = await connect(b.url, "bot1");
+  try {
+    // no topic yet: the room comes from the agent's latest message
+    await bot1.send({ room: "ops", text: "on it" });
+    let r = await post("/api/activity", { state: "busy", detail: "Edit", target: "  App.tsx " });
+    assert.deepEqual([r.body.activity?.state, r.body.activity?.target, r.body.activity?.room], ["busy", "App.tsx", "ops"]);
+
+    // the agent names its topic and room; later messages elsewhere do not move it
+    r = await post("/api/status", { topic: "  web   UI ", room: "#web" });
+    assert.deepEqual([r.body.activity?.topic, r.body.activity?.room], ["web UI", "web"]);
+    await bot1.send({ room: "ops", text: "quick note" });
+    await settle();
+    r = await post("/api/activity", { state: "busy", detail: "Bash", target: "npm test" });
+    assert.deepEqual([r.body.activity?.topic, r.body.activity?.room, r.body.activity?.target], ["web UI", "web", "npm test"]);
+
+    // a topic without a place follows the conversation
+    r = await post("/api/status", { topic: "deploy" });
+    assert.equal(r.body.activity?.room, "ops");
+
+    assert.equal((await post("/api/status", { topic: "x", room: "secret" })).status, 403);
+    assert.equal((await post("/api/status", { topic: "x".repeat(61) })).status, 400);
+    assert.equal((await post("/api/status", {})).status, 400);
+    assert.equal((await post("/api/activity", { state: "busy", target: 5 })).status, 400);
+
+    r = await post("/api/status", { topic: "" });
+    assert.equal(r.body.activity?.topic, undefined);
+
+    // going offline ends the session's topic
+    await post("/api/status", { topic: "web", room: "web" });
+    bot1.close();
+    await settle();
+    const list = (await (await fetch(`${b.http}/api/agents`, { headers: { authorization: `Bearer ${tok("olena")}` } })).json()) as {
+      agents: AgentInfo[];
+    };
+    const a = list.agents.find((x) => x.name === "bot1")!.activity;
+    assert.equal(a?.state ?? "idle", "idle");
+    assert.equal(a?.topic, undefined);
+  } finally {
+    bot1.close();
+    await b.broker.close();
+  }
+});
+
+test("hook targets: file names, commands, searches, sites; never full paths", async () => {
+  const { targetOf } = await import("../adapters/aichat-hook.js");
+  assert.equal(targetOf("Edit", { file_path: "/home/me/secret/web/src/App.tsx" }), "App.tsx");
+  assert.equal(targetOf("Read", { file_path: "C:\\work\\notes.md" }), "notes.md");
+  assert.equal(targetOf("Bash", { command: "npm   test\nmore" }), "npm test");
+  assert.equal(targetOf("Bash", { command: "npm test", description: "Run the web tests" }), "Run the web tests");
+  assert.equal(targetOf("Bash", { command: "x".repeat(80) })!.length, 48);
+  assert.equal(targetOf("Grep", { pattern: "hopLimit" }), "hopLimit");
+  assert.equal(targetOf("WebFetch", { url: "https://github.com/delpher/aichat" }), "github.com");
+  assert.equal(targetOf("mcp__aichat__send_message", { text: "hi" }), undefined);
+  assert.deepEqual(reportFor({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: "/a/b.ts" } }), {
+    state: "busy",
+    detail: "Edit",
+    target: "b.ts",
+  });
+});

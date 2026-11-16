@@ -1,5 +1,6 @@
 // Types of the broker's REST and WebSocket API, shared with the backend.
-export type { AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameType, ServerFrame } from "../../../src/protocol";
+export type { AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameType, RoomBrief, ServerFrame } from "../../../src/protocol";
+export { MAX_BRIEF_LENGTH } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
 
 export { SYSTEM_SENDER } from "../../../src/protocol";
@@ -33,6 +34,8 @@ export interface Overview {
   dms: DmInfo[];
   /** User mode only: every room, so the person can join one. */
   all_rooms: string[];
+  /** Reply chains stop at this many hops (broker setting maxHops). */
+  max_hops?: number;
 }
 
 export interface Settings {
@@ -51,9 +54,13 @@ export interface SetupStep {
   lang?: string;
   download?: { url: string; filename?: string };
   url?: string;
+  /** Step-by-step way, folded under "Вручну" below the one-command way. */
+  manual?: boolean;
 }
 
 export interface Setup {
+  /** Agent kind the steps are for: "human", "claude", "openai" or another. */
+  kind?: string;
   steps: SetupStep[];
 }
 

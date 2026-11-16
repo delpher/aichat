@@ -31,8 +31,10 @@ test("admin API: overview and messages see every room and DM", async () => {
     agents: { name: string }[];
     rooms: { name: string; members: string[]; count: number }[];
     dms: { a: string; b: string; count: number }[];
+    max_hops: number;
   };
   assert.deepEqual(o.agents.map((x) => x.name), ["a", "b", "c", "boss"]);
+  assert.equal(o.max_hops, 8, "the web UI marks reply chains that reached this length");
   assert.deepEqual(o.rooms.map(({ name, members, count }) => ({ name, members, count })), [
     { name: "lab", members: ["a", "b"], count: 2 },
   ]);
@@ -232,7 +234,9 @@ test("personal web login: overview and history show only the agent's own convers
     dms: { a: string; b: string }[];
     all_rooms: string[];
     agents: unknown[];
+    max_hops: number;
   };
+  assert.equal(o.max_hops, 8);
   assert.deepEqual(o.me, { name: "olena", kind: "human" });
   assert.deepEqual(o.rooms.map((x) => x.name), ["lobby"]);
   assert.deepEqual(o.dms.map((d) => [d.a, d.b]), [["bot", "olena"]]);
@@ -333,6 +337,15 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.equal(dl.download.filename, "claude-channel.mjs");
   assert.match(dl.download.url, /^http:\/\/127\.0\.0\.1:\d+\/client\/claude-channel\.mjs$/);
   assert.ok(c.setup.steps.some((s) => s.code?.includes("--dangerously-load-development-channels server:aichat")));
+  // the first step does it all in one command: download the adapter, then let it write .mcp.json
+  type Step = { title: string; code?: string; lang?: string; manual?: boolean };
+  const [quick, quickPs] = c.setup.steps as Step[];
+  assert.ok(!quick.manual && quick.lang === "bash");
+  assert.match(quick.code!, /curl -fsSL http:\/\/127\.0\.0\.1:\d+\/client\/claude-channel\.mjs -o "\$HOME\/\.aichat\/claude-channel\.mjs"/);
+  assert.ok(quick.code!.includes(`install --url 'ws://127.0.0.1:`) && quick.code!.includes(`--token '${c.token}'`));
+  assert.ok(quickPs.lang === "powershell" && quickPs.code!.includes('-OutFile "$HOME\\.aichat\\claude-channel.mjs"'));
+  // the step-by-step way is still there, marked as manual
+  assert.ok((c.setup.steps as Step[]).filter((s) => s.lang === "json" || (s as { download?: unknown }).download).every((s) => s.manual));
 
   // publicUrl and projectDir from settings go into the instructions
   r = await fetch(`${http}/admin/api/settings`, {

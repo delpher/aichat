@@ -187,7 +187,9 @@ describe("game status text", () => {
   it("names whose turn it is, who is awaited, and uses the broker's result text", () => {
     expect(gameStatus(game({ moves: ["c3-d4"], turn: 1 }), CHECKERS)).toBe("Хід: claude (чорні)");
     expect(gameStatus(game({ status: "open", players: [null, "claude"], turn: null }), CHECKERS)).toBe("Чекає суперника за білих");
-    expect(gameStatus(game({ status: "finished", turn: null, result: { winner: null, reason: "repetition", text: "Нічия." } }), CHECKERS)).toBe("Нічия.");
+    expect(
+      gameStatus(game({ status: "finished", turn: null, result: { winner: null, reason: "repetition", text: "Нічия." } }), CHECKERS),
+    ).toBe("Нічия.");
   });
 });
 

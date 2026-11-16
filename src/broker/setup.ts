@@ -8,6 +8,8 @@ export interface SetupStep {
   lang?: string;
   /** A file to download in the browser (the bundled adapter). */
   download?: { url: string; filename: string };
+  /** Part of the step-by-step way; the web UI folds these under "Вручну" below the one-command way. */
+  manual?: boolean;
 }
 
 export interface Setup {
@@ -50,10 +52,33 @@ export function buildSetup(c: SetupContext): Setup {
   const http = c.httpUrl.replace(/\/+$/, "");
   const ws = http.replace(/^http/i, "ws");
   const dir = (c.projectDir || DIR_PLACEHOLDER).replace(/\\/g, "/").replace(/\/+$/, "");
-  const dirNote = c.projectDir
+  const dirNote: SetupStep[] = c.projectDir
     ? []
-    : [{ title: "Папка для адаптера", text: `Замініть ${DIR_PLACEHOLDER} на папку на комп'ютері агента, куди ви покладете файл адаптера. Щоб шлях підставлявся сам, задайте його в налаштуваннях (projectDir).` }];
+    : [
+        {
+          title: "Папка для адаптера",
+          text: `Замініть ${DIR_PLACEHOLDER} на папку на комп'ютері агента, куди ви покладете файл адаптера. Щоб шлях підставлявся сам, задайте його в налаштуваннях (projectDir).`,
+          manual: true,
+        },
+      ];
+  // The one-command way puts the adapter in projectDir, or in ~/.aichat when that is not set.
+  const quickDir = { bash: c.projectDir ? sq(dir) : `"$HOME/.aichat"`, ps: c.projectDir ? psq(dir) : `"$HOME\\.aichat"` };
+  const quickFile = (file: string) => ({
+    bash: c.projectDir ? sq(`${dir}/${file}`) : `"$HOME/.aichat/${file}"`,
+    ps: c.projectDir ? psq(`${dir}/${file}`) : `"$HOME\\.aichat\\${file}"`,
+  });
+  /** Shell lines that download one adapter file into the folder. */
+  const getFile = (file: string) => ({
+    bash: `curl -fsSL ${http}/client/${file} -o ${quickFile(file).bash}`,
+    ps: `Invoke-WebRequest ${http}/client/${file} -OutFile ${quickFile(file).ps}`,
+  });
+  /** Shell lines that create the folder and download one adapter file into it. */
+  const fetchFile = (file: string) => ({
+    bash: `mkdir -p ${quickDir.bash} && ${getFile(file).bash}`,
+    ps: `New-Item -ItemType Directory -Force ${quickDir.ps} | Out-Null; ${getFile(file).ps}`,
+  });
   const download = (file: string): SetupStep => ({
+    manual: true,
     title: `Завантажте адаптер ${file}`,
     text: `Покладіть файл у ${dir}. Потрібен лише Node.js 22 або новіший; копія проєкту AIChat і npm install не потрібні.`,
     code: [
@@ -76,12 +101,36 @@ export function buildSetup(c: SetupContext): Setup {
         },
       },
     };
+    const install = `install --url ${sq(ws)} --token ${sq(c.token)}`;
+    const installPs = `install --url ${psq(ws)} --token ${psq(c.token)}`;
+    const f = fetchFile("claude-channel.mjs");
+    // the hook goes next to the adapter, where `install` finds it and registers it in .claude/settings.local.json
+    const hookBash = getFile("aichat-hook.mjs").bash;
+    const hookPs = getFile("aichat-hook.mjs").ps;
     return {
       kind: c.kind,
       steps: [
+        {
+          title: "Підключіть однією командою",
+          text: `Виконайте в папці, де працюватиме Claude Code агента ${c.name}. Команда завантажить адаптер і хук статусу, створить .mcp.json (або допише сервер aichat до наявного) і .claude/settings.local.json з хуками, щоб у чаті було видно, що агент робить. Потрібен лише Node.js 22 або новіший.`,
+          code: `${f.bash} && ${hookBash} && node ${quickFile("claude-channel.mjs").bash} ${install}`,
+          lang: "bash",
+        },
+        {
+          title: "Те саме в PowerShell (Windows)",
+          code: `${f.ps}; ${hookPs}; node ${quickFile("claude-channel.mjs").ps} ${installPs}`,
+          lang: "powershell",
+        },
+        {
+          title: "Запустіть Claude Code з тієї ж папки",
+          text: "Підтвердьте попередження про development channels і запит на MCP-сервер aichat. Щойно агент підключиться, тут з'явиться позначка.",
+          code: "claude --dangerously-load-development-channels server:aichat",
+          lang: "bash",
+        },
         ...dirNote,
         download("claude-channel.mjs"),
         {
+          manual: true,
           title: "Створіть .mcp.json",
           text: `Покладіть цей файл у папку, де працюватиме Claude Code агента ${c.name} (у кожного агента своя папка й свій токен).`,
           code: JSON.stringify(mcp, null, 2),
@@ -89,6 +138,7 @@ export function buildSetup(c: SetupContext): Setup {
         },
         download("aichat-hook.mjs"),
         {
+          manual: true,
           title: "Статус агента: створіть .claude/settings.local.json",
           text:
             "Необов'язково, але тоді в чаті видно, що агент працює (і над чим) або чекає дозволу. " +
@@ -96,44 +146,41 @@ export function buildSetup(c: SetupContext): Setup {
           code: JSON.stringify(hookSettings(`${dir}/aichat-hook.mjs`), null, 2),
           lang: "json",
         },
-        {
-          title: "Запустіть Claude Code з папки, де лежить .mcp.json",
-          text: "Підтвердьте попередження про development channels і запит на MCP-сервер aichat.",
-          code: "claude --dangerously-load-development-channels server:aichat",
-          lang: "bash",
-        },
       ],
     };
   }
 
   if (c.kind === "openai") {
+    const f = fetchFile("openai-agent.mjs");
     return {
       kind: c.kind,
       steps: [
-        ...dirNote,
-        download("openai-agent.mjs"),
         {
-          title: "Запуск (bash)",
-          text: "Для локальної моделі додайте OPENAI_BASE_URL, наприклад http://localhost:11434/v1 (Ollama).",
+          title: "Завантажте й запустіть однією командою (bash)",
+          text: "Впишіть свій OPENAI_API_KEY і модель. Для локальної моделі додайте OPENAI_BASE_URL, наприклад http://localhost:11434/v1 (Ollama). Щойно агент підключиться, тут з'явиться позначка.",
           code: [
+            `${f.bash} && \\`,
             `AICHAT_URL=${sq(ws)} AICHAT_TOKEN=${sq(c.token)} \\`,
             `OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1 \\`,
-            `AGENT_PROMPT="Ти ${c.name}, коротко відповідаєш у чаті" node ${sq(`${dir}/openai-agent.mjs`)}`,
+            `AGENT_PROMPT="Ти ${c.name}, коротко відповідаєш у чаті" node ${quickFile("openai-agent.mjs").bash}`,
           ].join("\n"),
           lang: "bash",
         },
         {
-          title: "Запуск (PowerShell)",
+          title: "Те саме в PowerShell (Windows)",
           code: [
+            f.ps,
             `$env:AICHAT_URL = ${psq(ws)}`,
             `$env:AICHAT_TOKEN = ${psq(c.token)}`,
             `$env:OPENAI_API_KEY = 'sk-...'`,
             `$env:OPENAI_MODEL = 'gpt-4.1'`,
             `$env:AGENT_PROMPT = ${psq(`Ти ${c.name}, коротко відповідаєш у чаті`)}`,
-            `node ${psq(`${dir}/openai-agent.mjs`)}`,
+            `node ${quickFile("openai-agent.mjs").ps}`,
           ].join("\n"),
           lang: "powershell",
         },
+        ...dirNote,
+        download("openai-agent.mjs"),
       ],
     };
   }

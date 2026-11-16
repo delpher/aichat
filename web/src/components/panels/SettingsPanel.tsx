@@ -1,8 +1,9 @@
-import { LoaderCircle, Save, Undo2 } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AuthError } from "../../api/http";
 import type { Settings } from "../../api/types";
 import { useChat } from "../../context";
+import { ListSkeleton } from "../Skeleton";
 import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
 
@@ -11,25 +12,25 @@ type Limits = Partial<Record<keyof Settings, { min: number; max: number }>>;
 const NUMBER_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
   {
     name: "maxHops",
-    label: "Максимальна довжина ланцюжка відповідей",
-    help: "Кожна відповідь з reply_to збільшує лічильник hops. Коли він досягає цього значення, брокер відхиляє наступну відповідь, щоб агенти не відповідали один одному вічно.",
+    label: "Довжина ланцюжка відповідей",
+    help: "Після стількох відповідей поспіль брокер зупиняє ланцюжок, щоб агенти не відповідали один одному вічно.",
   },
-  { name: "ratePerMinute", label: "Повідомлень за хвилину від одного учасника", help: "Повідомлення понад цей ліміт брокер відхиляє." },
-  { name: "maxTextLength", label: "Максимальна довжина повідомлення, символів", help: "Довші повідомлення брокер не приймає." },
-  { name: "maxFileSizeMB", label: "Максимальний розмір файлу, МБ", help: "Більші файли брокер не приймає. Файли зберігаються в data/files поруч із базою." },
+  { name: "ratePerMinute", label: "Повідомлень на хвилину", help: "Від одного учасника. Решту брокер відхиляє." },
+  { name: "maxTextLength", label: "Довжина повідомлення, символів", help: "Довші повідомлення брокер відхиляє." },
+  { name: "maxFileSizeMB", label: "Розмір файлу, МБ", help: "Більші файли брокер відхиляє." },
 ];
 
 const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placeholder: string }[] = [
   {
     name: "publicUrl",
     label: "Публічна адреса брокера",
-    help: "Адреса, за якою брокер доступний з інших комп'ютерів. Її підставляють у команди запуску агентів. Якщо поле порожнє, береться адреса цієї сторінки.",
+    help: "Як до брокера звертаються інші комп'ютери. Порожньо: адреса цієї сторінки.",
     placeholder: "http://aichat.home.arpa:8787",
   },
   {
     name: "projectDir",
     label: "Папка для адаптера на комп'ютері агента",
-    help: "Куди на комп'ютері агента кладуть завантажений адаптер (claude-channel.mjs). Шлях підставляється в .mcp.json. Якщо поле порожнє, в інструкції буде <AICHAT_DIR>.",
+    help: "Куди кладуть claude-channel.mjs. Підставляється в .mcp.json; порожньо: <AICHAT_DIR>.",
     placeholder: "C:/aichat",
   },
 ];
@@ -60,7 +61,9 @@ export function SettingsPanel() {
         fill(d.settings);
         if (d.editable === false) setStatus({ text: "Брокер запущено без файлу конфігурації, тому налаштування лише для читання." });
       })
-      .catch((err) => (err instanceof AuthError ? fail(err, "") : setStatus({ text: `Не вдалося завантажити: ${err.message}`, error: true })))
+      .catch((err) =>
+        err instanceof AuthError ? fail(err, "") : setStatus({ text: `Не вдалося завантажити: ${err.message}`, error: true }),
+      )
       .finally(() => live && setBusy(false));
     return () => {
       live = false;
@@ -117,13 +120,14 @@ export function SettingsPanel() {
   if (!saved && busy)
     return (
       <div className="panel">
-        <LoaderCircle className="spin" />
+        <ListSkeleton rows={4} avatar={false} label="Завантаження налаштувань" />
       </div>
     );
+  const dirty = !!saved && ALL.some((k) => (form[k] ?? "").trim() !== String(saved[k] ?? ""));
   return (
     <div className="panel">
       <form
-        className="card settings"
+        className="section settings"
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
@@ -136,10 +140,8 @@ export function SettingsPanel() {
             const f = field(name);
             const lim = limits[name];
             return (
-              <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`}>
-                <span>
-                  {label} <code>{name}</code>
-                </span>
+              <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
+                <span>{label}</span>
                 <input
                   type="number"
                   inputMode="numeric"
@@ -150,9 +152,15 @@ export function SettingsPanel() {
                   onChange={(e) => setForm({ ...form, [name]: e.target.value })}
                 />
                 <small>
-                  {help}
-                  {lim ? ` Допустимо: ${lim.min}–${lim.max}.` : ""}
-                  {f.bad && <b className="field-error"> {f.error}</b>}
+                  {f.bad ? <span className="field-error">{f.error}</span> : help}
+                  {lim && !f.bad ? (
+                    <span className="num">
+                      {" "}
+                      Від {lim.min} до {lim.max}.
+                    </span>
+                  ) : (
+                    ""
+                  )}
                 </small>
               </label>
             );
@@ -162,33 +170,29 @@ export function SettingsPanel() {
         {TEXT_FIELDS.map(({ name, label, help, placeholder }) => {
           const f = field(name);
           return (
-            <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`}>
-              <span>
-                {label} <code>{name}</code>
-              </span>
+            <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
+              <span>{label}</span>
               <input
                 value={form[name] ?? ""}
                 placeholder={placeholder}
                 readOnly={!editable || busy}
                 onChange={(e) => setForm({ ...form, [name]: e.target.value })}
               />
-              <small>
-                {help}
-                {f.bad && <b className="field-error"> {f.error}</b>}
-              </small>
+              <small>{f.bad ? <span className="field-error">{f.error}</span> : help}</small>
             </label>
           );
         })}
         <div className="actions">
-          <button type="submit" className="btn primary" disabled={!editable || busy}>
-            <Save size={16} /> Зберегти
+          <button type="submit" className="btn primary" disabled={!editable || busy || !dirty}>
+            {busy && <LoaderCircle className="spin" size={16} />} Зберегти
           </button>
-          <button type="button" className="btn ghost" disabled={!editable || busy} onClick={() => saved && fill(saved)}>
-            <Undo2 size={16} /> Скасувати зміни
-          </button>
+          {dirty && (
+            <button type="button" className="btn quiet" disabled={!editable || busy} onClick={() => saved && fill(saved)}>
+              Скасувати зміни
+            </button>
+          )}
           <Status value={status} />
         </div>
-        <p className="muted small">Зміни записуються в agents.json і діють одразу, без перезапуску брокера.</p>
       </form>
       <UpdateBox />
     </div>
