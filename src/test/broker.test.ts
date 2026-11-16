@@ -149,3 +149,12 @@ test("webhook agents receive POSTs", async () => {
   await broker.close();
   hook.close();
 });
+
+test("/health reports the version from package.json", async () => {
+  const { broker, http } = await startBroker([{ name: "a" }]);
+  const { readFileSync } = await import("node:fs");
+  const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  const r = await fetch(`${http}/health`);
+  assert.deepEqual(await r.json(), { ok: true, version: pkg.version });
+  await broker.close();
+});

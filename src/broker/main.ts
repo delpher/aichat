@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Broker } from "./broker.js";
 import { ConfigFile, type BrokerConfig } from "./config.js";
+import { VERSION } from "../version.js";
 
 const path = resolve(process.argv[2] ?? process.env.AICHAT_CONFIG ?? "agents.json");
 if (!existsSync(path)) {
@@ -36,7 +37,7 @@ const broker = new Broker({
 });
 const cfg = withEnv(config.get());
 const port = await broker.listen();
-console.error(`[broker] listening on http://${cfg.host}:${port} (WebSocket: ws://${cfg.host}:${port}/ws)`);
+console.error(`[broker] AIChat ${VERSION} listening on http://${cfg.host}:${port} (WebSocket: ws://${cfg.host}:${port}/ws)`);
 console.error(`[broker] agents: ${cfg.agents.map((a) => `${a.name} (${a.kind})`).join(", ") || "none"}`);
 
 const stop = async () => {

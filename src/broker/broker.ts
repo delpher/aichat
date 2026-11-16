@@ -7,6 +7,7 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store.js";
+import { VERSION } from "../version.js";
 import {
   SETTING_LIMITS,
   checkSettingsPatch,
@@ -759,7 +760,7 @@ export class Broker {
       res.end(JSON.stringify(body));
     };
     try {
-      if (url.pathname === "/health") return reply(200, { ok: true });
+      if (url.pathname === "/health") return reply(200, { ok: true, version: VERSION });
       if (req.method === "GET" && url.pathname.startsWith("/client/")) return await this.serveClient(url.pathname, res);
       if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
         return await this.serveStatic(url.pathname, res);
