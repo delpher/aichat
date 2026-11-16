@@ -1,0 +1,35 @@
+# Інструкції для агентів
+
+## Релізи
+
+Релізи публікує `.github/workflows/release.yml` автоматично, коли в репозиторій пушиться тег версії. Вручну реліз у GitHub не створюй і файли до нього не завантажуй.
+
+### Як випустити версію
+
+1. Реліз робиться лише з `master` і лише з дозволу Алексея: тег і реліз публічні для апдейтера брокера, відкотити їх без наслідків не можна.
+2. На актуальному `master` з чистим робочим деревом:
+   ```bash
+   npm run typecheck && npm test && npm run test:web
+   npm version <patch|minor|major|X.Y.Z>   # міняє package.json і package-lock.json, робить коміт і тег vX.Y.Z
+   git push origin master --follow-tags
+   ```
+   Якщо `master` захищений від прямого пушу, зміни версію через PR (`npm version X.Y.Z --no-git-tag-version`), а після мержу постав тег на коміт мержу: `git tag vX.Y.Z <sha> && git push origin vX.Y.Z`.
+3. Простеж за запуском workflow «Release» в Actions. Якщо він впав, виправ причину в новому коміті й випусти наступну patch-версію. Не перевикористовуй і не переставляй уже запушений тег.
+
+### Правила версій
+
+- Semver. Тег завжди `v` + версія з `package.json` (`v0.2.0`). Workflow зупиняється, якщо вони різняться.
+- `patch` для виправлень, `minor` для нових можливостей, `major` для несумісних змін протоколу, API або формату `agents.json` чи бази.
+- Тег із суфіксом (`v0.2.0-rc.1`) стає пре-релізом: `/releases/latest` його пропускає, Docker-тег `latest` не ставиться. Ним перевіряй ризиковані зміни.
+
+### Що не можна ламати
+
+Брокер оновлюватиметься сам із GitHub Releases, тому ці речі є контрактом. Змінюєш їх, то онови апдейтер і README у тому ж PR:
+
+- імена файлів у релізі: `aichat-<версія>.zip`, `aichat-<версія>.tar.gz`, `SHA256SUMS.txt`, `release.json`;
+- поля `release.json` (`schema`, `version`, `tag`, `prerelease`, `assets[].name/size/sha256`, `root`, `entry`). Несумісна зміна формату означає новий `schema`;
+- структура архіву: корінна папка `aichat/`, точка входу `dist/broker/main.js`, файл `VERSION`;
+- `GET /health` повертає `{"ok":true,"version":"<версія>"}` (`src/version.ts` читає `package.json`).
+
+Нова runtime-залежність має бути чистим JS: архів один для всіх ОС, нативних модулів у ньому бути не може.
+Docker-образ публікується як `ghcr.io/delpher/aichat:<версія>` і `:latest`.
