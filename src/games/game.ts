@@ -25,4 +25,10 @@ export interface GameDefinition extends GameType {
   turnLabel?(seat: number): string;
   /** Words for one of the game's own reasons, e.g. "у білих немає ходів"; without it the reason id is shown. */
   reasonText?(outcome: GameOutcome): string;
+  /**
+   * For games of chance: the entry the broker itself adds next (a dice roll, a forced pass), with words for
+   * the room, or null when it is a player's turn. `random` returns [0, 1). The broker asks again after
+   * each entry, so the state stays a plain list of moves.
+   */
+  auto?(moves: string[], random: () => number): { move: string; note: string } | null;
 }

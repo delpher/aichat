@@ -30,6 +30,8 @@ export interface GameHost {
   announce(room: string, text: string): void;
   /** Tells every connected client the game changed. */
   publish(game: GameInfo): void;
+  /** Dice for games of chance, [0, 1); Math.random when not set (tests pass their own). */
+  random?: () => number;
 }
 
 const FREE = "вільне місце";
@@ -96,10 +98,14 @@ export class Games {
     if (new Set(named).size !== named.length) throw new GameError("a player cannot take two seats");
     if (!named.includes(by) && !this.host.isHuman(by)) throw new GameError("agents may only create games they play in", 403);
     const status = named.length === def.seats.length ? "active" : "open";
-    const g = this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
+    let g = this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
     const room = gameRoom(g.id);
     for (const n of new Set([...named, by])) this.host.join(n, room);
-    if (status === "active") this.announceStart(def, g);
+    if (status === "active") {
+      const notes = this.runAuto(def, g);
+      if (notes.length) g = this.host.store.updateGame(g);
+      this.announceStart(def, g, notes);
+    }
     else
       this.host.announce(
         room,
@@ -123,9 +129,10 @@ export class Games {
     }
     g.players[i] = by;
     if (!g.players.includes(null)) g.status = "active";
+    const notes = g.status === "active" ? this.runAuto(def, g) : [];
     const saved = this.host.store.updateGame(g);
     this.host.join(by, gameRoom(id));
-    if (saved.status === "active") this.announceStart(def, saved);
+    if (saved.status === "active") this.announceStart(def, saved, notes);
     else this.host.announce(gameRoom(id), `${by} сідає: ${def.seats[i].name}. ${this.seatsText(def, saved)}.`);
     this.publish(saved);
     return saved;
@@ -144,10 +151,13 @@ export class Games {
     }
     g.moves = [...g.moves, move];
     g.draw_offer = null;
-    const outcome = def.outcome(g.moves);
+    let outcome = def.outcome(g.moves);
+    const notes = outcome ? [] : this.runAuto(def, g);
+    outcome ??= def.outcome(g.moves);
     if (outcome) this.finish(g, outcome);
     const saved = this.host.store.updateGame(g);
-    this.host.announce(gameRoom(id), outcome ? this.finalText(def, saved) : this.turnText(def, saved, `${by}: ${move}`));
+    const head = [`${by}: ${move}`, ...notes].join("\n");
+    this.host.announce(gameRoom(id), outcome ? this.finalText(def, saved) : this.turnText(def, saved, head));
     this.publish(saved);
     return saved;
   }
@@ -248,8 +258,24 @@ export class Games {
     return def.seats.map((s, i) => `${s.name} — ${g.players[i] ?? FREE}`).join(", ");
   }
 
-  private announceStart(def: GameDefinition, g: GameRecord) {
-    this.host.announce(gameRoom(g.id), this.turnText(def, g, `Партія #${g.id} (${def.title}) почалася: ${this.seatsText(def, g)}.`));
+  /**
+   * Adds the entries a game of chance makes by itself (dice rolls, forced passes) until it is a player's
+   * turn; returns their words for the room. A safety cap stops a game that would never hand over.
+   */
+  private runAuto(def: GameDefinition, g: GameRecord): string[] {
+    const notes: string[] = [];
+    for (let i = 0; def.auto && i < 64 && !def.outcome(g.moves); i++) {
+      const a = def.auto(g.moves, this.host.random ?? Math.random);
+      if (!a) break;
+      g.moves = [...g.moves, a.move];
+      notes.push(a.note);
+    }
+    return notes;
+  }
+
+  private announceStart(def: GameDefinition, g: GameRecord, notes: string[] = []) {
+    const head = [`Партія #${g.id} (${def.title}) почалася: ${this.seatsText(def, g)}.`, ...notes].join("\n");
+    this.host.announce(gameRoom(g.id), this.turnText(def, g, head));
   }
 
   /** Board plus whose turn it is and the legal moves, so an agent can answer with one message. */

@@ -27,6 +27,11 @@ export interface GameModule {
   Tile: ComponentType;
   /** The board for a position, interactive when canMove is set. */
   Play: ComponentType<PlayProps>;
+  /**
+   * How the move list groups the moves into numbered rows; ply is the move's 1-based index.
+   * Without it, each row holds one move per seat.
+   */
+  moveRows?: (moves: string[]) => Array<Array<{ text: string; ply: number }>>;
   /** The position as text, for "copy as text". */
   toText?: (moves: string[]) => string;
 }
