@@ -1,7 +1,7 @@
 import { LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthError, detectSession, makeApi } from "./api/http";
-import type { ChatMessage, GameInfo, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, GameRatings, Overview, Session } from "./api/types";
 import { ChatView } from "./components/ChatView";
 import { GameLobby } from "./games/GameLobby";
 import { GamePage } from "./games/GamePage";
@@ -317,6 +317,12 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     };
   }, []);
 
+  const ratingSubscribers = useRef(new Set<(game: string, ratings: GameRatings) => void>());
+  const subscribeRatings = useCallback((fn: (game: string, ratings: GameRatings) => void) => {
+    ratingSubscribers.current.add(fn);
+    return () => void ratingSubscribers.current.delete(fn);
+  }, []);
+
   const conn = useSocket(session, {
     onMessage: addLive,
     onPresence: (agent, online) => {
@@ -353,6 +359,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     },
     onGame: (g) => {
       for (const fn of gameSubscribers.current) fn(g);
+    },
+    onRatings: (game, ratings) => {
+      for (const fn of ratingSubscribers.current) fn(game, ratings);
     },
     onActivity: (agent, activity) =>
       setOverview((o) => ({ ...o, agents: o.agents.map((a) => (a.name === agent ? { ...a, activity } : a)) })),
@@ -401,6 +410,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     sender,
     subscribe,
     subscribeGames,
+    subscribeRatings,
     subscribeDelivered,
     subscribeBoard,
     addLive,

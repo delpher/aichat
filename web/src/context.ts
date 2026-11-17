@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Api } from "./api/http";
-import type { ChatMessage, GameInfo, Overview, RoomBrief, Session } from "./api/types";
+import type { ChatMessage, GameInfo, GameRatings, Overview, RoomBrief, Session } from "./api/types";
 import type { View } from "./lib/views";
 
 export interface ChatContextValue {
@@ -16,6 +16,8 @@ export interface ChatContextValue {
   subscribe: (fn: (m: ChatMessage) => void) => () => void;
   /** Live game updates; returns an unsubscribe function. */
   subscribeGames: (fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => () => void;
+  /** Live rating changes of a kind of game; returns an unsubscribe function. */
+  subscribeRatings: (fn: (game: string, ratings: GameRatings) => void) => () => void;
   /** Delivery receipts (agent `to` received message `id`); returns an unsubscribe function. */
   subscribeDelivered: (fn: (id: number, to: string) => void) => () => void;
   /** Live brief changes of rooms; returns an unsubscribe function. */

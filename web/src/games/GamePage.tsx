@@ -8,7 +8,8 @@ import { hashFor } from "../lib/views";
 import { DeleteGame } from "./DeleteGame";
 import { canJoin, FREE_SEAT, gameStatus, joinAs, seatName, seatOf } from "./gameText";
 import { findGame } from "./registry";
-import { useGameTypes } from "./useGames";
+import { Rating } from "./Rating";
+import { useGameTypes, useRatings } from "./useGames";
 
 /**
  * The page of one game: players, status, draw and resign, stepping through the moves, the game's chat.
@@ -22,6 +23,7 @@ export function GamePage({ id }: { id: number }) {
   /** Moves shown; null follows the live position. */
   const [ply, setPly] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const ratings = useRatings(game?.game);
 
   const load = useCallback(() => {
     api
@@ -120,7 +122,7 @@ export function GamePage({ id }: { id: number }) {
       <div className="game">
         <div className="game-board">
           {others.map((i) => (
-            <PlayerBar key={i} name={game.players[i]} seat={i} label={seatName(t, i)} turn={live && game.turn === i} />
+            <PlayerBar key={i} name={game.players[i]} seat={i} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
           ))}
           {m ? (
             <m.Play game={game} ply={shownPly} canMove={canMove} bottom={bottom} onMove={(move) => void act("move", { move })} />
@@ -129,7 +131,13 @@ export function GamePage({ id }: { id: number }) {
               <p>Гра «{t?.title ?? game.game}» поки не має дошки на сайті. Хід партії видно в чаті нижче.</p>
             </div>
           )}
-          <PlayerBar name={game.players[bottom]} seat={bottom} label={seatName(t, bottom)} turn={live && game.turn === bottom} />
+          <PlayerBar
+            name={game.players[bottom]}
+            seat={bottom}
+            label={seatName(t, bottom)}
+            turn={live && game.turn === bottom}
+            rating={ratings[game.players[bottom] ?? ""]}
+          />
         </div>
 
         <aside className="card game-side">
@@ -284,11 +292,12 @@ export function GamePage({ id }: { id: number }) {
   );
 }
 
-function PlayerBar({ name, seat, label, turn }: { name: string | null; seat: number; label: string; turn: boolean }) {
+function PlayerBar({ name, seat, label, turn, rating }: { name: string | null; seat: number; label: string; turn: boolean; rating?: number }) {
   return (
     <div className={`player-bar${turn ? " turn" : ""}`}>
       <span className={`seat-dot seat-${seat}`} />
       {name ? <b>{name}</b> : <span className="free-seat">{FREE_SEAT}</span>}
+      {name && <Rating value={rating} />}
       <span className="muted small">{label}</span>
       {turn && <span className="turn-dot" title="Зараз ходить" />}
     </div>

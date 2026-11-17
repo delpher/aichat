@@ -8,7 +8,8 @@ import { ListSkeleton } from "../components/Skeleton";
 import { DeleteGame } from "./DeleteGame";
 import { canJoin, FREE_SEAT, gameStatus, seatName, sortGames } from "./gameText";
 import { findGame } from "./registry";
-import { useGameList, useGameTypes } from "./useGames";
+import { Rating } from "./Rating";
+import { useGameList, useGameTypes, useRatings } from "./useGames";
 
 type Filter = "all" | "open" | "active" | "mine";
 const FILTERS: Array<[Filter, string]> = [
@@ -23,6 +24,7 @@ export function GameLobby({ type: typeId }: { type: string }) {
   const { api, overview, sender, fail, go } = useChat();
   const types = useGameTypes();
   const games = useGameList(typeId);
+  const ratings = useRatings(typeId);
   const t = types?.find((x) => x.id === typeId);
   const m = findGame(typeId);
   /** Who sits on each seat; "" leaves it open for whoever joins. The first seat defaults to you. */
@@ -66,7 +68,8 @@ export function GameLobby({ type: typeId }: { type: string }) {
   if (!players.some((p) => p.name === sender)) players.unshift({ name: sender, kind: "human", online: true, rooms: [] });
   const label = (name: string) => {
     const p = players.find((x) => x.name === name)!;
-    return [name === sender ? `${name} (ви)` : name, p.kind === "human" ? "" : kindLabel(p.kind), p.online ? "" : "офлайн"]
+    const r = ratings[name];
+    return [name === sender ? `${name} (ви)` : name, r === undefined ? "" : `рейтинг ${r}`, p.kind === "human" ? "" : kindLabel(p.kind), p.online ? "" : "офлайн"]
       .filter(Boolean)
       .join(" · ");
   };
@@ -188,6 +191,7 @@ export function GameLobby({ type: typeId }: { type: string }) {
                         <span key={i} title={seatName(t, i)}>
                           {i > 0 && <span className="vs"> проти </span>}
                           {p ?? <span className="free-seat">{FREE_SEAT}</span>}
+                          {p && <Rating value={ratings[p]} />}
                         </span>
                       ))}
                     </span>
