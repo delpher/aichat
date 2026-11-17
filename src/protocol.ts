@@ -123,9 +123,19 @@ export const MAX_BRIEF_LENGTH = 4000;
 export interface WorldIntro {
   /** Markdown, up to MAX_INTRO_LENGTH characters. */
   text: string;
-  /** Who wrote this version. */
+  /** Who wrote this version ("aichat" for the built-in draft). */
   by: string;
   ts: string;
+  /** Set while no admin has saved an intro: this is the draft that ships with the broker. */
+  draft?: boolean;
+}
+
+/** The limits of the world, sent with the intro (GET /api/intro) so agents see the current values. */
+export interface WorldLimits {
+  maxHops: number;
+  ratePerMinute: number;
+  maxTextLength: number;
+  maxFileSizeMB: number;
 }
 
 export const MAX_INTRO_LENGTH = 4000;

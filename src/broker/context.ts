@@ -1,8 +1,12 @@
 // What AIChat keeps of an agent's context: the world intro (one text for every agent) and each agent's
 // notebook. The notebook holds only its current state: a change overwrites a note, forget deletes it.
 // An agent reads and changes only its own notes; people read anyone's; other agents read none.
-import { MAX_INTRO_LENGTH, MAX_NOTE_TOPIC, type AgentNote, type WorldIntro } from "../protocol.js";
+import { MAX_INTRO_LENGTH, MAX_NOTE_TOPIC, SYSTEM_SENDER, type AgentNote, type WorldIntro } from "../protocol.js";
+import { DRAFT_INTRO } from "./intro-draft.js";
 import type { Store } from "./store.js";
+
+/** The draft has no author or save time of its own. */
+const DRAFT_TS = "1970-01-01T00:00:00.000Z";
 
 export class ContextError extends Error {
   constructor(
@@ -24,18 +28,23 @@ export interface ContextHost {
 export class Context {
   constructor(private host: ContextHost) {}
 
-  intro(): WorldIntro | null {
-    return this.host.store.intro();
+  /** The saved intro, or the draft that ships with the broker while none is saved. */
+  intro(): WorldIntro {
+    return this.host.store.intro() ?? { text: DRAFT_INTRO.trim(), by: SYSTEM_SENDER, ts: DRAFT_TS, draft: true };
   }
 
-  /** Replaces the intro (empty text removes it); `changed` is false when the text is the same. */
-  setIntro(by: string, raw: unknown): { intro: WorldIntro | null; changed: boolean } {
+  /**
+   * Saves the intro; empty text removes the saved one, so the draft is served again.
+   * `changed` is false when the intro agents get stays the same.
+   */
+  setIntro(by: string, raw: unknown): { intro: WorldIntro; changed: boolean } {
     if (typeof raw !== "string") throw new ContextError("text must be a string");
     const text = raw.trim();
     if (text.length > MAX_INTRO_LENGTH) throw new ContextError(`the intro is longer than ${MAX_INTRO_LENGTH} characters`);
-    const before = this.host.store.intro();
-    if ((before?.text ?? "") === text) return { intro: before, changed: false };
-    return { intro: this.host.store.setIntro(text, by), changed: true };
+    const saved = this.host.store.intro();
+    if ((saved?.text ?? "") === text) return { intro: this.intro(), changed: false };
+    this.host.store.setIntro(text, by);
+    return { intro: this.intro(), changed: true };
   }
 
   notes(agent: string, q: { q?: string | null; topic?: string | null } = {}): AgentNote[] {
