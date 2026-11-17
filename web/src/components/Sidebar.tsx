@@ -39,6 +39,9 @@ interface Props {
   onSearch: () => void;
 }
 
+/** How many thanks a participant's messages got, for the tooltip; empty while none. */
+const thanksText = (n?: number) => (n ? `отримано ${n} ${plural(n, ["подяку", "подяки", "подяк"])}` : "");
+
 const THEME_ICON = { system: Monitor, light: Sun, dark: Moon };
 const THEME_LABEL = { system: "Тема: як у системі", light: "Тема: світла", dark: "Тема: темна" };
 
@@ -366,6 +369,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
                   a.description,
                   a.online ? (isActive(a.online, a.activity) ? activityText(a.name, a.activity) : "онлайн") : "офлайн",
                   a.rooms.length ? `кімнати: ${a.rooms.map((r) => "#" + r).join(", ")}` : "",
+                  thanksText(a.thanks),
                   `натисніть, щоб написати ${a.name}`,
                 ]
                   .filter(Boolean)
@@ -388,7 +392,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
                   label={a.name}
                   sub={a.online ? "онлайн" : "офлайн"}
                   meta={self ? "ви" : undefined}
-                  title={self ? undefined : `натисніть, щоб написати ${a.name}`}
+                  title={[thanksText(a.thanks), self ? "" : `натисніть, щоб написати ${a.name}`].filter(Boolean).join("\n") || undefined}
                 />
               );
             })}

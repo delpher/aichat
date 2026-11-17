@@ -552,8 +552,10 @@ export class Broker {
   }
 
   agents(): AgentInfo[] {
+    const thanks = this.store.thanksReceived();
     return this.cfg.agents.map((a) => {
       const activity = this.activity.get(a.name);
+      const got = thanks.get(a.name);
       return {
         name: a.name,
         kind: a.kind,
@@ -561,6 +563,7 @@ export class Broker {
         online: this.isOnline(a.name),
         rooms: this.store.roomsOf(a.name),
         ...(activity ? { activity } : {}),
+        ...(got ? { thanks: got } : {}),
       };
     });
   }
@@ -671,6 +674,23 @@ export class Broker {
     this.noteConversation(agent, m.room ? { room: m.room } : { with: m.from });
     const cur = this.work.get(agent);
     if (this.hooked.has(agent) && (!cur || cur.state === "idle")) this.setActivity(agent, "busy", "читає повідомлення");
+  }
+
+  /**
+   * `by` thanks the author of message `id`. Only someone who can see the message may thank, never for their own
+   * message or one from the broker itself, and only once. Everyone who can see the message hears of it.
+   */
+  thank(by: string, id: number, viewer: { admin?: boolean } = {}): string[] {
+    const m = this.store.get(id);
+    if (!m || !(viewer.admin ? this.adminCanSee(by, m) : this.canSee(by, m))) throw new BrokerError(`unknown message: ${id}`, 404);
+    if (m.from === by) throw new BrokerError("you cannot thank yourself", 400);
+    if (m.from === SYSTEM_SENDER) throw new BrokerError(`messages from ${SYSTEM_SENDER} cannot be thanked`, 400);
+    if (!this.store.addThanks(id, by)) throw new BrokerError(`you already thanked for message ${id}`, 409);
+    const thanked_by = this.store.thanksFor(id);
+    const f: ServerFrame = { type: "thanks", id, author: m.from, by, thanked_by };
+    for (const name of new Set([m.from, ...this.recipients(m)])) for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
+    for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, f);
+    return thanked_by;
   }
 
   history(agent: string, q: { room?: string; with?: string; limit?: number; before?: number }): ChatMessage[] {
@@ -965,6 +985,8 @@ export class Broker {
         const m = this.send(me, b as unknown as SendArgs);
         return reply(201, { message: m });
       }
+      const thanksMatch = url.pathname.match(/^\/api\/messages\/(\d+)\/thanks$/);
+      if (req.method === "POST" && thanksMatch) return reply(200, { thanked_by: this.thank(me, Number(thanksMatch[1])) });
       if (route === "POST /api/files") return reply(201, { file: await this.upload(me, req) });
       const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)$/);
       if (req.method === "GET" && fileMatch) {
@@ -1480,6 +1502,11 @@ export class Broker {
         attachments: b.attachments,
       });
       return reply(201, { message: m });
+    }
+    const thanksMatch = url.pathname.match(/^\/admin\/api\/messages\/(\d+)\/thanks$/);
+    if (req.method === "POST" && thanksMatch) {
+      const b = await readJson(req);
+      return reply(200, { thanked_by: this.thank(humanAs(b.as), Number(thanksMatch[1]), { admin: true }) });
     }
     if (route === "POST /admin/api/files") return reply(201, { file: await this.upload(humanAs(url.searchParams.get("as")), req) });
     const fileMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)$/);

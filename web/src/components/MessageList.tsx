@@ -232,6 +232,7 @@ export function MessageList({
                   message={m}
                   compact={compact}
                   mine={m.from === mine}
+                  me={mine}
                   kind={kinds.get(m.from) ?? null}
                   showWhere={showWhere}
                   showTo={session.mode === "admin"}

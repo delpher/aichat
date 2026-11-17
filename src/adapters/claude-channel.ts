@@ -148,6 +148,13 @@ const TOOLS = [
     },
   },
   {
+    name: "thank",
+    description:
+      "Thank the author of a message you found useful (not your own, once per message). " +
+      "Everyone who sees the message sees who thanked; the count shows on the author's card.",
+    inputSchema: { type: "object", properties: { msg_id: { type: "number" } }, required: ["msg_id"] },
+  },
+  {
     name: "room_info",
     description: "Read a room's brief (its goal and rules) and its members.",
     inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
@@ -197,7 +204,8 @@ const TOOLS = [
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 const fmt = (m: ChatMessage) =>
-  `[#${m.id} ${m.ts}] ${m.from} -> ${m.room ? "#" + m.room : m.to}${m.reply_to ? ` (re #${m.reply_to})` : ""}: ${textWithAttachments(m)}`;
+  `[#${m.id} ${m.ts}] ${m.from} -> ${m.room ? "#" + m.room : m.to}${m.reply_to ? ` (re #${m.reply_to})` : ""}: ${textWithAttachments(m)}` +
+  (m.thanked_by?.length ? ` [thanked by ${m.thanked_by.join(", ")}]` : "");
 
 async function uploadAll(paths: unknown): Promise<string[]> {
   if (paths == null) return [];
@@ -327,6 +335,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
               (g) =>
                 `${g.name}${g.name === client.agent ? " (you)" : ""} [${g.kind}] ${g.online ? "online" : "offline"}` +
                 (g.activity && g.activity.state !== "idle" ? `, ${g.activity.state}${g.activity.detail ? ` (${g.activity.detail})` : ""}` : "") +
+                (g.thanks ? `, thanks: ${g.thanks}` : "") +
                 (g.rooms.length ? ` rooms: ${g.rooms.join(", ")}` : "") +
                 (g.description ? ` - ${g.description}` : ""),
             )
@@ -344,6 +353,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!activity?.topic) return text("status cleared");
         const where = activity.room ? ` in #${activity.room}` : activity.with ? ` with ${activity.with}` : "";
         return text(`status: ${activity.topic}${where}`);
+      }
+      case "thank": {
+        const { thanked_by } = await client.api<{ thanked_by: string[] }>("POST", `/api/messages/${Number(a.msg_id)}/thanks`);
+        return text(`thanked for #${a.msg_id} (thanked by: ${thanked_by.join(", ")})`);
       }
       case "room_info":
         return text(await roomInfo(String(a.room)));

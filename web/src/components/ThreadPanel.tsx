@@ -105,6 +105,7 @@ export function ThreadPanel({ thread, focus, onClose, canWrite }: Props) {
                     message={m}
                     compact={compact}
                     mine={m.from === mine}
+                    me={mine}
                     kind={kinds.get(m.from) ?? null}
                     showWhere={false}
                     showTo={false}

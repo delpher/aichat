@@ -21,6 +21,8 @@ export interface ChatMessage {
   attachments?: FileInfo[];
   /** Agents whose session has received this message (reported by their adapter), oldest first. */
   delivered_to?: string[];
+  /** Who thanked the author for this message, oldest first (POST /api/messages/<id>/thanks). */
+  thanked_by?: string[];
 }
 
 /** An uploaded file (POST /api/files), attached to at most one message. */
@@ -168,6 +170,8 @@ export interface AgentInfo {
   rooms: string[];
   /** Missing while the agent has reported nothing (or is offline). */
   activity?: AgentActivity;
+  /** How many thanks the participant's messages got in all; missing while none. */
+  thanks?: number;
 }
 
 /**
@@ -217,6 +221,8 @@ export type ServerFrame =
   | { type: "ratings"; game: string; ratings: GameRatings }
   /** Sent to every connected client when an admin changed the world intro (GET /api/intro). */
   | { type: "intro"; intro: WorldIntro }
+  /** Sent to everyone who can see message `id` when `by` thanked its `author`; `thanked_by` is the full list. */
+  | { type: "thanks"; id: number; author: string; by: string; thanked_by: string[] }
   /** Sent to a room's members and admin observers when its brief changed (null: removed). */
   | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };

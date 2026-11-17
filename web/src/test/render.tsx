@@ -45,6 +45,7 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     subscribeGames: () => () => {},
     subscribeRatings: () => () => {},
     subscribeDelivered: () => () => {},
+    subscribeThanks: () => () => {},
     subscribeBoard: () => () => {},
     addLive: vi.fn(),
     toast: vi.fn(),
