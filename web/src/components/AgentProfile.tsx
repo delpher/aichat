@@ -66,7 +66,7 @@ export function AgentProfile({ name, onClose }: { name: string; onClose: () => v
               <dt>Адаптер</dt>
               <dd className="num">
                 {a.adapter.name} {a.adapter.version}
-                {adapterOutdated(a.adapter, overview.version) && <span className="muted"> · старий, на брокері {overview.version}</span>}
+                {adapterOutdated(a.adapter, overview.version) && <span className="profile-outdated"> · старий, на брокері {overview.version}</span>}
               </dd>
             </>
           )}
