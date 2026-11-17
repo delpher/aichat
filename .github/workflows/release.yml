@@ -201,23 +201,21 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
+          flags=(--repo "$GITHUB_REPOSITORY" --title "AIChat $VERSION" --generate-notes)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            # Started by hand: point the tag at the commit that was built and tested.
-            # A tag pushed with GITHUB_TOKEN does not start this workflow again.
-            # GitHub refuses to move a tag with GITHUB_TOKEN ("Cannot update this protected ref"),
-            # so a stale tag is deleted and created again on the built commit.
+            # Started by hand: the release itself creates the tag on the commit that was built and tested.
+            # GITHUB_TOKEN may neither move a tag ("Cannot update this protected ref") nor create one
+            # through the git refs API ("Reference update failed"), so a stale tag is only deleted here.
+            # A tag made with GITHUB_TOKEN does not start this workflow again.
             old="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)"
             if [ -n "$old" ] && [ "$old" != "$GITHUB_SHA" ]; then
-              echo "Tag $TAG was at $old, moving it"
+              echo "Tag $TAG was at $old, deleting it"
               gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
-              old=""
             fi
-            if [ -z "$old" ]; then
-              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
-            fi
-            echo "Tag $TAG -> $GITHUB_SHA"
+            flags+=(--target "$GITHUB_SHA")
+          else
+            flags+=(--verify-tag)
           fi
-          flags=(--repo "$GITHUB_REPOSITORY" --title "AIChat $VERSION" --generate-notes --verify-tag)
           [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
           # Created as a draft and published only once every asset is uploaded,
           # so an updater never sees a "latest" release without its files.
