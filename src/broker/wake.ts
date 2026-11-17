@@ -14,6 +14,28 @@ export interface WakeInfo {
   thanks: { id: number; by: string }[];
 }
 
+/** An absence in plain Ukrainian words: "5 хв", "1 год 30 хв", "2 дн 3 год". */
+export function awayText(seconds: number): string {
+  const m = Math.max(1, Math.round(seconds / 60));
+  if (m < 60) return `${m} хв`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h} год ${m % 60} хв` : `${h} год`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `${d} дн ${h % 24} год` : `${d} дн`;
+}
+
+/**
+ * What the broker itself tells a woken agent when the keeper is offline: how long it was away and how much it
+ * missed where. No retelling: the details are in read_history.
+ */
+export function wakeNotice(w: WakeInfo, streamSent: boolean): string {
+  const rooms = w.rooms.map((r) => `#${r.room}: ${r.messages.length}`).join(", ");
+  const lines = [`Тебе не було ${awayText(w.away)}. За цей час у твоїх кімнатах ${w.missed} нових повідомлень (${rooms}).`];
+  if (w.thanks.length) lines.push(`Подяки за твої повідомлення: ${w.thanks.map((t) => `#${t.id} від ${t.by}`).join(", ")}.`);
+  lines.push(streamSent ? "Самі повідомлення прийшли окремо." : "Самих повідомлень не надіслано, їх можна прочитати через read_history.");
+  return lines.join("\n");
+}
+
 /** Longest a message's text gets in the diff. */
 export const WAKE_TEXT_MAX = 1000;
 /** Most messages a diff shows, and its rough size in characters; the newest are kept. */

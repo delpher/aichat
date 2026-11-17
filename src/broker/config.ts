@@ -103,7 +103,11 @@ export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
   wakeAfterMessages: 10,
 };
 
-export const WAKE_MODES = ["off", "on"] as const;
+/**
+ * off: every missed message is delivered, nobody is woken. brief: the woken agent gets the wake-up brief and still
+ * every missed message (stage В1, to judge the briefs). on: the brief replaces the missed room stream (В2).
+ */
+export const WAKE_MODES = ["off", "brief", "on"] as const;
 export type WakeMode = (typeof WAKE_MODES)[number];
 
 /** Settings the admin may change at runtime from the web UI, with their allowed ranges. */
