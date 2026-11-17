@@ -78,6 +78,12 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   assert.match((created.content as { text: string }[])[0].text, /^created #\d+ checkers \[open\] білі: \(free\), чорні: claude1, moves: 0 - room game-\d+$/);
   const badSeat = await client.callTool({ name: "create_game", arguments: { seat: "x" } });
   assert.match((badSeat.content as { text: string }[])[0].text, /unknown seat x; seats: w, b/);
+  // once a game is decided, list_games shows each player's rating in that kind of game
+  const gid = Number((created.content as { text: string }[])[0].text.match(/#(\d+)/)![1]);
+  await peer.api("POST", `/api/games/${gid}/join`, {});
+  await call("send_message", { room: `game-${gid}`, text: "resign" });
+  for (let i = 0; i < 40 && !/rating/.test(await call("list_games", {})); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.match(await call("list_games", { status: "finished" }), /білі: peer \(rating 1016\), чорні: claude1 \(rating 984\)/);
   const joinBad = await client.callTool({ name: "join_game", arguments: { game_id: 99 } });
   assert.equal(joinBad.isError, true);
   assert.match((joinBad.content as { text: string }[])[0].text, /unknown game/);

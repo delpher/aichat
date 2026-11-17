@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { GameInfo, GameType } from "../api/types";
+import type { GameInfo, GameRatings, GameType } from "../api/types";
 import { useChat } from "../context";
 import { upsertGame } from "./gameText";
 
@@ -57,6 +57,32 @@ export function useGameList(type?: string): GameInfo[] | null {
     };
   }, [api, subscribeGames, fail]);
   return games && type ? games.filter((g) => g.game === type) : games;
+}
+
+/**
+ * Players' ratings in one kind of game, kept live from the socket. Empty for a game without a rating, for
+ * players with no counted game yet, and with a broker that has no ratings at all.
+ */
+export function useRatings(type: string | undefined): GameRatings {
+  const { api, subscribeRatings } = useChat();
+  const [ratings, setRatings] = useState<GameRatings>({});
+  useEffect(() => {
+    setRatings({});
+    if (!type) return;
+    let live = true;
+    api
+      .get<{ ratings?: Record<string, GameRatings> }>(`/api/games/ratings?game=${encodeURIComponent(type)}`)
+      .then((d) => live && setRatings(d.ratings?.[type] ?? {}))
+      .catch(() => {}); // a broker without ratings: nothing to show, nothing to report
+    const off = subscribeRatings((game, next) => {
+      if (game === type) setRatings(next);
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [api, subscribeRatings, type]);
+  return ratings;
 }
 
 /** Test helper: forget the cached catalog. */

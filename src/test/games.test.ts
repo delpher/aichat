@@ -398,3 +398,27 @@ test("ratings: counted in finish() for games that have one, rebuilt from stored 
   assert.equal((await call("boss", "DELETE", `/admin/api/games/${stale.id}`)).status, 200);
   assert.deepEqual((await ratings()).nim, afterDelete);
 });
+
+test("the start of a rated game names each player's rating; players without one get no number", async (t) => {
+  const { elo } = await import("../games/rating.js");
+  const b = await startBroker([{ name: "olena", kind: "human" }, { name: "bot1", kind: "claude" }], {}, { games: [{ ...nim, rate: elo }] });
+  let bot: Awaited<ReturnType<typeof connect>> | undefined;
+  t.after(async () => {
+    bot?.close();
+    await b.broker.close();
+  });
+  const call = (who: string, method: string, path: string, body?: unknown) =>
+    fetch(`${b.http}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    }).then((r) => r.json() as Promise<Body>);
+  bot = await connect(b.url, "bot1");
+  let started = nextSystem(bot);
+  const g1 = (await call("olena", "POST", "/api/games", { game: "nim", players: ["olena", "bot1"] })).game;
+  assert.match((await started).text, /почалася: перший — olena, другий — bot1\./);
+  await call("olena", "POST", `/api/games/${g1.id}/resign`);
+  started = nextSystem(bot);
+  await call("olena", "POST", "/api/games", { game: "nim", players: ["bot1", "olena"] });
+  assert.match((await started).text, /почалася: перший — bot1 \(рейтинг 1016\), другий — olena \(рейтинг 984\)\./);
+});

@@ -316,9 +316,15 @@ export class Games {
     return def.turnLabel ? def.turnLabel(seat) : `Хід: ${def.seats[seat].name}`;
   }
 
-  /** "білі — alice, чорні — вільне місце" */
-  private seatsText(def: GameDefinition, g: GameRecord): string {
-    return def.seats.map((s, i) => `${s.name} — ${g.players[i] ?? FREE}`).join(", ");
+  /** "білі — alice, чорні — вільне місце"; with `rated`, each player's rating in this game follows the name. */
+  private seatsText(def: GameDefinition, g: GameRecord, rated = false): string {
+    const ratings = rated && def.rate ? this.ratingsOf(def.id) : {};
+    return def.seats
+      .map((s, i) => {
+        const p = g.players[i];
+        return `${s.name} — ${p ?? FREE}${p && ratings[p] !== undefined ? ` (рейтинг ${ratings[p]})` : ""}`;
+      })
+      .join(", ");
   }
 
   /**
@@ -337,7 +343,7 @@ export class Games {
   }
 
   private announceStart(def: GameDefinition, g: GameRecord, notes: string[] = []) {
-    const head = [`Партія #${g.id} (${def.title}) почалася: ${this.seatsText(def, g)}.`, ...notes].join("\n");
+    const head = [`Партія #${g.id} (${def.title}) почалася: ${this.seatsText(def, g, true)}.`, ...notes].join("\n");
     this.host.announce(gameRoom(g.id), this.turnText(def, g, head));
   }
 
