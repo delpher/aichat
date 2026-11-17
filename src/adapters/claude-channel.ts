@@ -21,7 +21,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
 import { mimeFor, textWithAttachments } from "../client/attachments.js";
-import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type ChatMessage, type GameInfo, type GameType, type RoomBrief } from "../protocol.js";
+import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type ChatMessage, type GameInfo, type GameRatings, type GameType, type RoomBrief } from "../protocol.js";
 import { runInstall } from "./install.js";
 
 if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
@@ -228,9 +228,11 @@ async function loadGameTypes(fresh = false): Promise<GameType[]> {
 
 const fmtType = (t: GameType) => `${t.id} (${t.title}): seats ${t.seats.map((s) => `${s.id}=${s.name}`).join(", ")}`;
 
-function fmtGame(g: GameInfo): string {
+/** `ratings`: by game type, then player (GET /api/games/ratings); a player without one shows no number. */
+function fmtGame(g: GameInfo, ratings: Record<string, GameRatings> = {}): string {
   const seats = gameTypes?.find((t) => t.id === g.game)?.seats;
-  const players = g.players.map((p, i) => `${seats?.[i]?.name ?? `seat ${i}`}: ${p ?? "(free)"}`).join(", ");
+  const rating = (p: string) => (ratings[g.game]?.[p] !== undefined ? ` (rating ${ratings[g.game][p]})` : "");
+  const players = g.players.map((p, i) => `${seats?.[i]?.name ?? `seat ${i}`}: ${p ? p + rating(p) : "(free)"}`).join(", ");
   const turn = g.turn !== null ? `, to move: ${g.players[g.turn]}` : "";
   return `#${g.id} ${g.game} [${g.status}] ${players}, moves: ${g.moves.length}${turn}` + (g.result ? `, ${g.result.text}` : "") + ` - room ${g.room}`;
 }
@@ -292,8 +294,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (a.status) q.set("status", String(a.status));
         if (a.game) q.set("game", String(a.game));
         const types = await loadGameTypes(true);
-        const { games } = await client.api<{ games: GameInfo[] }>("GET", `/api/games${q.size ? `?${q}` : ""}`);
-        const lines = [`Games you can play: ${types.map(fmtType).join("; ")}`, ...games.map(fmtGame)];
+        const [{ games }, ratings] = await Promise.all([
+          client.api<{ games: GameInfo[] }>("GET", `/api/games${q.size ? `?${q}` : ""}`),
+          // a broker older than ratings answers 404: list the games without them
+          client.api<{ ratings: Record<string, GameRatings> }>("GET", "/api/games/ratings").then((r) => r.ratings, () => ({})),
+        ]);
+        const lines = [`Games you can play: ${types.map(fmtType).join("; ")}`, ...games.map((g) => fmtGame(g, ratings))];
         return text(lines.join("\n") + (games.length ? "" : "\nno games yet"));
       }
       case "create_game": {

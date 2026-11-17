@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameInfo, GameType } from "../api/types";
@@ -41,11 +41,16 @@ function game(p: Partial<GameInfo> = {}): GameInfo {
   };
 }
 
-/** An API that answers the games endpoints from fixed data. */
-function gamesApi(games: GameInfo[], send: (path: string, body?: unknown) => unknown = () => ({})) {
+/** An API that answers the games endpoints from fixed data; `ratings` by game type, then player. */
+function gamesApi(games: GameInfo[], send: (path: string, body?: unknown) => unknown = () => ({}), ratings?: Record<string, Record<string, number>>) {
   return fakeApi({
     get: vi.fn(async (path: string) => {
       if (path === "/api/games/types") return { types: [CHECKERS, NIM] };
+      if (path.startsWith("/api/games/ratings")) {
+        if (!ratings) throw new Error("HTTP 404"); // a broker older than ratings
+        const type = new URLSearchParams(path.split("?")[1]).get("game");
+        return { ratings: type ? (ratings[type] ? { [type]: ratings[type] } : {}) : ratings };
+      }
       const one = path.match(/^\/api\/games\/(\d+)$/);
       if (one) return { game: games.find((g) => g.id === Number(one[1])) };
       if (path.startsWith("/api/games")) return { games };
@@ -163,6 +168,36 @@ describe("game page", () => {
     renderWithChat(<GamePage id={7} />, { api: gamesApi([game({ game: "nim" })]) });
     expect(await screen.findByText(/не має дошки на сайті/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Здатися/ })).toBeInTheDocument();
+  });
+});
+
+describe("ratings", () => {
+  it("show next to the players' names in the list and the opponent picker, and follow the socket", async () => {
+    let push: ((game: string, r: Record<string, number>) => void) | undefined;
+    const subscribeRatings = (fn: typeof push) => ((push = fn), () => {});
+    const api = gamesApi([game()], undefined, { checkers: { olena: 1016, claude: 984 } });
+    renderWithChat(<GameLobby type="checkers" />, { api, subscribeRatings: subscribeRatings as never });
+    const row = (await screen.findByText("Хід: olena (білі)")).closest("a")!;
+    await waitFor(() => expect(row).toHaveTextContent("olena1016 проти claude984"));
+    expect(within(screen.getByRole("combobox", { name: "чорні" })).getByRole("option", { name: /^claude · рейтинг 984/ })).toBeInTheDocument();
+
+    act(() => push!("nardy", { claude: 1200 })); // another game's ratings change nothing here
+    expect(row).toHaveTextContent("claude984");
+    act(() => push!("checkers", { olena: 1000, claude: 1000 }));
+    expect(row).toHaveTextContent("olena1000 проти claude1000");
+  });
+
+  it("show on the game page; a player without a counted game and an old broker show no number", async () => {
+    const api = gamesApi([game({ players: ["olena", "alexey"] })], undefined, { checkers: { olena: 1016 } });
+    renderWithChat(<GamePage id={7} />, { api });
+    expect(await screen.findByTitle("Рейтинг у цій грі")).toHaveTextContent("1016");
+    expect(screen.getAllByTitle("Рейтинг у цій грі")).toHaveLength(1);
+  });
+
+  it("are simply missing with a broker that has none", async () => {
+    renderWithChat(<GameLobby type="checkers" />, { api: gamesApi([game()]) });
+    expect(await screen.findByText("Хід: olena (білі)")).toBeInTheDocument();
+    expect(screen.queryByTitle("Рейтинг у цій грі")).toBeNull();
   });
 });
 

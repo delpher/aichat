@@ -106,6 +106,14 @@
   color: var(--muted);
   font-weight: var(--weight-regular);
 }
+/* a player's rating, one number after the name */
+.rating {
+  margin-left: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------- one game ---------- */
 .game {
