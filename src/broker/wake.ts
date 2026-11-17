@@ -14,6 +14,13 @@ export interface WakeInfo {
   thanks: { id: number; by: string }[];
 }
 
+/** Ukrainian number agreement: 1 нове повідомлення, 3 нові повідомлення, 5 нових повідомлень (11-14 too). */
+export function plural(n: number, [one, few, many]: [string, string, string]): string {
+  const d = n % 10;
+  const t = n % 100;
+  return d === 1 && t !== 11 ? one : d >= 2 && d <= 4 && (t < 12 || t > 14) ? few : many;
+}
+
 /** An absence in plain Ukrainian words: "5 хв", "1 год 30 хв", "2 дн 3 год". */
 export function awayText(seconds: number): string {
   const m = Math.max(1, Math.round(seconds / 60));
@@ -30,7 +37,8 @@ export function awayText(seconds: number): string {
  */
 export function wakeNotice(w: WakeInfo, streamSent: boolean): string {
   const rooms = w.rooms.map((r) => `#${r.room}: ${r.messages.length}`).join(", ");
-  const lines = [`Тебе не було ${awayText(w.away)}. За цей час у твоїх кімнатах ${w.missed} нових повідомлень (${rooms}).`];
+  const what = plural(w.missed, ["нове повідомлення", "нові повідомлення", "нових повідомлень"]);
+  const lines = [`Тебе не було ${awayText(w.away)}. За цей час у твоїх кімнатах ${w.missed} ${what} (${rooms}).`];
   if (w.thanks.length) lines.push(`Подяки за твої повідомлення: ${w.thanks.map((t) => `#${t.id} від ${t.by}`).join(", ")}.`);
   lines.push(streamSent ? "Самі повідомлення прийшли окремо." : "Самих повідомлень не надіслано, їх можна прочитати через read_history.");
   return lines.join("\n");

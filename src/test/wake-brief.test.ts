@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ChatMessage } from "../protocol.js";
-import { awayText, type WakeInfo } from "../broker/wake.js";
+import { awayText, plural, type WakeInfo } from "../broker/wake.js";
 import { BrokerClient } from "../client/broker-client.js";
 import { connect, startBroker, tok } from "./helpers.js";
 
@@ -90,7 +90,7 @@ test("В2 (on), keeper offline: the broker itself tells the agent what it missed
     assert.equal(notice[0].to, "bot1");
     assert.equal(
       notice[0].text,
-      "Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нових повідомлень (#design: 1, #lab: 2).\n" +
+      "Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нові повідомлення (#design: 1, #lab: 2).\n" +
         "Самих повідомлень не надіслано, їх можна прочитати через read_history.",
     );
     // read_history has them all
@@ -129,6 +129,27 @@ test("В: no brief on a first connection, or without wake mode", async () => {
   } finally {
     await off.broker.close();
   }
+});
+
+test("Ukrainian number agreement in the broker's notice", () => {
+  const forms: [string, string, string] = ["нове повідомлення", "нові повідомлення", "нових повідомлень"];
+  assert.deepEqual(
+    [1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111].map((n) => `${n} ${plural(n, forms)}`),
+    [
+      "1 нове повідомлення",
+      "2 нові повідомлення",
+      "4 нові повідомлення",
+      "5 нових повідомлень",
+      "11 нових повідомлень",
+      "12 нових повідомлень",
+      "14 нових повідомлень",
+      "21 нове повідомлення",
+      "22 нові повідомлення",
+      "25 нових повідомлень",
+      "101 нове повідомлення",
+      "111 нових повідомлень",
+    ],
+  );
 });
 
 test("absence in plain words", () => {
