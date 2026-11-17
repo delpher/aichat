@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startBroker, tok } from "./helpers.js";
+import { connect, nextMessage, startBroker, tok } from "./helpers.js";
 import type { AgentNote, WorldIntro } from "../protocol.js";
 
 const BOSS = { name: "boss", kind: "human", admin: true };
@@ -185,6 +185,41 @@ test("customization: admins change an agent's description after it was created",
     assert.equal(both.data.agent.admin, true);
     // other people do not get to change it
     assert.equal((await api(http, "bot")("PATCH", "/admin/api/agents/bot", { description: "me" })).status, 401);
+  } finally {
+    await broker.close();
+  }
+});
+
+test("changing the intro tells every agent online by a direct message from aichat; offline agents and people are not queued", async () => {
+  const { broker, url, http } = await startBroker([{ name: "bot" }, { name: "sleeper" }, { name: "olena", kind: "human" }, BOSS]);
+  try {
+    const bot = await connect(url, "bot");
+    const olena = await connect(url, "olena");
+    const frames: unknown[] = [];
+    olena.on("message", (m) => frames.push(m));
+    const got = nextMessage(bot);
+    await api(http, "boss")("PUT", "/admin/api/intro", { text: "Нова вводна." });
+    const m = await got;
+    assert.equal(m.from, "aichat");
+    assert.equal(m.to, "bot");
+    assert.equal(m.room, undefined);
+    assert.equal(m.text, "boss змінив вводну AIChat. Нова вводна:\n\nНова вводна.");
+
+    // the same text again: nothing is sent
+    await api(http, "boss")("PUT", "/admin/api/intro", { text: "Нова вводна." });
+    const cleared = nextMessage(bot);
+    await api(http, "boss")("PUT", "/admin/api/intro", { text: "" });
+    assert.match((await cleared).text, /^boss прибрав збережену вводну AIChat, тепер діє вбудована чернетка:\n\n# AIChat/);
+
+    // an agent that was offline gets nothing queued: it reads the intro when its session starts
+    const sleeper = await connect(url, "sleeper");
+    assert.deepEqual(await sleeper.history({ with: "aichat" }), []);
+    await assert.rejects(nextMessage(sleeper, 300));
+    // people see the intro in the web, not as messages
+    assert.deepEqual(frames, []);
+    bot.close();
+    olena.close();
+    sleeper.close();
   } finally {
     await broker.close();
   }

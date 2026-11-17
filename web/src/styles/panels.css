@@ -388,3 +388,19 @@
   gap: var(--space-3);
   margin-top: var(--space-3);
 }
+
+/* World intro: read by everyone, edited by admins with the room brief's editor */
+.intro > p {
+  margin: 0;
+}
+.intro .brief-edit {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.intro .brief-meta {
+  margin-top: 0;
+}
+.intro-body .md {
+  font-size: var(--text-chat);
+}

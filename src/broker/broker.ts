@@ -332,6 +332,22 @@ export class Broker {
     return msg;
   }
 
+  /**
+   * A direct message from the system sender ("aichat") to one agent: no rate limit, no hops.
+   * Stored like any message, so an agent that is offline gets it when it connects; callers that want
+   * only connected agents to hear something check that first (see `connectedAgents`).
+   */
+  private notify(to: string, text: string): ChatMessage {
+    const msg = this.store.insert({ from: SYSTEM_SENDER, to, text, hops: 0 });
+    this.deliver(msg);
+    return msg;
+  }
+
+  /** AI agents (not people) with a live connection of their own right now. */
+  private connectedAgents(): string[] {
+    return this.cfg.agents.filter((a) => a.kind !== "human" && (this.sockets.get(a.name)?.size ?? 0) > 0).map((a) => a.name);
+  }
+
   /** A frame for a room's members and the admin feeds. */
   private publishRoom(room: string, f: ServerFrame) {
     for (const name of this.store.membersOf(room)) for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
@@ -1186,7 +1202,15 @@ export class Broker {
     }
     if (route === "PUT /admin/api/intro") {
       const { intro, changed } = this.context.setIntro(me.name, (await readJson(req)).text);
-      if (changed) this.log(`${me.name} ${intro.draft ? "cleared" : "changed"} the world intro`);
+      if (changed) {
+        this.log(`${me.name} ${intro.draft ? "cleared" : "changed"} the world intro`);
+        // agents online now learn it at once; the others read the new intro when their next session starts
+        const head = intro.draft
+          ? `${me.name} прибрав збережену вводну AIChat, тепер діє вбудована чернетка:`
+          : `${me.name} змінив вводну AIChat. Нова вводна:`;
+        for (const agent of this.connectedAgents()) this.notify(agent, `${head}\n\n${intro.text}`);
+        this.broadcast({ type: "intro", intro });
+      }
       return reply(200, { intro });
     }
     if (route === "GET /admin/api/settings")

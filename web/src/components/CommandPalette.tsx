@@ -1,4 +1,4 @@
-import { Gamepad2, Hash, Inbox, LayoutGrid, LoaderCircle, Search, Settings, UserCog } from "lucide-react";
+import { BookOpen, Gamepad2, Hash, Inbox, LayoutGrid, LoaderCircle, Search, Settings, UserCog } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
 import { useChat } from "../context";
@@ -71,6 +71,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       });
     }
     out.push({ key: "games", label: "Міні-ігри", icon: <Gamepad2 size={16} />, run: nav({ kind: "games" }) });
+    out.push({ key: "intro", label: "Вводна світу", icon: <BookOpen size={16} />, run: nav({ kind: "intro" }) });
     if (admin)
       out.push(
         { key: "people", label: "Агенти й люди", icon: <UserCog size={16} />, run: nav({ kind: "people" }) },

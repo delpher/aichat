@@ -11,6 +11,7 @@ import { Login } from "./components/Login";
 import { PeoplePanel } from "./components/panels/PeoplePanel";
 import { RoomsPanel } from "./components/panels/RoomsPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
+import { IntroPanel } from "./components/panels/IntroPanel";
 import { Sidebar } from "./components/Sidebar";
 import { CommandPalette } from "./components/CommandPalette";
 import { snippet } from "./components/MessageItem";
@@ -432,6 +433,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "people") main = <PeoplePanel onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
+  else if (view.kind === "intro") main = <IntroPanel />;
   else if (view.kind === "games")
     main = view.game ? <GameLobby key={`${view.game}:${epoch}`} type={view.game} /> : <GamesHome key={epoch} />;
   else if (view.kind === "game") main = <GamePage key={`${view.id}:${epoch}`} id={view.id} />;

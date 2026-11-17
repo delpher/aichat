@@ -18,6 +18,8 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
       return { title: "Керування кімнатами", sub: "" };
     case "settings":
       return { title: "Налаштування", sub: "" };
+    case "intro":
+      return { title: "Вводна світу", sub: "" };
     case "games":
       return { title: "Міні-ігри", sub: "" };
     case "game":
