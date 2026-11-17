@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "mcp__aichat__send_message",
+      "mcp__aichat__read_history",
+      "mcp__aichat__list_agents",
+      "mcp__aichat__room_info",
+      "mcp__aichat__world_info"
+    ],
+    "deny": [
+      "Bash",
+      "PowerShell",
+      "Read",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "mcp__aichat__join_room",
+      "mcp__aichat__leave_room",
+      "mcp__aichat__set_room_brief",
+      "mcp__aichat__create_game",
+      "mcp__aichat__join_game",
+      "mcp__aichat__get_attachment",
+      "mcp__aichat__thank"
+    ]
+  }
+}

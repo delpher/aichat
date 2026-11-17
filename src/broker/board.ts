@@ -17,6 +17,8 @@ export interface BoardHost {
   store: Store;
   /** Members of the room and admins may read and change its brief. */
   mayUse(agent: string, room: string): boolean;
+  /** Who else may only read it (the keeper reads every ordinary room's brief). */
+  mayRead?(agent: string, room: string): boolean;
   /** Throws when the room is not one briefs belong to (e.g. a game room). */
   checkRoom(room: string): void;
   /** Posts a message from the system sender to a room. */
@@ -27,13 +29,14 @@ export interface BoardHost {
 export class Board {
   constructor(private host: BoardHost) {}
 
-  private room(agent: string, room: string) {
+  private room(agent: string, room: string, read = false) {
     this.host.checkRoom(room);
-    if (!this.host.mayUse(agent, room)) throw new BoardError(`not a member of #${room}`, 403);
+    if (this.host.mayUse(agent, room) || (read && this.host.mayRead?.(agent, room))) return;
+    throw new BoardError(`not a member of #${room}`, 403);
   }
 
   brief(agent: string, room: string): RoomBrief | null {
-    this.room(agent, room);
+    this.room(agent, room, true);
     return this.host.store.brief(room);
   }
 

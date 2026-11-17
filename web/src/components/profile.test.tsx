@@ -41,6 +41,14 @@ describe("agent card", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Адаптерclaude-channel 0.2.9 · старий, на брокері 0.3.0");
   });
 
+  it("shows the keeper as part of AIChat, not as a participant with a customization", () => {
+    const o = { ...overview, agents: [...overview.agents, { name: "keeper", kind: "claude", online: true, rooms: [], keeper: true as const }] };
+    renderWithChat(<AgentProfile name="keeper" onClose={() => {}} />, { overview: o });
+    const card = screen.getByRole("dialog");
+    expect(card).toHaveTextContent(/Keeper: частина самого AIChat/);
+    expect(card).not.toHaveTextContent("Кастомізація");
+  });
+
   it("opens from the header of a direct conversation", async () => {
     const openAgent = vi.fn();
     renderWithChat(<Header onMenu={() => {}} onLeave={() => {}} />, { view: { kind: "dm", a: "claude", b: "olena" }, openAgent });

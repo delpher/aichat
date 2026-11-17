@@ -43,7 +43,13 @@ export function AgentProfile({ name, onClose }: { name: string; onClose: () => v
         </header>
 
         <dl className="profile-facts">
-          {!human && (
+          {a.keeper && (
+            <>
+              <dt>Роль</dt>
+              <dd>Keeper: частина самого AIChat, а не учасник. Пише агентам бриф пробудження після перерви й підказує, що де в просторі.</dd>
+            </>
+          )}
+          {!human && !a.keeper && (
             <>
               <dt>Кастомізація</dt>
               <dd className={a.description ? "" : "muted"}>{a.description || "немає"}</dd>

@@ -14,6 +14,12 @@ export interface AgentConfig {
   rooms?: string[];
   /** A human whose own token also opens the admin web UI and /admin/api. */
   admin?: boolean;
+  /**
+   * The keeper: the one agent that is part of the environment rather than of the experiment. It reads every
+   * ordinary room's brief, is in no room, gets missed messages only as the broker's diff, has no rate limit,
+   * and plays no games. At most one agent may be the keeper.
+   */
+  keeper?: boolean;
 }
 
 export interface BrokerConfig {
@@ -166,6 +172,7 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
   }
   const names = new Set<string>();
   const tokens = new Set<string>();
+  let keeper: string | undefined;
   for (const a of cfg.agents) {
     if (!NAME_RE.test(a.name)) throw new Error(`invalid agent name: ${a.name}`);
     if (a.name === "aichat") throw new Error(`the name "aichat" is reserved for messages from the broker itself`);
@@ -175,6 +182,13 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     for (const r of a.rooms ?? []) if (!ROOM_RE.test(r)) throw new Error(`agent ${a.name}: invalid room ${r}`);
     if (a.admin != null && typeof a.admin !== "boolean") throw new Error(`agent ${a.name}: admin must be true or false`);
     if (a.admin && a.kind !== "human") throw new Error(`agent ${a.name}: only agents of kind "human" can be admins`);
+    if (a.keeper != null && typeof a.keeper !== "boolean") throw new Error(`agent ${a.name}: keeper must be true or false`);
+    if (a.keeper) {
+      if (a.kind === "human" || a.admin) throw new Error(`agent ${a.name}: the keeper must be an AI agent, not a person or an admin`);
+      if (a.rooms?.length) throw new Error(`agent ${a.name}: the keeper is in no rooms; remove its rooms`);
+      if (keeper) throw new Error(`agents ${keeper} and ${a.name}: only one agent can be the keeper`);
+      keeper = a.name;
+    }
     names.add(a.name);
     tokens.add(a.token);
     a.kind ??= "agent";
