@@ -37,6 +37,15 @@ export interface BrokerConfig {
   maxNotes: number;
   /** Longest note, in characters. */
   maxNoteLength: number;
+  /**
+   * Waking agents: "on" stops sending an agent that comes back the room messages it missed (direct messages
+   * and game rooms still arrive) and reports them as a wake instead; "off" (default) delivers everything.
+   */
+  wakeMode: WakeMode;
+  /** An agent away at least this many minutes is woken. */
+  wakeAfterMinutes: number;
+  /** An agent that missed at least this many room messages is woken, however short its absence. */
+  wakeAfterMessages: number;
   /** No longer used: admins are people with `admin: true`. Ignored (with a warning) if still present. */
   adminToken?: string;
   /** Broker address as agents on other machines see it (http://host:port); used in setup instructions. */
@@ -89,7 +98,13 @@ export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
   maxFileSizeMB: 20,
   maxNotes: 200,
   maxNoteLength: 2000,
+  wakeMode: "off",
+  wakeAfterMinutes: 10,
+  wakeAfterMessages: 10,
 };
+
+export const WAKE_MODES = ["off", "on"] as const;
+export type WakeMode = (typeof WAKE_MODES)[number];
 
 /** Settings the admin may change at runtime from the web UI, with their allowed ranges. */
 export const SETTING_LIMITS = {
@@ -99,12 +114,14 @@ export const SETTING_LIMITS = {
   maxFileSizeMB: { min: 1, max: 500 },
   maxNotes: { min: 1, max: 10_000 },
   maxNoteLength: { min: 100, max: 100_000 },
+  wakeAfterMinutes: { min: 1, max: 10_080 },
+  wakeAfterMessages: { min: 1, max: 100_000 },
 } as const;
 export type SettingName = keyof typeof SETTING_LIMITS;
 /** Free-text settings; an empty string means "not set". */
 export const TEXT_SETTINGS = ["publicUrl", "projectDir"] as const;
 export type TextSettingName = (typeof TEXT_SETTINGS)[number];
-export type Settings = Pick<BrokerConfig, SettingName> & Record<TextSettingName, string>;
+export type Settings = Pick<BrokerConfig, SettingName | "wakeMode"> & Record<TextSettingName, string>;
 
 export function settingsOf(cfg: BrokerConfig): Settings {
   return {
@@ -114,6 +131,9 @@ export function settingsOf(cfg: BrokerConfig): Settings {
     maxFileSizeMB: cfg.maxFileSizeMB,
     maxNotes: cfg.maxNotes,
     maxNoteLength: cfg.maxNoteLength,
+    wakeMode: cfg.wakeMode,
+    wakeAfterMinutes: cfg.wakeAfterMinutes,
+    wakeAfterMessages: cfg.wakeAfterMessages,
     publicUrl: cfg.publicUrl ?? "",
     projectDir: cfg.projectDir ?? "",
   };
@@ -136,6 +156,11 @@ function checkTextSetting(k: TextSettingName, v: unknown): string {
   return t;
 }
 
+function checkWakeMode(v: unknown): WakeMode {
+  if (!(WAKE_MODES as readonly unknown[]).includes(v)) throw new Error(`wakeMode must be one of: ${WAKE_MODES.join(", ")}`);
+  return v as WakeMode;
+}
+
 /** Checks a partial settings object from an untrusted source; returns it typed or throws with a readable message. */
 export function checkSettingsPatch(patch: unknown): Partial<Settings> {
   if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("settings must be an object");
@@ -143,6 +168,10 @@ export function checkSettingsPatch(patch: unknown): Partial<Settings> {
   if (!entries.length) throw new Error("nothing to change");
   const out: Partial<Settings> = {};
   for (const [k, v] of entries) {
+    if (k === "wakeMode") {
+      out.wakeMode = checkWakeMode(v);
+      continue;
+    }
     if ((TEXT_SETTINGS as readonly string[]).includes(k)) {
       (out as Record<string, unknown>)[k] = checkTextSetting(k as TextSettingName, v);
       continue;
@@ -163,6 +192,7 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   for (const k of TEXT_SETTINGS) if (cfg[k] != null) checkTextSetting(k, cfg[k]);
+  checkWakeMode(cfg.wakeMode);
   if (cfg.updates != null) {
     const u = cfg.updates;
     if (typeof u !== "object" || Array.isArray(u)) throw new Error("updates must be an object");

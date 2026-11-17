@@ -195,7 +195,7 @@ test("admin settings: read, change maxHops at runtime, reject bad values", async
     fetch(`${http}/admin/api/settings`, { method: "PATCH", headers: auth(), body: JSON.stringify(body) });
   r = await patch({ maxHops: 3 });
   assert.equal(r.status, 200);
-  assert.deepEqual(((await r.json()) as { settings: unknown }).settings, { maxHops: 3, ratePerMinute: 30, maxTextLength: 20000, maxFileSizeMB: 20, maxNotes: 200, maxNoteLength: 2000, publicUrl: "", projectDir: "" });
+  assert.deepEqual(((await r.json()) as { settings: unknown }).settings, { maxHops: 3, ratePerMinute: 30, maxTextLength: 20000, maxFileSizeMB: 20, maxNotes: 200, maxNoteLength: 2000, wakeMode: "off", wakeAfterMinutes: 10, wakeAfterMessages: 10, publicUrl: "", projectDir: "" });
   await a.send({ to: "b", text: "2", reply_to: second });
 
   for (const bad of [{}, { maxHops: 0 }, { maxHops: 101 }, { maxHops: 2.5 }, { maxHops: "5" }, { port: 1 }, [1]])
@@ -365,7 +365,7 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.equal(r.status, 200);
   assert.deepEqual(
     (((await r.json()) as { settings: Record<string, unknown> }).settings),
-    { maxHops: 8, ratePerMinute: 30, maxTextLength: 20000, maxFileSizeMB: 20, maxNotes: 200, maxNoteLength: 2000, publicUrl: "http://aichat.lan:8787", projectDir: "D:\\AIChat" },
+    { maxHops: 8, ratePerMinute: 30, maxTextLength: 20000, maxFileSizeMB: 20, maxNotes: 200, maxNoteLength: 2000, wakeMode: "off", wakeAfterMinutes: 10, wakeAfterMessages: 10, publicUrl: "http://aichat.lan:8787", projectDir: "D:\\AIChat" },
   );
   for (const bad of [{ publicUrl: "aichat.lan" }, { publicUrl: "ftp://x" }, { projectDir: 5 }])
     assert.equal((await fetch(`${http}/admin/api/settings`, { method: "PATCH", headers: auth(), body: JSON.stringify(bad) })).status, 400);

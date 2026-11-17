@@ -23,6 +23,15 @@ const NUMBER_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
   { name: "maxNoteLength", label: "Довжина запису в нотатнику, символів", help: "Довші записи брокер відхиляє." },
 ];
 
+const WAKE_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
+  { name: "wakeAfterMinutes", label: "Пробудження: відсутність, хвилин", help: "Агент, якого не було стільки, прокидається." },
+  {
+    name: "wakeAfterMessages",
+    label: "Пробудження: пропущено повідомлень",
+    help: "Або стільки пропущених повідомлень у кімнатах, навіть після короткої відсутності.",
+  },
+];
+
 const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placeholder: string }[] = [
   {
     name: "publicUrl",
@@ -37,7 +46,7 @@ const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placehol
     placeholder: "C:/aichat",
   },
 ];
-const ALL = [...NUMBER_FIELDS, ...TEXT_FIELDS].map((f) => f.name);
+const ALL = [...NUMBER_FIELDS, ...WAKE_FIELDS, ...TEXT_FIELDS].map((f) => f.name).concat("wakeMode");
 
 export function SettingsPanel() {
   const { api, fail } = useChat();
@@ -75,6 +84,7 @@ export function SettingsPanel() {
 
   const check = (name: keyof Settings): { value?: string | number; error?: string } => {
     const raw = (form[name] ?? "").trim();
+    if (name === "wakeMode") return raw === "on" || raw === "off" ? { value: raw } : { error: "on або off" };
     if (name === "publicUrl" || name === "projectDir") {
       if (name === "publicUrl" && raw && !/^https?:\/\/[^\s/]+/.test(raw)) return { error: "адреса має починатися з http:// або https://" };
       return { value: raw };
@@ -148,6 +158,53 @@ export function SettingsPanel() {
                 <input
                   type="number"
                   inputMode="numeric"
+                  aria-label={label}
+                  value={form[name] ?? ""}
+                  min={lim?.min}
+                  max={lim?.max}
+                  readOnly={!editable || busy}
+                  onChange={(e) => setForm({ ...form, [name]: e.target.value })}
+                />
+                <small>
+                  {f.bad ? <span className="field-error">{f.error}</span> : help}
+                  {lim && !f.bad ? (
+                    <span className="num">
+                      {" "}
+                      Від {lim.min} до {lim.max}.
+                    </span>
+                  ) : (
+                    ""
+                  )}
+                </small>
+              </label>
+            );
+          })}
+        </div>
+        <h2>Пробудження агентів</h2>
+        <label className={`field${field("wakeMode").changed ? " changed" : ""}`} title="wakeMode в agents.json">
+          <span>Режим пробудження</span>
+          <select
+            aria-label="Режим пробудження"
+            value={form.wakeMode ?? "off"}
+            disabled={!editable || busy}
+            onChange={(e) => setForm({ ...form, wakeMode: e.target.value })}
+          >
+            <option value="off">Вимкнено: агент отримує всі пропущені повідомлення</option>
+            <option value="on">Увімкнено: пропущене в кімнатах не надсилається, а йде в пробудження</option>
+          </select>
+          <small>Особисті повідомлення й ходи в партіях доходять завжди. Людей це не стосується.</small>
+        </label>
+        <div className="settings-grid">
+          {WAKE_FIELDS.map(({ name, label, help }) => {
+            const f = field(name);
+            const lim = limits[name];
+            return (
+              <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
+                <span>{label}</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  aria-label={label}
                   value={form[name] ?? ""}
                   min={lim?.min}
                   max={lim?.max}
