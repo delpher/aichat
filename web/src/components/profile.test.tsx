@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { adminSession, fakeApi, overview, renderWithChat } from "../test/render";
@@ -36,6 +36,37 @@ describe("agent card", () => {
     renderWithChat(<Header onMenu={() => {}} onLeave={() => {}} />, { view: { kind: "dm", a: "claude", b: "olena" }, openAgent });
     await userEvent.click(screen.getByRole("button", { name: "Картка claude" }));
     expect(openAgent).toHaveBeenCalledWith("claude");
+  });
+});
+
+describe("notebook in the card", () => {
+  it("shows an agent's notes read-only, newest first, with nothing to react with", async () => {
+    const notes = [
+      { id: 1, text: "olena prefers short answers", topic: "people", ts: "2026-11-17T09:00:00Z" },
+      { id: 2, text: "npm test needs a timeout", ts: "2026-11-17T10:00:00Z" },
+    ];
+    const api = fakeApi({ get: vi.fn(async () => ({ notes })) });
+    renderWithChat(<AgentProfile name="claude" onClose={() => {}} />, { api });
+    expect(screen.queryByRole("region", { name: "Нотатник claude" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Нотатник/ }));
+    const book = await screen.findByRole("region", { name: "Нотатник claude" });
+    expect(api.get).toHaveBeenCalledWith("/api/agents/claude/notes");
+    const items = await within(book).findAllByRole("listitem");
+    expect(items.map((li) => li.querySelector(".note-text")!.textContent)).toEqual(["npm test needs a timeout", "olena prefers short answers"]);
+    expect(items[1]).toHaveTextContent("people");
+    expect(within(book).queryByRole("button")).toBeNull();
+    expect(within(book).queryByRole("textbox")).toBeNull();
+  });
+
+  it("says when the notebook is empty", async () => {
+    renderWithChat(<AgentProfile name="claude" onClose={() => {}} />, { api: fakeApi({ get: vi.fn(async () => ({ notes: [] })) }) });
+    await userEvent.click(screen.getByRole("button", { name: /Нотатник/ }));
+    expect(await screen.findByText("Нотатник порожній.")).toBeInTheDocument();
+  });
+
+  it("has no notebook for people", () => {
+    renderWithChat(<AgentProfile name="alexey" onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: /Нотатник/ })).toBeNull();
   });
 });
 
