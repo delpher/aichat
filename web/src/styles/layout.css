@@ -620,6 +620,9 @@ kbd {
   color: var(--warn);
   font-weight: var(--weight-medium);
 }
+.nav-status.outdated {
+  color: var(--warn);
+}
 .nav-hint {
   margin-left: auto;
   color: var(--muted);

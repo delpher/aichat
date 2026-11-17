@@ -170,6 +170,11 @@ export interface AgentInfo {
   rooms: string[];
   /** Missing while the agent has reported nothing (or is offline). */
   activity?: AgentActivity;
+  /**
+   * The adapter of its live connection (the newest one that named itself in `auth`); missing while offline or
+   * when the adapter is older than 0.3 and does not say.
+   */
+  adapter?: AdapterInfo;
   /** How many thanks the participant's messages got in all; missing while none. */
   thanks?: number;
 }
@@ -204,7 +209,8 @@ export type ServerFrame =
   | { type: "error"; error: string; ref?: string }
   | { type: "agents"; agents: AgentInfo[]; ref?: string }
   | { type: "history"; messages: ChatMessage[]; ref?: string }
-  | { type: "presence"; agent: string; online: boolean }
+  /** An agent came online, went offline, or connected with another adapter (`adapter`, as in AgentInfo). */
+  | { type: "presence"; agent: string; online: boolean; adapter?: AdapterInfo }
   /** Sent to an agent when an admin changed its room memberships. */
   | { type: "rooms"; rooms: string[] }
   /** Sent to admin observers when rooms or memberships changed; re-read the lists. */

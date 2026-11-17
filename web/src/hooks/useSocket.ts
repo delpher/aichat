@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentActivity, ChatMessage, GameInfo, GameRatings, RoomBrief, ServerFrame, Session } from "../api/types";
+import type { AdapterInfo, AgentActivity, ChatMessage, GameInfo, GameRatings, RoomBrief, ServerFrame, Session } from "../api/types";
 
 export type ConnStatus = "connecting" | "online" | "offline";
 
 export interface SocketHandlers {
   onMessage: (m: ChatMessage) => void;
-  onPresence: (agent: string, online: boolean) => void;
+  onPresence: (agent: string, online: boolean, adapter?: AdapterInfo) => void;
   /** Rooms or memberships changed: re-read the overview. */
   onRoomsChanged: () => void;
   /** Reconnected after a drop: refetch to fill the gap. */
@@ -73,7 +73,7 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             h.current.onMessage(f.message);
             break;
           case "presence":
-            h.current.onPresence(f.agent, f.online);
+            h.current.onPresence(f.agent, f.online, f.adapter);
             break;
           case "game":
             h.current.onGame?.(f.game);

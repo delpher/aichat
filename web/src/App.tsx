@@ -31,6 +31,7 @@ export function toOverview(d: Record<string, unknown>): Overview {
     dms: (d.dms as Overview["dms"]) ?? [],
     all_rooms: (d.all_rooms as string[]) ?? [],
     max_hops: typeof d.max_hops === "number" ? d.max_hops : undefined,
+    version: typeof d.version === "string" ? d.version : undefined,
   };
 }
 
@@ -334,7 +335,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
 
   const conn = useSocket(session, {
     onMessage: addLive,
-    onPresence: (agent, online) => {
+    onPresence: (agent, online, adapter) => {
       if (!overviewRef.current.agents.some((a) => a.name === agent)) {
         reloadOverview().catch((e) => fail(e, "Оновлення учасників"));
         return;
@@ -342,7 +343,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
       // An agent that went offline is doing nothing any more.
       setOverview((o) => ({
         ...o,
-        agents: o.agents.map((a) => (a.name === agent ? { ...a, online, ...(online ? {} : { activity: undefined }) } : a)),
+        agents: o.agents.map((a) =>
+          a.name === agent ? { ...a, online, adapter, ...(online ? {} : { activity: undefined }) } : a,
+        ),
       }));
     },
     onRoomsChanged: () => {

@@ -27,6 +27,7 @@ import { enableNotify, notifyOn, notifyPermission, setNotifyPref } from "../lib/
 import { KEYS, storage } from "../lib/storage";
 import { dm, isGameRoom, viewKey, type View } from "../lib/views";
 import { activityText, isActive, statusText } from "../lib/activity";
+import { adapterOutdated, adapterText } from "../lib/adapter";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -96,11 +97,18 @@ function Item({
 }
 
 /** "Claude Code · Працює над web у #lobby": the kind, then what the agent does now, coloured by state. */
-function AgentSub({ a, me }: { a: Agent; me: string }) {
+function AgentSub({ a, me, broker }: { a: Agent; me: string; broker?: string }) {
   const status = a.online ? statusText(a.activity, me) : "";
+  const old = a.online && adapterOutdated(a.adapter, broker);
   return (
     <>
       {kindLabel(a.kind)}
+      {old && (
+        <>
+          {" · "}
+          <span className="nav-status outdated">старий адаптер</span>
+        </>
+      )}
       {status ? (
         <>
           {" · "}
@@ -369,12 +377,13 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
                 onClick={nav(dm(sender, a.name))}
                 icon={<Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />}
                 label={a.name}
-                sub={<AgentSub a={a} me={sender} />}
+                sub={<AgentSub a={a} me={sender} broker={overview.version} />}
                 title={[
                   a.description,
                   a.online ? (isActive(a.online, a.activity) ? activityText(a.name, a.activity) : "онлайн") : "офлайн",
                   a.rooms.length ? `кімнати: ${a.rooms.map((r) => "#" + r).join(", ")}` : "",
                   thanksText(a.thanks),
+                  a.online ? adapterText(a.adapter, overview.version) : "",
                   `натисніть, щоб написати ${a.name}`,
                 ]
                   .filter(Boolean)
