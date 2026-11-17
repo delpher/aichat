@@ -196,6 +196,7 @@ export class Broker {
       },
       announce: (room, text) => this.announce(room, text),
       publish: (game) => this.broadcast({ type: "game", game }),
+      publishRatings: (game, ratings) => this.broadcast({ type: "ratings", game, ratings }),
       random: opts.random,
     });
     this.board = new Board({
@@ -978,6 +979,7 @@ export class Broker {
       const route = `${req.method} ${url.pathname}`;
       const info = (g: Parameters<Games["info"]>[0]) => this.games.info(g);
       if (route === "GET /api/games/types") return reply(200, { types: this.games.types() });
+      if (route === "GET /api/games/ratings") return reply(200, { ratings: this.games.ratings(url.searchParams.get("game") || undefined) });
       if (route === "GET /api/games") {
         const q = { status: url.searchParams.get("status") || undefined, game: url.searchParams.get("game") || undefined };
         return reply(200, { games: this.games.list(q).map(info) });
@@ -1277,7 +1279,8 @@ export class Broker {
     const gameDelete = url.pathname.match(/^\/admin\/api\/games\/(\d+)$/);
     if (gameDelete && req.method === "DELETE") {
       const id = Number(gameDelete[1]);
-      if (!this.store.game(id)) throw new BrokerError(`unknown game: ${id}`, 404);
+      const deleted = this.store.game(id);
+      if (!deleted) throw new BrokerError(`unknown game: ${id}`, 404);
       const room = gameRoom(id);
       const members = this.store.membersOf(room);
       const configured = this.cfg.agents.filter((a) => a.rooms?.includes(room)).map((a) => a.name);
@@ -1287,6 +1290,7 @@ export class Broker {
       await this.cleanFiles();
       for (const n of members) this.notifyRooms(n, false);
       this.broadcast({ type: "game_deleted", id });
+      this.games.deleted(deleted);
       this.notifyObservers({ type: "rooms_changed" });
       this.log(`${me.name} deleted game ${id} with its room and messages`);
       return reply(200, { ok: true });

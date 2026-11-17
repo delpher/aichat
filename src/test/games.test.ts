@@ -296,3 +296,105 @@ test("games saved before seats existed (white/black columns) are migrated to pla
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- І5: ratings in the game hub ----
+
+test("elo: start 1000, K = 32, a draw is half a point", async () => {
+  const { elo } = await import("../games/rating.js");
+  const g = (winner: number | null) => ({ players: ["a", "b"], result: { winner, reason: "x" }, moves: [] });
+  assert.deepEqual(elo(g(0), [undefined, undefined]), [1016, 984]);
+  assert.deepEqual(elo(g(1), [1000, 1000]), [984, 1016]);
+  assert.deepEqual(elo(g(null), [1000, 1000]), [1000, 1000]);
+  // the favourite gains little from a win and the underdog gains a lot from a draw
+  const [fav, dog] = elo(g(0), [1200, 1000]);
+  assert.ok(fav - 1200 < 16 && fav - 1200 > 0);
+  assert.equal(Math.round(fav + dog), 2200);
+  const [, dogDraw] = elo(g(null), [1200, 1000]);
+  assert.ok(dogDraw > 1000);
+});
+
+test("ratings: counted in finish() for games that have one, rebuilt from stored games, gone with a deleted game", async (t) => {
+  const { elo } = await import("../games/rating.js");
+  const ratedNim: GameDefinition = { ...nim, rate: elo };
+  const unrated: GameDefinition = { ...nim, id: "nim0", title: "Нім без рейтингу" };
+  const agents: Partial<AgentConfig>[] = [{ name: "boss", kind: "human", admin: true }, { name: "olena", kind: "human" }, { name: "bot1", kind: "claude" }];
+  const b = await startBroker(agents, {}, { games: [ratedNim, unrated] });
+  let bot: Awaited<ReturnType<typeof connect>> | undefined;
+  // close the client first, or the broker's close() waits for it
+  t.after(async () => {
+    bot?.close();
+    await b.broker.close();
+  });
+  const call = async (who: string, method: string, path: string, body?: unknown) => {
+    const r = await fetch(`${b.http}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: r.status, body: (await r.json()) as Body & { ratings: Record<string, Record<string, number>> } };
+  };
+  const ratings = async (q = "") => (await call("olena", "GET", `/api/games/ratings${q}`)).body.ratings;
+  /** olena (seat 0) takes 3, bot1 takes 3, olena takes the last one and wins. */
+  const play = async (game: string, first = "olena", second = "bot1") => {
+    const g = (await call(first, "POST", "/api/games", { game, players: [first, second] })).body.game;
+    for (const [who, n] of [[first, "3"], [second, "3"], [first, "1"]] as const) await call(who, "POST", `/api/games/${g.id}/move`, { move: n });
+    return g.id;
+  };
+
+  // a game that ended by a clock or by abandonment does not count; it is in the store before ratings are first read
+  const store = (b.broker as unknown as { store: Store }).store;
+  const stale = store.createGame({ game: "nim", players: ["olena", "bot1"], created_by: "olena", moves: [], status: "finished", result: { winner: 1, reason: "timeout" }, draw_offer: null });
+  assert.deepEqual(await ratings(), { nim: {} });
+
+  bot = await connect(b.url, "bot1");
+  const frames: { type: string; game?: string; ratings?: Record<string, number> }[] = [];
+  (bot as unknown as { ws: { on: (e: string, f: (d: unknown) => void) => void } }).ws.on("message", (d) => frames.push(JSON.parse(String(d))));
+
+  const first = await play("nim");
+  assert.deepEqual(await ratings(), { nim: { olena: 1016, bot1: 984 } });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(frames.filter((f) => f.type === "ratings").at(-1), { type: "ratings", game: "nim", ratings: { olena: 1016, bot1: 984 } });
+
+  // a game type without a rate function has no rating, and its games change nothing
+  frames.length = 0;
+  await play("nim0");
+  assert.deepEqual(await ratings(), { nim: { olena: 1016, bot1: 984 } });
+  assert.deepEqual(await ratings("?game=nim0"), {});
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(frames.some((f) => f.type === "ratings"), false);
+
+  // resigning counts as a loss, an agreed draw as half a point
+  const r = (await call("olena", "POST", "/api/games", { game: "nim", players: ["olena", "bot1"] })).body.game;
+  await call("olena", "POST", `/api/games/${r.id}/resign`);
+  // the same chain worked out by hand with elo, in finishing order
+  const win = (w: number | null) => ({ players: ["olena", "bot1"], result: { winner: w, reason: "x" }, moves: [] });
+  const round = (xs: number[]) => ({ olena: Math.round(xs[0]), bot1: Math.round(xs[1]) });
+  let chain = elo(win(0), [undefined, undefined]);
+  chain = elo(win(1), chain);
+  assert.deepEqual((await ratings("?game=nim")).nim, round(chain));
+  const d = (await call("olena", "POST", "/api/games", { game: "nim", players: ["olena", "bot1"] })).body.game;
+  await call("olena", "POST", `/api/games/${d.id}/draw`);
+  await call("bot1", "POST", `/api/games/${d.id}/draw`);
+  chain = elo(win(null), chain);
+  const afterDraw = (await ratings()).nim;
+  assert.deepEqual(afterDraw, round(chain));
+
+  // the numbers come only from the stored games: a fresh hub over the same store gets the same ones
+  const { Games } = await import("../broker/games.js");
+  const fresh = new Games({ store, games: [ratedNim, unrated], isAgent: () => true, isHuman: () => true, join: () => {}, announce: () => {}, publish: () => {} });
+  assert.deepEqual(fresh.ratings(), { nim: afterDraw });
+
+  // deleting a counted game takes its effect away, for everyone at once
+  frames.length = 0;
+  assert.equal((await call("boss", "DELETE", `/admin/api/games/${first}`)).status, 200);
+  const replayed = new Games({ store, games: [ratedNim], isAgent: () => true, isHuman: () => true, join: () => {}, announce: () => {}, publish: () => {} });
+  const afterDelete = (await ratings()).nim;
+  assert.deepEqual(afterDelete, replayed.ratings().nim);
+  // what is left: the resign, then the draw
+  assert.deepEqual(afterDelete, round(elo(win(null), elo(win(1), [undefined, undefined]))));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(frames.find((f) => f.type === "ratings"), { type: "ratings", game: "nim", ratings: afterDelete });
+  // deleting the uncounted game changes nothing
+  assert.equal((await call("boss", "DELETE", `/admin/api/games/${stale.id}`)).status, 200);
+  assert.deepEqual((await ratings()).nim, afterDelete);
+});

@@ -2,6 +2,7 @@
 // moves, turns, resigning, draws, rooms and announcements; everything about a particular game (its rules,
 // notation, board and wording) lives in its own folder under src/games/ and is listed in src/games/index.ts.
 import type { GameType } from "../protocol.js";
+import type { RateGame } from "./rating.js";
 
 /** How a game ended by its own rules; resigning and agreed draws are handled by the broker. */
 export interface GameOutcome {
@@ -31,4 +32,9 @@ export interface GameDefinition extends GameType {
    * each entry, so the state stays a plain list of moves.
    */
   auto?(moves: string[], random: () => number): { move: string; note: string } | null;
+  /**
+   * How a finished game changes its players' ratings (see src/games/rating.ts); without it the game has no
+   * rating. The hub calls it for each counted game in the order the games finished.
+   */
+  rate?: RateGame;
 }
