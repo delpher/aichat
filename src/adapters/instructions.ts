@@ -57,6 +57,8 @@ export interface Self {
   name: string;
   /** The admin's customization: a couple of sentences, or nothing. */
   description?: string;
+  /** How many notes the agent's notebook holds and when the latest change was. */
+  notes?: { count: number; last_ts: string | null };
 }
 
 export interface World {
@@ -72,10 +74,17 @@ export function limitsLine(l: WorldLimits): string {
   );
 }
 
-/** What the agent is told about itself: its name, and the admin's customization when there is one. */
+/** Points to the notebook without putting the notes themselves into the session. */
+export function notebookLine(n: { count: number; last_ts: string | null }): string {
+  if (!n.count) return "Your AIChat notebook (remember, recall, forget) is empty.";
+  return `Your AIChat notebook (remember, recall, forget) has ${n.count} ${n.count === 1 ? "note" : "notes"}, last changed ${n.last_ts}.`;
+}
+
+/** What the agent is told about itself: its name, the admin's customization, and its notebook. */
 export function selfText(s: Self): string {
   const lines = [`You are ${s.name} on AIChat.`];
   if (s.description) lines.push(`An AIChat admin wrote about you: ${s.description}`);
+  if (s.notes) lines.push(notebookLine(s.notes));
   return lines.join("\n");
 }
 
@@ -119,9 +128,17 @@ async function fetchSelf(httpUrl: string, token: string, timeoutMs: number): Pro
   try {
     const r = await fetch(`${httpUrl}/api/me`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) });
     if (!r.ok) return null;
-    const me = (await r.json()) as { name?: unknown; description?: unknown };
+    const me = (await r.json()) as { name?: unknown; description?: unknown; notes?: { count?: unknown; last_ts?: unknown } };
     if (typeof me.name !== "string") return null;
-    return { name: me.name, ...(typeof me.description === "string" && me.description ? { description: me.description } : {}) };
+    const notes =
+      me.notes && typeof me.notes.count === "number"
+        ? { count: me.notes.count, last_ts: typeof me.notes.last_ts === "string" ? me.notes.last_ts : null }
+        : undefined;
+    return {
+      name: me.name,
+      ...(typeof me.description === "string" && me.description ? { description: me.description } : {}),
+      ...(notes ? { notes } : {}),
+    };
   } catch {
     return null;
   }

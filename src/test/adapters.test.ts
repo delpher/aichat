@@ -74,6 +74,7 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((t) => t.name).sort(), [
     "create_game",
+    "forget",
     "get_attachment",
     "join_game",
     "join_room",
@@ -81,6 +82,8 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "list_agents",
     "list_games",
     "read_history",
+    "recall",
+    "remember",
     "room_info",
     "send_message",
     "set_room_brief",
@@ -520,7 +523,7 @@ test("А1: the adapter takes the intro from the broker; world_info shows the cur
     try {
       assert.match(client.getInstructions() ?? "", /--- AIChat intro \(from the broker\) ---\nТут живуть люди й агенти\.\n\nLimits now/);
       // Б1: the agent knows its name and what the admin wrote about it
-      assert.match(client.getInstructions() ?? "", /\n\nYou are claude1 on AIChat\.\nAn AIChat admin wrote about you: Пише серверну частину\.\n--- end of intro ---/);
+      assert.match(client.getInstructions() ?? "", /\n\nYou are claude1 on AIChat\.\nAn AIChat admin wrote about you: Пише серверну частину\.\nYour AIChat notebook \(remember, recall, forget\) is empty\.\n--- end of intro ---/);
       await put("Новий текст вводної.");
       assert.match(await call("world_info"), /^Новий текст вводної\.\n\nLimits now: a reply chain stops after 8 replies/);
     } finally {
@@ -642,5 +645,48 @@ test("the adapter names itself in auth, and tells the session once when the brok
     wss.close();
     http.closeAllConnections();
     await new Promise((r) => http.close(r));
+  }
+});
+
+test("Б2: the notebook tools keep notes across sessions; the session starts with a pointer to the notebook, not the notes", async () => {
+  const { broker, url } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "claude2", kind: "claude" }]);
+  try {
+    const first = await startChannel(url, "claude1");
+    try {
+      assert.match(first.client.getInstructions() ?? "", /Your AIChat notebook \(remember, recall, forget\) is empty\./);
+      assert.match(await first.call("remember", { text: "olena prefers short answers", topic: "people" }), /^remembered #(\d+) \[people\] \(.+\): olena prefers short answers$/);
+      const second = await first.call("remember", { text: "npm test hangs without a timeout" });
+      const id = Number(second.match(/#(\d+)/)![1]);
+      assert.match(await first.call("remember", { id, text: "use --test-timeout" }), new RegExp(`^changed #${id} \(.+\): use --test-timeout$`));
+      assert.match(await first.call("recall", { query: "OLENA" }), /^1 of 2 notes \(the notebook holds up to 200\)\n#\d+ \[people\] .*olena prefers short answers$/);
+      assert.match(await first.call("recall", { topic: "people" }), /^1 of 2 notes/);
+      assert.match(await first.call("recall"), /^2 of 2 notes/);
+      assert.equal(await first.call("forget", { id }), `forgot note #${id}`);
+      const bad = await first.client.callTool({ name: "forget", arguments: { id } });
+      assert.equal(bad.isError, true);
+    } finally {
+      await first.client.close();
+    }
+
+    // a new session: it is told how many notes there are and when they changed, but not what they say
+    const next = await startChannel(url, "claude1");
+    try {
+      const text = next.client.getInstructions() ?? "";
+      assert.match(text, /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT/);
+      assert.doesNotMatch(text, /olena prefers short answers/);
+      assert.match(await next.call("recall"), /olena prefers short answers/);
+    } finally {
+      await next.client.close();
+    }
+
+    // another agent sees none of it
+    const other = await startChannel(url, "claude2");
+    try {
+      assert.match(await other.call("recall"), /^0 of 0 notes/);
+    } finally {
+      await other.client.close();
+    }
+  } finally {
+    await broker.close();
   }
 });
