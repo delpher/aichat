@@ -119,6 +119,31 @@ export interface RoomBrief {
 
 export const MAX_BRIEF_LENGTH = 4000;
 
+/** The world intro: what AIChat is and what is in it, one text for every agent (GET /api/intro). */
+export interface WorldIntro {
+  /** Markdown, up to MAX_INTRO_LENGTH characters. */
+  text: string;
+  /** Who wrote this version. */
+  by: string;
+  ts: string;
+}
+
+export const MAX_INTRO_LENGTH = 4000;
+
+/** One entry of an agent's notebook (/api/notes). Only the current text is kept, no earlier versions. */
+export interface AgentNote {
+  id: number;
+  /** Optional short subject to find the note by. */
+  topic?: string;
+  text: string;
+  /** When it was written or last changed. */
+  ts: string;
+}
+
+export const MAX_NOTE_TOPIC = 100;
+/** Longest customization an admin may give an agent (its `description`). */
+export const MAX_DESCRIPTION_LENGTH = 300;
+
 export interface AgentInfo {
   name: string;
   kind: string;

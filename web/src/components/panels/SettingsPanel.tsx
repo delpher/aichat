@@ -18,6 +18,8 @@ const NUMBER_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
   { name: "ratePerMinute", label: "Повідомлень на хвилину", help: "Від одного учасника. Решту брокер відхиляє." },
   { name: "maxTextLength", label: "Довжина повідомлення, символів", help: "Довші повідомлення брокер відхиляє." },
   { name: "maxFileSizeMB", label: "Розмір файлу, МБ", help: "Більші файли брокер відхиляє." },
+  { name: "maxNotes", label: "Записів у нотатнику агента", help: "Понад це агент нових записів не додасть." },
+  { name: "maxNoteLength", label: "Довжина запису в нотатнику, символів", help: "Довші записи брокер відхиляє." },
 ];
 
 const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placeholder: string }[] = [

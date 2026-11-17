@@ -22,9 +22,11 @@ import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
+import { Context, ContextError } from "./context.js";
 import {
   INLINE_IMAGE_TYPES,
   MAX_ATTACHMENTS,
+  MAX_DESCRIPTION_LENGTH,
   MAX_STATUS_TOPIC,
   NAME_RE,
   ROOM_RE,
@@ -152,6 +154,7 @@ export class Broker {
   readonly updater: Updater;
   readonly games: Games;
   readonly board: Board;
+  readonly context: Context;
   private sockets = new Map<string, Set<WebSocket>>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
   /** Admin feed sockets; a human admin's feed also counts as that human being online. */
@@ -209,6 +212,12 @@ export class Broker {
       },
       announce: (room, text) => this.announce(room, text),
       publishBrief: (room, brief) => this.publishRoom(room, { type: "brief", room, brief }),
+    });
+    this.context = new Context({
+      store: this.store,
+      limits: () => ({ maxNotes: this.cfg.maxNotes, maxNoteLength: this.cfg.maxNoteLength }),
+      isHuman: (n) => this.cfg.agents.some((a) => a.name === n && a.kind === "human"),
+      isAgent: (n) => this.cfg.agents.some((a) => a.name === n),
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
     this.syncConfiguredRooms();
@@ -912,7 +921,18 @@ export class Broker {
 
       const route = `${req.method} ${url.pathname}`;
       const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave)$/);
-      if (route === "GET /api/me") return reply(200, { name: me, kind: agent.kind, rooms: this.store.roomsOf(me) });
+      if (route === "GET /api/me")
+        return reply(200, {
+          name: me,
+          kind: agent.kind,
+          ...(agent.description ? { description: agent.description } : {}),
+          rooms: this.store.roomsOf(me),
+          notes: this.context.stats(me),
+        });
+      if (route === "GET /api/intro") return reply(200, { intro: this.context.intro() });
+      if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
+      const notesOf = url.pathname.match(/^\/api\/agents\/([^/]+)\/notes$/);
+      if (req.method === "GET" && notesOf) return reply(200, { notes: this.context.notesOf(me, decodeURIComponent(notesOf[1])) });
       if (route === "GET /api/overview") return reply(200, this.overview(agent));
       if (route === "GET /api/agents") return reply(200, { agents: this.agents() });
       if (route === "POST /api/activity") return reply(200, { activity: this.reportActivity(me, await body()) });
@@ -947,10 +967,33 @@ export class Broker {
       }
       return reply(404, { error: "not found" });
     } catch (e) {
-      const status = e instanceof BrokerError ? e.status : 500;
+      const status = e instanceof BrokerError || e instanceof ContextError ? e.status : 500;
       if (status === 500) this.log(`HTTP error: ${(e as Error).stack}`);
       return reply(status, { error: (e as Error).message });
     }
+  }
+
+  // ---------------- agent notebook ----------------
+
+  /** GET /api/notes?q=&topic= (own notes), POST /api/notes, PUT and DELETE /api/notes/<id>. */
+  private async onNotesRequest(req: IncomingMessage, url: URL, me: string, reply: (status: number, body: unknown) => void) {
+    if (url.pathname === "/api/notes") {
+      if (req.method === "GET") {
+        const notes = this.context.notes(me, { q: url.searchParams.get("q"), topic: url.searchParams.get("topic") });
+        return reply(200, { notes, ...this.context.stats(me), max: this.cfg.maxNotes });
+      }
+      if (req.method === "POST") return reply(201, { note: this.context.remember(me, await readJson(req)) });
+      return reply(405, { error: "use GET or POST" });
+    }
+    const m = url.pathname.match(/^\/api\/notes\/(\d+)$/);
+    if (!m) return reply(404, { error: "not found" });
+    const id = Number(m[1]);
+    if (req.method === "PUT") return reply(200, { note: this.context.change(me, id, await readJson(req)) });
+    if (req.method === "DELETE") {
+      this.context.forget(me, id);
+      return reply(200, { ok: true });
+    }
+    return reply(405, { error: "use PUT or DELETE" });
   }
 
   // ---------------- room briefs ----------------
@@ -1134,6 +1177,11 @@ export class Broker {
       }
       return reply(404, { error: "not found" });
     }
+    if (route === "PUT /admin/api/intro") {
+      const { intro, changed } = this.context.setIntro(me.name, (await readJson(req)).text);
+      if (changed) this.log(`${me.name} ${intro ? "changed" : "removed"} the world intro`);
+      return reply(200, { intro });
+    }
     if (route === "GET /admin/api/settings")
       return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.editConfig });
     if (route === "PATCH /admin/api/settings") {
@@ -1179,6 +1227,8 @@ export class Broker {
         webhook = b.webhook;
       }
       if (b.description != null && typeof b.description !== "string") throw new BrokerError("description must be a string");
+      if (typeof b.description === "string" && b.description.trim().length > MAX_DESCRIPTION_LENGTH)
+        throw new BrokerError(`description is longer than ${MAX_DESCRIPTION_LENGTH} characters`);
       const rooms = b.rooms ?? [];
       if (!Array.isArray(rooms) || !rooms.every((r) => typeof r === "string" && ROOM_RE.test(r)))
         throw new BrokerError("rooms must be a list of room names (letters, digits, _ or -)");
@@ -1215,19 +1265,32 @@ export class Broker {
       if (req.method === "PATCH" && !agentMatch[2]) {
         const b = await readJson(req);
         const keys = Object.keys(b);
-        if (keys.length !== 1 || keys[0] !== "admin") throw new BrokerError("only `admin` can be changed here");
-        if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
-        if (b.admin && target.kind !== "human")
-          throw new BrokerError(`only agents of kind "human" can be admins; ${name} is "${target.kind}"`, 403);
-        if (!b.admin) keepOneAdmin(name, "remove their rights");
+        if (!keys.length || keys.some((k) => k !== "admin" && k !== "description"))
+          throw new BrokerError("only `admin` and `description` can be changed here");
+        if ("admin" in b) {
+          if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
+          if (b.admin && target.kind !== "human")
+            throw new BrokerError(`only agents of kind "human" can be admins; ${name} is "${target.kind}"`, 403);
+          if (!b.admin) keepOneAdmin(name, "remove their rights");
+        }
+        let description: string | undefined;
+        if ("description" in b) {
+          if (typeof b.description !== "string") throw new BrokerError("description must be a string");
+          description = b.description.trim();
+          if (description.length > MAX_DESCRIPTION_LENGTH)
+            throw new BrokerError(`description is longer than ${MAX_DESCRIPTION_LENGTH} characters`);
+        }
         edit((raw) => {
           const a = raw.agents?.find((x) => x.name === name);
           if (!a) throw new BrokerError(`unknown agent: ${name}`, 404);
-          if (b.admin) a.admin = true;
-          else delete a.admin;
+          if (b.admin === true) a.admin = true;
+          else if (b.admin === false) delete a.admin;
+          if (description) a.description = description;
+          else if (description === "") delete a.description;
         });
-        if (!b.admin) this.disconnectObserver(name, "admin rights removed");
-        this.log(`${me.name} ${b.admin ? "made" : "removed"} ${name} ${b.admin ? "an admin" : "from admins"}`);
+        if (b.admin === false) this.disconnectObserver(name, "admin rights removed");
+        if ("admin" in b) this.log(`${me.name} ${b.admin ? "made" : "removed"} ${name} ${b.admin ? "an admin" : "from admins"}`);
+        if (description !== undefined) this.log(`${me.name} ${description ? "changed" : "removed"} the description of ${name}`);
         return reply(200, { agent: adminAgents().find((a) => a.name === name) });
       }
       if (req.method === "POST" && agentMatch[2] === "/token") {
