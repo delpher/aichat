@@ -4,6 +4,9 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  /* a flex item is as wide as its widest unbreakable content unless told otherwise: the one-line brief, a long
+     link or a code block would push the whole column (room bar, feed, composer) past a phone's screen */
+  min-width: 0;
   min-height: 0;
 }
 .feed {
@@ -997,6 +1000,7 @@ span.msg-where {
   position: relative;
   flex: 1;
   display: flex;
+  min-width: 0;
   min-height: 0;
 }
 .drawer {
