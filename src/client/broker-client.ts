@@ -14,7 +14,17 @@ export interface BrokerClientOptions {
   log?: (msg: string) => void;
   /** Sent with `auth` so the broker knows which adapter and version this is. */
   client?: AdapterInfo;
+  /**
+   * A connection that has heard nothing from the broker (not even its ping, sent every 30 s) for this long
+   * is taken to be dead and is replaced (default 75 s). A network path can die without either side being
+   * told; the broker notices by its pings, this is how the client notices.
+   */
+  staleMs?: number;
 }
+
+/** Requests that do the same thing when sent twice: safe to repeat once the connection is back. */
+const IDEMPOTENT = new Set(["history", "list_agents", "join", "leave", "delivered", "ping"]);
+const CLOSED = "connection closed";
 
 /**
  * WebSocket client for the broker, shared by every adapter.
@@ -29,6 +39,9 @@ export class BrokerClient extends EventEmitter {
   private backoff = 500;
   private ready?: Promise<void>;
   private log: (msg: string) => void;
+  /** When the broker was last heard from on the current connection. */
+  private lastHeard = 0;
+  private watchdog?: NodeJS.Timeout;
 
   constructor(private opts: BrokerClientOptions) {
     super();
@@ -43,6 +56,7 @@ export class BrokerClient extends EventEmitter {
       this.ws = ws;
       let welcomed = false;
       ws.on("open", () => {
+        this.hear();
         const ref = this.nextRef();
         this.pending.set(ref, {
           resolve: (f) => {
@@ -50,6 +64,7 @@ export class BrokerClient extends EventEmitter {
               welcomed = true;
               this.agent = f.agent;
               this.backoff = 500;
+              this.watch(ws);
               this.emit("connected", f.agent);
               resolve();
             } else reject(new Error(f.type === "error" ? f.error : "unexpected reply to auth"));
@@ -66,13 +81,19 @@ export class BrokerClient extends EventEmitter {
           }),
         );
       });
-      ws.on("message", (data) => this.onFrame(JSON.parse(String(data)) as ServerFrame));
+      ws.on("message", (data) => {
+        this.hear();
+        this.onFrame(JSON.parse(String(data)) as ServerFrame);
+      });
+      ws.on("ping", () => this.hear());
+      ws.on("pong", () => this.hear());
       ws.on("error", (e) => {
         if (!welcomed) reject(e);
         this.log(`connection error: ${e.message}`);
       });
       ws.on("close", (code, reason) => {
-        for (const p of this.pending.values()) p.reject(new Error("connection closed"));
+        if (this.ws === ws) clearInterval(this.watchdog);
+        for (const p of this.pending.values()) p.reject(new Error(CLOSED));
         this.pending.clear();
         if (welcomed) this.emit("disconnected");
         if (code === 4003) {
@@ -100,6 +121,40 @@ export class BrokerClient extends EventEmitter {
     }
   }
 
+  private hear() {
+    this.lastHeard = Date.now();
+  }
+
+  /** Replaces a connection the broker has gone silent on: its close event brings the reconnect. */
+  private watch(ws: WebSocket) {
+    clearInterval(this.watchdog);
+    const stale = this.opts.staleMs ?? 75_000;
+    this.watchdog = setInterval(() => {
+      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastHeard < stale) return;
+      this.log(`nothing from the broker for ${Math.round((Date.now() - this.lastHeard) / 1000)} s; reconnecting`);
+      ws.terminate();
+    }, Math.max(50, Math.min(15_000, stale / 3)));
+    this.watchdog.unref?.();
+  }
+
+  /** Waits until a connection is welcomed again (after a drop), or gives up after `timeoutMs`. */
+  private whenConnected(timeoutMs: number): Promise<boolean> {
+    if (this.ws?.readyState === WebSocket.OPEN && this.agent) return Promise.resolve(true);
+    // without reconnecting nothing will come back; before the first welcome, wait for connect() as before
+    if (this.closed || (this.opts.reconnect === false && this.agent)) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const done = (ok: boolean) => {
+        clearTimeout(timer);
+        this.off("connected", onConnected);
+        resolve(ok);
+      };
+      const onConnected = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this.on("connected", onConnected);
+    });
+  }
+
   private scheduleReconnect() {
     const delay = this.backoff;
     this.backoff = Math.min(this.backoff * 2, 15_000);
@@ -124,11 +179,29 @@ export class BrokerClient extends EventEmitter {
     return `r${++this.seq}`;
   }
 
-  /** Sends a request frame and waits for the broker's reply. Rejects with the broker's error text. */
+  /**
+   * Sends a request frame and waits for the broker's reply. Rejects with the broker's error text.
+   * While the connection is being replaced it waits for the new one. A request that only reads (or does the
+   * same thing twice) is repeated once if the connection drops before the answer; a `send` is not, since the
+   * broker may already have delivered it.
+   */
   async request(frame: Request, timeoutMs = 15_000): Promise<ServerFrame> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      if (this.ready) await this.ready.catch(() => {});
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error("not connected to the AIChat broker");
+    try {
+      return await this.requestOnce(frame, timeoutMs);
+    } catch (e) {
+      if ((e as Error).message !== CLOSED) throw e;
+      if (!IDEMPOTENT.has(frame.type)) {
+        throw new Error(
+          "the connection to the AIChat broker dropped before it confirmed this; it may have gone through: check read_history before sending it again",
+        );
+      }
+      return await this.requestOnce(frame, timeoutMs);
+    }
+  }
+
+  private async requestOnce(frame: Request, timeoutMs: number): Promise<ServerFrame> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.agent) {
+      if (!(await this.whenConnected(Math.min(timeoutMs, 10_000)))) throw new Error("not connected to the AIChat broker");
     }
     const ref = this.nextRef();
     const reply = await new Promise<ServerFrame>((resolve, reject) => {
@@ -217,6 +290,7 @@ export class BrokerClient extends EventEmitter {
 
   close() {
     this.closed = true;
+    clearInterval(this.watchdog);
     this.ws?.close();
   }
 }
