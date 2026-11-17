@@ -31,6 +31,16 @@ describe("agent card", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Подяки3");
   });
 
+  it("shows which adapter an online agent runs, and when it is older than the broker's", () => {
+    const o = {
+      ...overview,
+      version: "0.3.0",
+      agents: overview.agents.map((x) => (x.name === "claude" ? { ...x, adapter: { name: "claude-channel", version: "0.2.9" } } : x)),
+    };
+    renderWithChat(<AgentProfile name="claude" onClose={() => {}} />, { overview: o });
+    expect(screen.getByRole("dialog")).toHaveTextContent("Адаптерclaude-channel 0.2.9 · старий, на брокері 0.3.0");
+  });
+
   it("opens from the header of a direct conversation", async () => {
     const openAgent = vi.fn();
     renderWithChat(<Header onMenu={() => {}} onLeave={() => {}} />, { view: { kind: "dm", a: "claude", b: "olena" }, openAgent });

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { AgentNote } from "../api/types";
 import { useChat } from "../context";
 import { activityText, isActive } from "../lib/activity";
+import { adapterOutdated } from "../lib/adapter";
 import { fmtShort, kindLabel } from "../lib/format";
 import { dm } from "../lib/views";
 import { Avatar } from "./Avatar";
@@ -58,6 +59,15 @@ export function AgentProfile({ name, onClose }: { name: string; onClose: () => v
             <>
               <dt>Працює над</dt>
               <dd>{a.activity.topic}</dd>
+            </>
+          )}
+          {a.online && a.adapter && (
+            <>
+              <dt>Адаптер</dt>
+              <dd className="num">
+                {a.adapter.name} {a.adapter.version}
+                {adapterOutdated(a.adapter, overview.version) && <span className="muted"> · старий, на брокері {overview.version}</span>}
+              </dd>
             </>
           )}
           <dt>Подяки</dt>
