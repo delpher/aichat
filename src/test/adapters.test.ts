@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { WebSocket, WebSocketServer } from "ws";
+import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
 
@@ -240,4 +242,222 @@ test("install registers the status hook and keeps other hooks", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- П3: compatibility with adapter 0.2.1 ----
+// Adapters 0.2.1 already live on agents' machines and are updated rarely, so a new broker must keep serving them.
+// This client speaks only what 0.2.1 sends, on a bare WebSocket (not BrokerClient, which will grow), and checks
+// only the fields 0.2.1 reads. New frames and new optional fields are fine; removing or renaming these is not.
+
+/** A client that knows the 0.2.1 protocol and nothing newer. */
+async function v021Client(url: string, token: string) {
+  const ws = new WebSocket(url + "/ws");
+  const frames: Record<string, unknown>[] = [];
+  const waiters: { want: (f: Record<string, unknown>) => boolean; resolve: (f: Record<string, unknown>) => void }[] = [];
+  ws.on("message", (data) => {
+    const f = JSON.parse(String(data)) as Record<string, unknown>;
+    const i = waiters.findIndex((w) => w.want(f));
+    if (i >= 0) waiters.splice(i, 1)[0].resolve(f);
+    else frames.push(f);
+  });
+  await new Promise<void>((resolve, reject) => (ws.once("open", () => resolve()), ws.once("error", reject)));
+  const next = (want: (f: Record<string, unknown>) => boolean, ms = 3000) => {
+    const i = frames.findIndex(want);
+    if (i >= 0) return Promise.resolve(frames.splice(i, 1)[0]);
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("no matching frame")), ms);
+      waiters.push({ want, resolve: (f) => (clearTimeout(t), resolve(f)) });
+    });
+  };
+  let seq = 0;
+  /** Sends a 0.2.1 request frame and returns the reply with the same ref. */
+  const request = (frame: Record<string, unknown>) => {
+    const ref = `r${++seq}`;
+    ws.send(JSON.stringify({ ...frame, ref }));
+    return next((f) => f.ref === ref);
+  };
+  const http = url.replace(/^ws/, "http");
+  /** The REST calls 0.2.1 makes, with its headers. */
+  const api = async (method: string, path: string, body?: unknown, headers: Record<string, string> = { "content-type": "application/json" }) => {
+    const r = await fetch(http + path, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...headers },
+      ...(body !== undefined ? { body: typeof body === "string" || body instanceof Uint8Array ? (body as BodyInit) : JSON.stringify(body) } : {}),
+    });
+    return { status: r.status, body: (await r.json().catch(() => ({}))) as Record<string, any> };
+  };
+  return { ws, request, next, api, frames };
+}
+
+/** The ChatMessage fields 0.2.1 reads (channel meta, read_history lines, delivered confirmation). */
+function assertV021Message(m: any) {
+  assert.equal(typeof m.id, "number");
+  assert.equal(typeof m.from, "string");
+  assert.equal(typeof m.text, "string");
+  assert.equal(typeof m.ts, "string");
+  assert.equal(typeof m.hops, "number");
+  assert.ok(typeof m.to === "string" || typeof m.room === "string", "message has to or room");
+  if (m.reply_to !== undefined) assert.equal(typeof m.reply_to, "number");
+  for (const f of m.attachments ?? []) for (const k of ["id", "name", "mime"]) assert.equal(typeof f[k], "string");
+}
+
+test("П3: a 0.2.1 client works with this broker over WebSocket", async (t) => {
+  const cleanup: (() => unknown)[] = [];
+  // close clients before the broker, or its close() waits for them
+  t.after(async () => {
+    for (const f of cleanup.reverse()) await f();
+  });
+  const { broker, url } = await startBroker([{ name: "old", kind: "claude" }, { name: "peer" }]);
+  cleanup.push(() => broker.close());
+  const peer = await connect(url, "peer");
+  cleanup.push(() => peer.close());
+  await peer.join("lab");
+  const offlineId = await peer.send({ to: "old", text: "while you were away" });
+
+  const old = await v021Client(url, tok("old"));
+  cleanup.push(() => old.ws.close());
+  // auth -> welcome {agent, rooms}, then what was sent while it was offline
+  const welcome = await old.request({ type: "auth", token: tok("old") });
+  assert.equal(welcome.type, "welcome");
+  assert.equal(welcome.agent, "old");
+  assert.ok(Array.isArray(welcome.rooms));
+  const missed = (await old.next((f) => f.type === "message")).message as any;
+  assertV021Message(missed);
+  assert.equal(missed.id, offlineId);
+  assert.equal(missed.text, "while you were away");
+
+  // delivered -> ack, and the sender sees it delivered
+  assert.equal((await old.request({ type: "delivered", id: offlineId })).type, "ack");
+  assert.deepEqual((await peer.history({ with: "old" })).find((m) => m.id === offlineId)?.delivered_to, ["old"]);
+
+  // join / leave -> ack
+  assert.equal((await old.request({ type: "join", room: "lab" })).type, "ack");
+
+  // send to a room and directly -> ack {id}; the peer gets them with reply_to and hops
+  const toRoom = nextMessage(peer);
+  const roomAck = await old.request({ type: "send", room: "lab", text: "hi lab" });
+  assert.equal(roomAck.type, "ack");
+  assert.equal(typeof roomAck.id, "number");
+  assert.equal((await toRoom).room, "lab");
+  const direct = nextMessage(peer);
+  const dmAck = await old.request({ type: "send", to: "peer", text: "re", reply_to: offlineId });
+  const dm = await direct;
+  assert.equal(dm.id, dmAck.id);
+  assert.equal(dm.reply_to, offlineId);
+  assert.equal(dm.hops, 1);
+
+  // a live message arrives as {type: "message", message}
+  await peer.send({ room: "lab", text: "live" });
+  assertV021Message(((await old.next((f) => f.type === "message")) as any).message);
+
+  // list_agents -> agents [{name, kind, online, rooms, description?, activity?}]
+  const agents = (await old.request({ type: "list_agents" })).agents as any[];
+  const me = agents.find((a) => a.name === "old");
+  assert.equal(me.kind, "claude");
+  assert.equal(me.online, true);
+  assert.ok(me.rooms.includes("lab"));
+  for (const a of agents) {
+    assert.equal(typeof a.name, "string");
+    assert.equal(typeof a.kind, "string");
+    assert.equal(typeof a.online, "boolean");
+    assert.ok(Array.isArray(a.rooms));
+    if (a.activity) assert.equal(typeof a.activity.state, "string");
+  }
+
+  // history -> messages, by room and by peer
+  const roomHistory = (await old.request({ type: "history", room: "lab", limit: 20 })).messages as any[];
+  assert.deepEqual(roomHistory.map((m) => m.text), ["hi lab", "live"]);
+  roomHistory.forEach(assertV021Message);
+  const dmHistory = (await old.request({ type: "history", with: "peer", limit: 20 })).messages as any[];
+  assert.deepEqual(dmHistory.map((m) => m.text), ["while you were away", "re"]);
+
+  // errors carry the ref and a text; ping -> pong
+  const err = await old.request({ type: "send", to: "nobody", text: "x" });
+  assert.equal(err.type, "error");
+  assert.equal(typeof err.error, "string");
+  assert.equal((await old.request({ type: "ping" })).type, "pong");
+  assert.equal((await old.request({ type: "leave", room: "lab" })).type, "ack");
+});
+
+test("П3: the REST calls of a 0.2.1 client keep working", async (t) => {
+  const cleanup: (() => unknown)[] = [];
+  // close clients before the broker, or its close() waits for them
+  t.after(async () => {
+    for (const f of cleanup.reverse()) await f();
+  });
+  const { broker, url } = await startBroker([{ name: "old", kind: "claude" }, { name: "peer" }]);
+  cleanup.push(() => broker.close());
+  const old = await v021Client(url, tok("old"));
+  cleanup.push(() => old.ws.close());
+  await old.request({ type: "auth", token: tok("old") });
+  await old.request({ type: "join", room: "lab" });
+
+  // files: upload with x-filename, attach, download
+  const up = await old.api("POST", "/api/files", new TextEncoder().encode("numbers"), { "content-type": "text/plain", "x-filename": "r.txt" });
+  // 0.2.1 checks only r.ok
+  assert.ok(up.status >= 200 && up.status < 300, String(up.status));
+  assert.equal(typeof up.body.file.id, "string");
+  assert.equal((await old.request({ type: "send", room: "lab", text: "file", attachments: [up.body.file.id] })).type, "ack");
+  const dl = await fetch(url.replace(/^ws/, "http") + `/api/files/${up.body.file.id}`, { headers: { authorization: `Bearer ${tok("old")}` } });
+  assert.equal(await dl.text(), "numbers");
+
+  // briefs
+  const put = await old.api("PUT", "/api/rooms/lab/brief", { text: "Goal." });
+  assert.equal(put.body.brief.text, "Goal.");
+  const got = await old.api("GET", "/api/rooms/lab/brief");
+  assert.equal(got.body.brief.text, "Goal.");
+  assert.equal(got.body.brief.by, "old");
+
+  // status
+  const st = await old.api("POST", "/api/status", { topic: "compat", room: "lab" });
+  assert.equal(st.body.activity.topic, "compat");
+  assert.equal(st.body.activity.room, "lab");
+
+  // games: types, create, join, list
+  const types = (await old.api("GET", "/api/games/types")).body.types as any[];
+  const checkers = types.find((t) => t.id === "checkers");
+  for (const k of ["id", "title"]) assert.equal(typeof checkers[k], "string");
+  assert.deepEqual(checkers.seats.map((s: any) => typeof s.id + typeof s.name), ["stringstring", "stringstring"]);
+  const created = (await old.api("POST", "/api/games", { game: "checkers", players: ["old", null] })).body.game;
+  for (const k of ["id", "game", "room", "status"]) assert.ok(created[k] !== undefined, k);
+  assert.deepEqual(created.players, ["old", null]);
+  assert.ok(Array.isArray(created.moves));
+  const peerApi = await v021Client(url, tok("peer"));
+  cleanup.push(() => peerApi.ws.close());
+  const joined = (await peerApi.api("POST", `/api/games/${created.id}/join`, {})).body.game;
+  assert.equal(joined.status, "active");
+  const games = (await old.api("GET", "/api/games?status=active")).body.games as any[];
+  assert.deepEqual(games.map((g) => g.id), [created.id]);
+});
+
+test("П3: BrokerClient ignores frames and fields it does not know", async (t) => {
+  const cleanup: (() => unknown)[] = [];
+  // close clients before the broker, or its close() waits for them
+  t.after(async () => {
+    for (const f of cleanup.reverse()) await f();
+  });
+  // a broker from the future: new frame types, new fields in known frames, a message without a ref
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  server.on("connection", (ws) =>
+    ws.on("message", (data) => {
+      const f = JSON.parse(String(data));
+      if (f.type === "auth") {
+        ws.send(JSON.stringify({ type: "welcome", agent: "old", rooms: [], ref: f.ref, intro: "new field" }));
+        ws.send(JSON.stringify({ type: "wake_brief", away_ms: 1, text: "a frame 0.2.1 never saw" }));
+        ws.send(JSON.stringify({ type: "thanks", id: 1, from: "peer", ref: "r999" }));
+        ws.send(JSON.stringify({ type: "message", message: { id: 7, from: "peer", to: "old", text: "still here", ts: new Date().toISOString(), hops: 0, thanks: ["x"] } }));
+      }
+      if (f.type === "ping") ws.send(JSON.stringify({ type: "pong", ref: f.ref }));
+    }),
+  );
+  cleanup.push(() => new Promise<void>((r) => server.close(() => r())));
+  await new Promise<void>((r) => server.once("listening", () => r()));
+  const port = (server.address() as { port: number }).port;
+  const c = new BrokerClient({ url: `ws://127.0.0.1:${port}`, token: "t", reconnect: false, log: () => {} });
+  cleanup.push(() => c.close());
+  const got = new Promise<any>((r) => c.once("message", r));
+  await c.connect();
+  assert.equal((await got).text, "still here");
+  // the connection still works after the unknown frames
+  assert.equal((await c.request({ type: "ping" })).type, "pong");
 });
