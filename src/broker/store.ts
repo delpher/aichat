@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage, FileInfo, RoomBrief } from "../protocol.js";
+import type { AgentNote, ChatMessage, FileInfo, RoomBrief, WorldIntro } from "../protocol.js";
 import type { GameOutcome } from "../games/game.js";
 
 interface Row {
@@ -62,6 +62,10 @@ function toGame(r: GameRow): GameRecord {
     created_ts: r.created_ts,
     updated_ts: r.updated_ts,
   };
+}
+
+function toNote(r: { id: number; topic: string | null; text: string; ts: string }): AgentNote {
+  return { id: r.id, ...(r.topic ? { topic: r.topic } : {}), text: r.text, ts: r.ts };
 }
 
 /** Room messages, and direct messages only where the bound person (twice) is a side. */
@@ -146,6 +150,20 @@ export class Store {
         author TEXT NOT NULL,
         ts TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS intro (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        text TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent TEXT NOT NULL,
+        topic TEXT,
+        text TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_notes_agent ON notes(agent, id);
     `);
     // Case-insensitive search for any script: SQLite's own lower()/LIKE fold only ASCII.
     this.db.function("fold", { deterministic: true }, (t) => (t == null ? null : String(t).toLocaleLowerCase()));
@@ -255,6 +273,84 @@ export class Store {
       .prepare("INSERT INTO briefs (room, text, author, ts) VALUES (?, ?, ?, ?) ON CONFLICT(room) DO UPDATE SET text = ?, author = ?, ts = ?")
       .run(room, text, by, ts, text, by, ts);
     return { room, text, by, ts };
+  }
+
+  // ---- world intro ----
+
+  intro(): WorldIntro | null {
+    const r = this.db.prepare("SELECT text, author, ts FROM intro WHERE id = 1").get() as
+      | { text: string; author: string; ts: string }
+      | undefined;
+    return r ? { text: r.text, by: r.author, ts: r.ts } : null;
+  }
+
+  /** Stores the intro; empty text removes it. */
+  setIntro(text: string, by: string): WorldIntro | null {
+    if (!text) {
+      this.db.prepare("DELETE FROM intro WHERE id = 1").run();
+      return null;
+    }
+    const ts = new Date().toISOString();
+    this.db
+      .prepare("INSERT INTO intro (id, text, author, ts) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = ?, author = ?, ts = ?")
+      .run(text, by, ts, text, by, ts);
+    return { text, by, ts };
+  }
+
+  // ---- agent notebooks: only the current state, a change overwrites, forget deletes ----
+
+  /** An agent's notes, oldest first; `q` matches text or topic (any case), `topic` the topic exactly (any case). */
+  notes(agent: string, q: { q?: string; topic?: string } = {}): AgentNote[] {
+    const where = ["agent = ?"];
+    const args: string[] = [agent];
+    if (q.q) {
+      where.push("(instr(fold(text), ?) > 0 OR instr(fold(COALESCE(topic, '')), ?) > 0)");
+      const t = q.q.toLocaleLowerCase();
+      args.push(t, t);
+    }
+    if (q.topic) {
+      where.push("fold(topic) = ?");
+      args.push(q.topic.toLocaleLowerCase());
+    }
+    const rows = this.db.prepare(`SELECT id, topic, text, ts FROM notes WHERE ${where.join(" AND ")} ORDER BY id`).all(...args) as {
+      id: number;
+      topic: string | null;
+      text: string;
+      ts: string;
+    }[];
+    return rows.map(toNote);
+  }
+
+  note(agent: string, id: number): AgentNote | undefined {
+    const r = this.db.prepare("SELECT id, topic, text, ts FROM notes WHERE agent = ? AND id = ?").get(agent, id) as
+      | { id: number; topic: string | null; text: string; ts: string }
+      | undefined;
+    return r && toNote(r);
+  }
+
+  /** How many notes an agent has and when the latest change was. */
+  noteStats(agent: string): { count: number; last_ts: string | null } {
+    return this.db.prepare("SELECT COUNT(*) AS count, MAX(ts) AS last_ts FROM notes WHERE agent = ?").get(agent) as {
+      count: number;
+      last_ts: string | null;
+    };
+  }
+
+  addNote(agent: string, text: string, topic: string | null): AgentNote {
+    const ts = new Date().toISOString();
+    const res = this.db.prepare("INSERT INTO notes (agent, topic, text, ts) VALUES (?, ?, ?, ?)").run(agent, topic, text, ts);
+    return toNote({ id: Number(res.lastInsertRowid), topic, text, ts });
+  }
+
+  /** Overwrites a note in place: the old text is gone. */
+  updateNote(agent: string, id: number, text: string, topic: string | null): AgentNote | undefined {
+    const ts = new Date().toISOString();
+    const res = this.db.prepare("UPDATE notes SET text = ?, topic = ?, ts = ? WHERE agent = ? AND id = ?").run(text, topic, ts, agent, id);
+    return Number(res.changes) ? toNote({ id, topic, text, ts }) : undefined;
+  }
+
+  deleteNote(agent: string, id: number): boolean {
+    return Number(this.db.prepare("DELETE FROM notes WHERE agent = ? AND id = ?").run(agent, id).changes) > 0;
   }
 
   // ---- games ----
@@ -543,10 +639,11 @@ export class Store {
     }
   }
 
-  /** Drops a removed agent's memberships and delivery cursor; its messages stay in the history. */
+  /** Drops a removed agent's memberships, delivery cursor and notebook; its messages stay in the history. */
   forgetAgent(agent: string) {
     this.db.prepare("DELETE FROM memberships WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM cursors WHERE agent = ?").run(agent);
+    this.db.prepare("DELETE FROM notes WHERE agent = ?").run(agent);
   }
 
   dmHistory(a: string, b: string, limit: number): ChatMessage[] {

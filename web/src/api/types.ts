@@ -43,6 +43,8 @@ export interface Settings {
   ratePerMinute: number;
   maxTextLength: number;
   maxFileSizeMB: number;
+  maxNotes: number;
+  maxNoteLength: number;
   publicUrl: string;
   projectDir: string;
 }
