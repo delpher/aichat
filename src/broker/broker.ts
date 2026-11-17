@@ -195,7 +195,8 @@ export class Broker {
     this.games = new Games({
       store: this.store,
       games: opts.games ?? GAMES,
-      isAgent: (n) => this.cfg.agents.some((a) => a.name === n),
+      // the keeper plays no games, so it has no rating either
+      isAgent: (n) => this.cfg.agents.some((a) => a.name === n && !a.keeper),
       isHuman: (n) => this.cfg.agents.some((a) => a.name === n && a.kind === "human"),
       join: (agent, room) => {
         this.store.join(agent, room);
@@ -209,6 +210,7 @@ export class Broker {
     this.board = new Board({
       store: this.store,
       mayUse: (agent, room) => this.store.isMember(agent, room) || this.isAdminName(agent),
+      mayRead: (agent) => this.isKeeper(agent),
       checkRoom: (room) => {
         if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
         if (GAME_ROOM_RE.test(room)) throw new BrokerError(`${room} is a game room; it has no brief`, 409);
@@ -301,6 +303,7 @@ export class Broker {
     if (args.room) {
       if (!ROOM_RE.test(args.room)) throw new BrokerError(`invalid room name: ${args.room}`);
       this.checkGameRoom(args.room);
+      this.checkNotKeeper(from);
       this.store.join(from, args.room);
     }
 
@@ -492,6 +495,8 @@ export class Broker {
   }
 
   private checkRate(agent: string) {
+    // the keeper writes to everyone who wakes up: it is part of the environment, not a participant
+    if (this.isKeeper(agent)) return;
     const now = Date.now();
     const recent = (this.sent.get(agent) ?? []).filter((t) => now - t < 60_000);
     if (recent.length >= this.cfg.ratePerMinute)
@@ -503,8 +508,18 @@ export class Broker {
   join(agent: string, room: string) {
     if (!ROOM_RE.test(room)) throw new BrokerError(`invalid room name: ${room}`);
     this.checkGameRoom(room);
+    this.checkNotKeeper(agent);
     this.store.join(agent, room);
     this.notifyObservers({ type: "rooms_changed" });
+  }
+
+  isKeeper(name: string): boolean {
+    return this.cfg.agents.some((a) => a.name === name && a.keeper);
+  }
+
+  /** The keeper is in no room: what it needs of rooms comes from the broker (briefs, the wake-up diff). */
+  private checkNotKeeper(agent: string) {
+    if (this.isKeeper(agent)) throw new BrokerError(`${agent} is the keeper: it takes part in no room`, 403);
   }
 
   /** A game room exists only while its game does: no one may bring back the room of a deleted game. */
@@ -579,6 +594,7 @@ export class Broker {
         ...(activity ? { activity } : {}),
         ...(adapter ? { adapter } : {}),
         ...(got ? { thanks: got } : {}),
+        ...(a.keeper ? { keeper: true as const } : {}),
       };
     });
   }
@@ -700,6 +716,7 @@ export class Broker {
     if (!m || !(viewer.admin ? this.adminCanSee(by, m) : this.canSee(by, m))) throw new BrokerError(`unknown message: ${id}`, 404);
     if (m.from === by) throw new BrokerError("you cannot thank yourself", 400);
     if (m.from === SYSTEM_SENDER) throw new BrokerError(`messages from ${SYSTEM_SENDER} cannot be thanked`, 400);
+    if (this.isKeeper(m.from)) throw new BrokerError(`${m.from} is the keeper, part of AIChat itself: its messages are not thanked`, 400);
     if (!this.store.addThanks(id, by)) throw new BrokerError(`you already thanked for message ${id}`, 409);
     const thanked_by = this.store.thanksFor(id);
     const f: ServerFrame = { type: "thanks", id, author: m.from, by, thanked_by };
@@ -1086,6 +1103,7 @@ export class Broker {
     try {
       const route = `${req.method} ${url.pathname}`;
       const info = (g: Parameters<Games["info"]>[0]) => this.games.info(g);
+      if (req.method === "POST" && this.isKeeper(me)) throw new GameError(`${me} is the keeper: it plays no games`, 403);
       if (route === "GET /api/games/types") return reply(200, { types: this.games.types() });
       if (route === "GET /api/games/ratings") return reply(200, { ratings: this.games.ratings(url.searchParams.get("game") || undefined) });
       if (route === "GET /api/games") {

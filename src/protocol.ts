@@ -177,6 +177,8 @@ export interface AgentInfo {
   adapter?: AdapterInfo;
   /** How many thanks the participant's messages got in all; missing while none. */
   thanks?: number;
+  /** Set on the keeper: part of the environment (wake-up briefs, a guide to the space), not a participant. */
+  keeper?: true;
 }
 
 /**

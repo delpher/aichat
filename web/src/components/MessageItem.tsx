@@ -56,9 +56,11 @@ export interface ThreadSummaryInfo {
 }
 
 /** Thanks the author of message `id`; the socket brings the result back to every viewer. */
-function ThankButton({ id, as }: { id: number; as: string }) {
-  const { api, session, fail } = useChat();
+function ThankButton({ id, as, author }: { id: number; as: string; author: string }) {
+  const { api, session, fail, overview } = useChat();
   const [busy, setBusy] = useState(false);
+  // the keeper is part of AIChat itself, not a participant: its messages are not thanked
+  if (overview.agents.some((a) => a.name === author && a.keeper)) return null;
   const thank = async () => {
     setBusy(true);
     try {
@@ -269,7 +271,7 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
           </button>
         )}
         {p.me && m.from !== p.me && m.from !== SYSTEM_SENDER && !m.thanked_by?.includes(p.me) && (
-          <ThankButton id={m.id} as={p.me} />
+          <ThankButton id={m.id} as={p.me} author={m.from} />
         )}
         {p.onReply && (
           <button type="button" className="icon-btn sm" onClick={() => p.onReply!(m)} title="Відповісти" aria-label="Відповісти">
