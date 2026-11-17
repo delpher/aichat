@@ -20,6 +20,7 @@ import {
 import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
+import { groupByRoom, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
 import { Context, ContextError } from "./context.js";
@@ -79,6 +80,8 @@ export interface BrokerOptions {
   random?: () => number;
   /** Folder for uploaded files. Defaults to `files/` next to the database (a temp folder for `:memory:`). */
   filesDir?: string;
+  /** Clock for wake decisions (absence length); defaults to Date.now. */
+  now?: () => number;
 }
 
 /** The built web UI (`npm run build:web`, Vite output). */
@@ -897,7 +900,9 @@ export class Broker {
         const name = agent.name;
         this.sendFrame(ws, { type: "welcome", agent: name, rooms: this.store.roomsOf(name), ref });
         const pending = this.store.pendingFor(name);
-        for (const m of pending) this.sendFrame(ws, { type: "message", message: m });
+        // coming back from offline, it may be woken: the room messages it missed are not sent but reported
+        const wake = this.sockets.get(name)?.size ? undefined : this.wakeFor(agent, pending);
+        for (const m of wake ? pending.filter((p) => !wake.skipped.has(p.id)) : pending) this.sendFrame(ws, { type: "message", message: m });
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
         const client = adapterInfo(f.client);
         this.trackPresence(name, () => {
@@ -907,6 +912,10 @@ export class Broker {
           if (client) this.adapters.set(ws, client);
         });
         this.log(`${name} connected`);
+        if (wake) {
+          this.log(`${name} woke after ${wake.info.away}s: ${wake.info.missed} room messages not sent`);
+          for (const fn of this.wakeListeners) fn(wake.info);
+        }
         return;
       }
       try {
@@ -929,8 +938,51 @@ export class Broker {
         if (set && set.size === 0) this.sockets.delete(name);
         this.adapters.delete(ws);
       });
+      // the last connection is gone: remember when, to know on its return how long it was away
+      if (!this.sockets.has(name) && !this.closing) this.store.setLastSeen(name, new Date(this.now()).toISOString());
       this.log(`${agent.name} disconnected`);
     });
+  }
+
+  // ---------------- waking (І2) ----------------
+
+  private wakeListeners = new Set<(w: WakeInfo) => void>();
+  /** close() has begun: the store may be gone before the sockets' close events arrive. */
+  private closing = false;
+
+  /** Called whenever an agent is woken; returns an unsubscribe function. What to do with it is stage В's. */
+  onWake(fn: (w: WakeInfo) => void): () => void {
+    this.wakeListeners.add(fn);
+    return () => void this.wakeListeners.delete(fn);
+  }
+
+  private now() {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  /**
+   * Whether an agent coming back is woken, given what is pending for it: wake mode is on, it is an agent
+   * (not a person or a webhook), it missed room messages, and it was away long enough or missed enough.
+   * Direct messages and game rooms are always delivered; the rest is skipped and reported.
+   */
+  private wakeFor(agent: AgentConfig, pending: ChatMessage[]): { info: WakeInfo; skipped: Set<number> } | undefined {
+    const cfg = this.cfg;
+    if (cfg.wakeMode !== "on" || agent.kind === "human" || agent.webhook) return undefined;
+    const missed = pending.filter((m) => m.room && !GAME_ROOM_RE.test(m.room));
+    if (!missed.length) return undefined;
+    const since = this.store.lastSeen(agent.name);
+    const away = since ? Math.max(0, Math.round((this.now() - Date.parse(since)) / 1000)) : 0;
+    if (away < cfg.wakeAfterMinutes * 60 && missed.length < cfg.wakeAfterMessages) return undefined;
+    return {
+      info: {
+        agent: agent.name,
+        away,
+        missed: missed.length,
+        rooms: groupByRoom(missed),
+        thanks: since ? this.store.thanksSince(agent.name, since) : [],
+      },
+      skipped: new Set(missed.map((m) => m.id)),
+    };
   }
 
   private handleFrame(agent: string, f: ClientFrame): ServerFrame {
@@ -1581,6 +1633,10 @@ export class Broker {
     clearInterval(this.cleanupTimer);
     clearInterval(this.configTimer);
     this.updater.stop();
+    // shutting down counts as leaving: on the way back, the absence is measured from now
+    this.closing = true;
+    const now = new Date(this.now()).toISOString();
+    for (const name of this.sockets.keys()) this.store.setLastSeen(name, now);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
     for (const ws of this.observers.keys()) ws.terminate();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));

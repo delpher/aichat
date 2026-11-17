@@ -115,6 +115,10 @@ export class Store {
         agent TEXT PRIMARY KEY,
         last_id INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS last_seen (
+        agent TEXT PRIMARY KEY,
+        ts TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS files (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -455,6 +459,26 @@ export class Store {
       .run(agent, id);
   }
 
+  /** When the agent's last connection closed; undefined if it was never seen leaving. */
+  lastSeen(agent: string): string | undefined {
+    return (this.db.prepare("SELECT ts FROM last_seen WHERE agent = ?").get(agent) as { ts: string } | undefined)?.ts;
+  }
+
+  setLastSeen(agent: string, ts = new Date().toISOString()) {
+    this.db.prepare("INSERT INTO last_seen (agent, ts) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET ts = excluded.ts").run(agent, ts);
+  }
+
+  /** Thanks `author` got after `since` (an ISO time), oldest first. */
+  thanksSince(author: string, since: string): { id: number; by: string }[] {
+    return this.db
+      .prepare(
+        `SELECT t.message_id AS id, t.by AS by FROM thanks t JOIN messages m ON m.id = t.message_id
+         WHERE m.sender = ? AND t.ts > ? ORDER BY t.ts, t.by`,
+      )
+      .all(author, since)
+      .map((r) => ({ id: Number((r as { id: number }).id), by: String((r as { by: string }).by) }));
+  }
+
   /** Messages addressed to `agent` (directly or via its rooms) that it has not received yet. */
   pendingFor(agent: string, limit = 500): ChatMessage[] {
     const rows = this.db
@@ -676,6 +700,7 @@ export class Store {
   forgetAgent(agent: string) {
     this.db.prepare("DELETE FROM memberships WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM cursors WHERE agent = ?").run(agent);
+    this.db.prepare("DELETE FROM last_seen WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM notes WHERE agent = ?").run(agent);
   }
 
