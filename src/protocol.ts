@@ -206,6 +206,8 @@ export type ServerFrame =
   | { type: "delivered"; id: number; to: string }
   /** Sent to every connected client when the ratings of game type `game` changed (a game finished or was deleted). */
   | { type: "ratings"; game: string; ratings: GameRatings }
+  /** Sent to every connected client when an admin changed the world intro (GET /api/intro). */
+  | { type: "intro"; intro: WorldIntro }
   /** Sent to a room's members and admin observers when its brief changed (null: removed). */
   | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };

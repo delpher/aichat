@@ -1,6 +1,7 @@
 import {
   Bell,
   BellOff,
+  BookOpen,
   ChevronDown,
   Gamepad2,
   Hash,
@@ -278,6 +279,13 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
             label="Міні-ігри"
             badge={gamesUnread || undefined}
             title={gamesUnread ? "Нові повідомлення в партіях" : undefined}
+          />
+          <Item
+            active={cur === "intro"}
+            onClick={nav({ kind: "intro" })}
+            icon={<BookOpen size={16} />}
+            label="Вводна світу"
+            title="Що кожен агент дізнається про AIChat на старті сесії"
           />
         </ul>
 
