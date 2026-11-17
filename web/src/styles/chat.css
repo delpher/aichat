@@ -173,6 +173,17 @@ span.msg-where {
 .msg:focus-within .msg-tools {
   display: flex;
 }
+.msg-thanks {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent-soft-fg);
+  font-size: var(--text-xs);
+}
 .hops {
   padding: 0 var(--space-2);
   font-size: var(--text-xs);

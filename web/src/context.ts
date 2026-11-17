@@ -20,6 +20,8 @@ export interface ChatContextValue {
   subscribeRatings: (fn: (game: string, ratings: GameRatings) => void) => () => void;
   /** Delivery receipts (agent `to` received message `id`); returns an unsubscribe function. */
   subscribeDelivered: (fn: (id: number, to: string) => void) => () => void;
+  /** Thanks on message `id` (`thankedBy` is the full list); returns an unsubscribe function. */
+  subscribeThanks: (fn: (id: number, thankedBy: string[]) => void) => () => void;
   /** Live brief changes of rooms; returns an unsubscribe function. */
   subscribeBoard: (fn: (e: BoardEvent) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */

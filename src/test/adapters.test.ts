@@ -85,6 +85,7 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "send_message",
     "set_room_brief",
     "set_status",
+    "thank",
     "world_info",
   ]);
 
@@ -155,8 +156,15 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   assert.equal(m.text, "yes!");
   assert.equal(m.hops, 1);
 
+  // thanks: once per message, never for its own; the peer's count shows in list_agents, the names in history
+  assert.match(await call("thank", { msg_id: firstId }), new RegExp(`^thanked for #${firstId} \\(thanked by: claude1\\)$`));
+  assert.match(await call("thank", { msg_id: firstId }), /already thanked/);
+  assert.match(await call("thank", { msg_id: m.id }), /cannot thank yourself/);
+  assert.match(await call("read_history", { with: "peer" }), /are you there\? \[thanked by claude1\]/);
+
   const list = await client.callTool({ name: "list_agents", arguments: {} });
   assert.match((list.content as { text: string }[])[0].text, /claude1 \(you\) \[claude\] online/);
+  assert.match((list.content as { text: string }[])[0].text, /peer \[test\] online, thanks: 1 rooms:/);
 
   const bad = await client.callTool({ name: "send_message", arguments: { to: "nobody", text: "x" } });
   assert.equal(bad.isError, true);

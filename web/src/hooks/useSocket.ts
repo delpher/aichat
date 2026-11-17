@@ -23,6 +23,7 @@ export interface SocketHandlers {
   onActivity?: (agent: string, activity: AgentActivity) => void;
   /** Agent `to` received message `id`. */
   onDelivered?: (id: number, to: string) => void;
+  onThanks?: (id: number, author: string, thankedBy: string[]) => void;
   /** A room's brief changed (null: removed). */
   onBrief?: (room: string, brief: RoomBrief | null) => void;
 }
@@ -82,6 +83,9 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             break;
           case "delivered":
             h.current.onDelivered?.(f.id, f.to);
+            break;
+          case "thanks":
+            h.current.onThanks?.(f.id, f.author, f.thanked_by);
             break;
           case "brief":
             h.current.onBrief?.(f.room, f.brief);

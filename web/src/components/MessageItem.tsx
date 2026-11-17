@@ -1,4 +1,4 @@
-import { CheckCheck, CornerUpLeft, MessagesSquare, Reply } from "lucide-react";
+import { CheckCheck, CornerUpLeft, HandHeart, MessagesSquare, Reply } from "lucide-react";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { SYSTEM_SENDER, type ChatMessage } from "../api/types";
 import { fmtFull, fmtShort, fmtTime, plural } from "../lib/format";
@@ -6,12 +6,15 @@ import { dm, hashFor } from "../lib/views";
 import { Attachments } from "./Attachments";
 import { Avatar } from "./Avatar";
 import { Markdown } from "./Markdown";
+import { isAdmin, useChat } from "../context";
 
 export interface MessageItemProps {
   message: ChatMessage;
   /** Same sender as the message above, shortly after: no avatar and name. */
   compact: boolean;
   mine: boolean;
+  /** Who the viewer acts as (thanks are given in this name); none: the viewer cannot thank here. */
+  me?: string;
   kind: string | null;
   /** Show where the message went (in the "all messages" view). */
   showWhere: boolean;
@@ -50,6 +53,28 @@ export interface ThreadSummaryInfo {
   limit: boolean;
   /** The thread panel shows this thread now. */
   open: boolean;
+}
+
+/** Thanks the author of message `id`; the socket brings the result back to every viewer. */
+function ThankButton({ id, as }: { id: number; as: string }) {
+  const { api, session, fail } = useChat();
+  const [busy, setBusy] = useState(false);
+  const thank = async () => {
+    setBusy(true);
+    try {
+      if (isAdmin(session)) await api.send("POST", `/admin/api/messages/${id}/thanks`, { as });
+      else await api.send("POST", `/api/messages/${id}/thanks`, {});
+    } catch (e) {
+      fail(e, "Подяку не надіслано");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="icon-btn sm" onClick={thank} disabled={busy} title="Подякувати" aria-label="Подякувати">
+      <HandHeart size={15} />
+    </button>
+  );
 }
 
 /** Messages taller than this fold to FOLDED_PX with a "show all" button. */
@@ -209,6 +234,12 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
           </FoldableText>
         )}
         {m.attachments && m.attachments.length > 0 && <Attachments files={m.attachments} />}
+        {m.thanked_by && m.thanked_by.length > 0 && (
+          <span className="msg-thanks" title={`Подякували: ${m.thanked_by.join(", ")}`}>
+            <HandHeart size={13} aria-hidden />
+            <span>{m.thanked_by.join(", ")}</span>
+          </span>
+        )}
         {p.thread && p.onOpenThread && <ThreadSummary key={p.thread.count} t={p.thread} onOpen={() => p.onOpenThread!(m.id)} />}
       </div>
       <div className="msg-tools">
@@ -236,6 +267,9 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
           >
             <MessagesSquare size={15} />
           </button>
+        )}
+        {p.me && m.from !== p.me && m.from !== SYSTEM_SENDER && !m.thanked_by?.includes(p.me) && (
+          <ThankButton id={m.id} as={p.me} />
         )}
         {p.onReply && (
           <button type="button" className="icon-btn sm" onClick={() => p.onReply!(m)} title="Відповісти" aria-label="Відповісти">

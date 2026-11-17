@@ -131,6 +131,12 @@ export class Store {
         ts TEXT NOT NULL,
         PRIMARY KEY (message_id, agent)
       );
+      CREATE TABLE IF NOT EXISTS thanks (
+        message_id INTEGER NOT NULL,
+        by TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        PRIMARY KEY (message_id, by)
+      );
       CREATE TABLE IF NOT EXISTS games (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         game TEXT NOT NULL,
@@ -560,7 +566,26 @@ export class Store {
     return Number(res.changes) > 0;
   }
 
-  /** Fills `delivered_to` on messages that someone received. */
+  /** Records that `by` thanked the author of message `id`; false if they already had. */
+  addThanks(id: number, by: string): boolean {
+    const res = this.db.prepare("INSERT OR IGNORE INTO thanks (message_id, by, ts) VALUES (?, ?, ?)").run(id, by, new Date().toISOString());
+    return Number(res.changes) > 0;
+  }
+
+  /** Who thanked the author of message `id`, oldest first. */
+  thanksFor(id: number): string[] {
+    return (this.db.prepare("SELECT by FROM thanks WHERE message_id = ? ORDER BY ts, by").all(id) as { by: string }[]).map((r) => r.by);
+  }
+
+  /** Thanks each author got in all, for messages that still exist. */
+  thanksReceived(): Map<string, number> {
+    const rows = this.db
+      .prepare("SELECT m.sender AS name, COUNT(*) AS n FROM thanks t JOIN messages m ON m.id = t.message_id GROUP BY m.sender")
+      .all() as { name: string; n: number }[];
+    return new Map(rows.map((r) => [r.name, Number(r.n)]));
+  }
+
+  /** Fills `delivered_to` on messages that someone received and `thanked_by` on messages someone thanked for. */
   private withDeliveries(messages: ChatMessage[]): ChatMessage[] {
     if (!messages.length) return messages;
     const rows = this.db
@@ -570,9 +595,16 @@ export class Store {
       .all(messages[0].id, messages[messages.length - 1].id) as { message_id: number; agent: string }[];
     const by = new Map<number, string[]>();
     for (const r of rows) by.set(r.message_id, [...(by.get(r.message_id) ?? []), r.agent]);
+    const thanks = this.db
+      .prepare("SELECT message_id, by FROM thanks WHERE message_id BETWEEN ? AND ? ORDER BY ts, by")
+      .all(messages[0].id, messages[messages.length - 1].id) as { message_id: number; by: string }[];
+    const thankedBy = new Map<number, string[]>();
+    for (const r of thanks) thankedBy.set(r.message_id, [...(thankedBy.get(r.message_id) ?? []), r.by]);
     for (const m of messages) {
       const to = by.get(m.id);
       if (to) m.delivered_to = to;
+      const th = thankedBy.get(m.id);
+      if (th) m.thanked_by = th;
     }
     return messages;
   }
@@ -634,6 +666,7 @@ export class Store {
     if (messages) {
       // the room is gone for good: its deliveries and brief go with its history
       this.db.prepare("DELETE FROM deliveries WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
+      this.db.prepare("DELETE FROM thanks WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
       this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
       this.db.prepare("DELETE FROM briefs WHERE room = ?").run(room);
     }
