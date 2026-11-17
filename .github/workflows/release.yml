@@ -8,10 +8,15 @@ name: Release
 #   SHA256SUMS.txt                                  checksums of the archives
 #   release.json                                    machine-readable manifest for the broker's self-update
 # The Docker image is pushed to ghcr.io/<owner>/aichat:<version> (and :latest for non-prereleases).
+#
+# It can also be started by hand (Actions -> Release -> Run workflow) on master, e.g. from a phone:
+# the tag is then v<package.json version>, and the workflow points it at the commit it built.
+# An existing tag is moved only while no GitHub Release uses it (a pushed tag whose run failed).
 
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -27,6 +32,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -36,10 +42,22 @@ jobs:
 
       - name: Check tag matches package.json
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
           pkg="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+              echo "::error::Run the Release workflow by hand only on master (got $GITHUB_REF)"; exit 1
+            fi
+            tag="v$pkg"
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::Release $tag already exists. Bump the version in package.json first."; exit 1
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Tag $tag is not a semver tag like v1.2.3 or v1.2.3-rc.1"; exit 1
           fi
@@ -49,6 +67,7 @@ jobs:
           prerelease=false; [[ "$version" == *-* ]] && prerelease=true
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
       - name: Type check
@@ -64,6 +83,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           stage="$RUNNER_TEMP/stage/aichat"
@@ -80,7 +100,7 @@ jobs:
           const { readFileSync, statSync, writeFileSync } = require("node:fs");
           const { createHash } = require("node:crypto");
           const out = process.argv[2];
-          const { VERSION, PRERELEASE, GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_REF_NAME } = process.env;
+          const { VERSION, PRERELEASE, TAG, GITHUB_REPOSITORY, GITHUB_SHA } = process.env;
           const asset = (name, format) => ({
             name,
             format,
@@ -91,7 +111,7 @@ jobs:
             schema: 1,
             name: "aichat",
             version: VERSION,
-            tag: GITHUB_REF_NAME,
+            tag: TAG,
             prerelease: PRERELEASE === "true",
             commit: GITHUB_SHA,
             publishedAt: new Date().toISOString(),
@@ -178,11 +198,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # Started by hand: point the tag at the commit that was built and tested.
+            # A tag pushed with GITHUB_TOKEN does not start this workflow again.
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            else
+              gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+            fi
+            echo "Tag $TAG -> $GITHUB_SHA"
+          fi
           flags=(--repo "$GITHUB_REPOSITORY" --title "AIChat $VERSION" --generate-notes --verify-tag)
           [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
           # Created as a draft and published only once every asset is uploaded,
           # so an updater never sees a "latest" release without its files.
-          gh release create "$GITHUB_REF_NAME" release/* --draft "${flags[@]}"
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release create "$TAG" release/* --draft "${flags[@]}"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
