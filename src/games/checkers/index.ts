@@ -1,4 +1,5 @@
 // Checkers as a game module for the broker; the rules themselves are in ./engine.ts (shared with the web).
+import { elo } from "../rating.js";
 import type { GameDefinition } from "../game.js";
 import * as engine from "./engine.js";
 
@@ -13,6 +14,7 @@ export const checkers: GameDefinition = {
     { id: "w", name: "білі" },
     { id: "b", name: "чорні" },
   ],
+  rate: elo,
   play(moves, text) {
     const s = engine.play(engine.replay(moves), text);
     return s.moves[s.moves.length - 1];

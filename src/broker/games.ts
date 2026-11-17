@@ -2,13 +2,19 @@
 // game's rules, and each game has a chat room `game-<id>` where the broker (as the system sender "aichat")
 // posts the board and whose players may also play by plain text: `move <move>`, `resign`, `draw`.
 // Nothing here knows about a particular game.
-import type { GameInfo, GameResult, GameType } from "../protocol.js";
+import type { GameInfo, GameRatings, GameResult, GameType } from "../protocol.js";
 import type { GameDefinition, GameOutcome } from "../games/game.js";
 import type { GameRecord, Store } from "./store.js";
 
 export { SYSTEM_SENDER } from "../protocol.js";
 export const GAME_ROOM_RE = /^game-(\d+)$/;
 export const gameRoom = (id: number) => `game-${id}`;
+
+/**
+ * Endings that do not count for the rating: the game did not end by play. No game ends this way yet; the
+ * names are reserved for clock and abandonment rules. Resigning and agreed draws count.
+ */
+export const UNRATED_REASONS = new Set(["timeout", "abandoned"]);
 
 export class GameError extends Error {
   constructor(
@@ -30,6 +36,8 @@ export interface GameHost {
   announce(room: string, text: string): void;
   /** Tells every connected client the game changed. */
   publish(game: GameInfo): void;
+  /** Tells every connected client the ratings of a game type changed. */
+  publishRatings?(game: string, ratings: GameRatings): void;
   /** Dice for games of chance, [0, 1); Math.random when not set (tests pass their own). */
   random?: () => number;
 }
@@ -39,6 +47,13 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export class Games {
   private defs: Map<string, GameDefinition>;
+  /**
+   * Ratings by game type and player, unrounded. Not stored: rebuilt from the finished games on first use and
+   * after a game is deleted, then moved on by each game that finishes.
+   */
+  private table?: Map<string, Map<string, number>>;
+  /** A game type whose ratings the last finish() moved, to announce with the game itself. */
+  private ratingsChanged?: string;
 
   constructor(private host: GameHost) {
     this.defs = new Map(host.games.map((d) => [d.id, d]));
@@ -64,6 +79,46 @@ export class Games {
   list(q: { status?: string; game?: string } = {}): GameRecord[] {
     if (q.status && !["open", "active", "finished"].includes(q.status)) throw new GameError("status must be open, active or finished");
     return this.host.store.games(q);
+  }
+
+  /** Current ratings, rounded, by game type (only types with a rating); `game` narrows to one type. */
+  ratings(game?: string): Record<string, GameRatings> {
+    const out: Record<string, GameRatings> = {};
+    for (const [id, def] of this.defs) if (def.rate && (!game || game === id)) out[id] = this.ratingsOf(id);
+    return out;
+  }
+
+  private ratingsOf(game: string): GameRatings {
+    return Object.fromEntries([...(this.loadRatings().get(game) ?? [])].map(([name, r]) => [name, Math.round(r)]));
+  }
+
+  private loadRatings(): Map<string, Map<string, number>> {
+    if (!this.table) {
+      this.table = new Map();
+      for (const g of this.host.store.finishedGames()) this.rate(g);
+    }
+    return this.table;
+  }
+
+  /** Moves the ratings on by one finished game, if its type has a rating and the way it ended counts. */
+  private rate(g: GameRecord): boolean {
+    const def = this.defs.get(g.game);
+    if (!def?.rate || !g.result || UNRATED_REASONS.has(g.result.reason)) return false;
+    if (g.players.some((p) => !p)) return false;
+    const players = g.players as string[];
+    const table = this.table!;
+    if (!table.has(def.id)) table.set(def.id, new Map());
+    const mine = table.get(def.id)!;
+    const after = def.rate({ players, result: g.result, moves: g.moves }, players.map((p) => mine.get(p)));
+    players.forEach((p, i) => Number.isFinite(after[i]) && mine.set(p, after[i]));
+    return true;
+  }
+
+  /** After an admin deleted a game: its rating effect goes with it, so the ratings are rebuilt. */
+  deleted(g: GameRecord) {
+    if (g.status !== "finished" || !this.defs.get(g.game)?.rate) return;
+    this.table = undefined;
+    this.host.publishRatings?.(g.game, this.ratingsOf(g.game));
   }
 
   /** A stored game as the API and the WebSocket show it. */
@@ -238,14 +293,22 @@ export class Games {
     return g;
   }
 
+  /** Ends the game; the hub counts it for the rating here, the one place every game ends. */
   private finish(g: GameRecord, outcome: GameOutcome) {
+    this.loadRatings(); // before the game is saved as finished, so it is not counted twice
     g.status = "finished";
     g.result = outcome;
     g.draw_offer = null;
+    if (this.rate(g)) this.ratingsChanged = g.game;
   }
 
   private publish(g: GameRecord) {
     this.host.publish(this.info(g));
+    if (this.ratingsChanged) {
+      const game = this.ratingsChanged;
+      this.ratingsChanged = undefined;
+      this.host.publishRatings?.(game, this.ratingsOf(game));
+    }
   }
 
   /** "Хід білих" from the game, or "Хід: <seat name>". */

@@ -291,6 +291,12 @@ export class Store {
     return rows.map(toGame);
   }
 
+  /** Every finished game, in the order they finished (a finished game is not updated again). */
+  finishedGames(): GameRecord[] {
+    const rows = this.db.prepare("SELECT * FROM games WHERE status = 'finished' ORDER BY updated_ts, id").all() as unknown as GameRow[];
+    return rows.map(toGame);
+  }
+
   updateGame(g: GameRecord): GameRecord {
     this.db
       .prepare("UPDATE games SET players = ?, moves = ?, status = ?, result = ?, draw_offer = ?, updated_ts = ? WHERE id = ?")

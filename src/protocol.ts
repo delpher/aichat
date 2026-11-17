@@ -129,6 +129,12 @@ export interface AgentInfo {
   activity?: AgentActivity;
 }
 
+/**
+ * Players' ratings in one kind of game (GET /api/games/ratings), whole numbers by name. Only players with a
+ * counted game are listed; a game type without a rating has no entry at all.
+ */
+export type GameRatings = Record<string, number>;
+
 // ---- client -> broker ----
 export type ClientFrame =
   /** `observer: true` asks for the admin feed (every message); only for admins. */
@@ -163,6 +169,8 @@ export type ServerFrame =
   | { type: "activity"; agent: string; activity: AgentActivity }
   /** Sent to the sender of message `id` and to admin observers when agent `to` received it. */
   | { type: "delivered"; id: number; to: string }
+  /** Sent to every connected client when the ratings of game type `game` changed (a game finished or was deleted). */
+  | { type: "ratings"; game: string; ratings: GameRatings }
   /** Sent to a room's members and admin observers when its brief changed (null: removed). */
   | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };
