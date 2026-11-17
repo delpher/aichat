@@ -1,7 +1,7 @@
 import { LoaderCircle, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AuthError } from "../../api/http";
-import { ROOM_RE, type Agent, type Setup } from "../../api/types";
+import { MAX_DESCRIPTION_LENGTH, ROOM_RE, type Agent, type Setup } from "../../api/types";
 import { useChat } from "../../context";
 import { kindLabel } from "../../lib/format";
 import { Avatar } from "../Avatar";
@@ -28,6 +28,8 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
   const [confirm, setConfirm] = useState<{ name: string; action: Action } | null>(null);
   const [status, setStatus] = useState<StatusValue>(null);
   const [setup, setSetup] = useState<{ name: string; title: string; setup: Setup; fresh: boolean } | null>(null);
+  /** The description (an agent's customization) being edited, and whose. */
+  const [desc, setDesc] = useState<{ name: string; text: string } | null>(null);
   const [form, setForm] = useState({ name: "", kind: "human", custom: "bot", webhook: "", description: "", rooms: "" });
   const me = session.mode === "admin" ? session.admin.name : null;
   const adminCount = (list ?? []).filter((a) => a.admin).length;
@@ -129,6 +131,15 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
     );
   };
 
+  const saveDescription = () => {
+    if (!desc) return;
+    const { name, text } = desc;
+    void run(async () => {
+      await api.send("PATCH", `/admin/api/agents/${enc(name)}`, { description: text.trim() });
+      setDesc(null);
+    }, text.trim() ? `Опис ${name} змінено.` : `Опис ${name} прибрано.`);
+  };
+
   const showSetup = async (name: string) => {
     try {
       const d = await api.get<{ setup: Setup }>(`/admin/api/agents/${enc(name)}/setup`);
@@ -209,8 +220,8 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
             <input
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              maxLength={200}
-              placeholder="Пише код"
+              maxLength={MAX_DESCRIPTION_LENGTH}
+              placeholder="Пара речень, необов'язково"
               disabled={locked}
             />
           </label>
@@ -260,7 +271,41 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                       .filter(Boolean)
                       .join(" · ")}
                   </div>
-                  {a.description && <div className="person-desc">{a.description}</div>}
+                  {desc?.name === a.name ? (
+                    <form
+                      className="person-desc-edit"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        saveDescription();
+                      }}
+                    >
+                      <textarea
+                        value={desc.text}
+                        onChange={(e) => setDesc({ name: a.name, text: e.target.value })}
+                        maxLength={MAX_DESCRIPTION_LENGTH}
+                        rows={2}
+                        autoFocus
+                        aria-label={`Опис ${a.name}`}
+                        placeholder={a.kind === "human" ? "Хто це" : "Пара речень про агента. Порожньо: без кастомізації."}
+                      />
+                      <div className="actions">
+                        <button type="submit" className="btn primary sm" disabled={locked}>
+                          {busy && <LoaderCircle className="spin" size={14} />} Зберегти
+                        </button>
+                        <button type="button" className="btn sm ghost" onClick={() => setDesc(null)} disabled={busy}>
+                          Скасувати
+                        </button>
+                        <span className="muted small num">
+                          {desc.text.length}/{MAX_DESCRIPTION_LENGTH}
+                        </span>
+                      </div>
+                      {a.kind !== "human" && (
+                        <small className="muted">Агент бачить цей текст у своїх інструкціях з наступної сесії, інші бачать його в картці.</small>
+                      )}
+                    </form>
+                  ) : (
+                    a.description && <div className="person-desc">{a.description}</div>
+                  )}
                 </div>
                 {confirm?.name === a.name ? (
                   <div className="confirm">
@@ -302,6 +347,14 @@ export function PeoplePanel({ onSelfDemoted }: { onSelfDemoted: () => void }) {
                           Зробити адміном
                         </button>
                       ))}
+                    <button
+                      type="button"
+                      className="btn sm quiet"
+                      disabled={locked}
+                      onClick={() => setDesc({ name: a.name, text: a.description ?? "" })}
+                    >
+                      Опис
+                    </button>
                     <button type="button" className="btn sm quiet" onClick={() => void showSetup(a.name)}>
                       Інструкція
                     </button>

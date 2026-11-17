@@ -1,4 +1,4 @@
-import { DoorOpen, Hash, ListTree, Menu } from "lucide-react";
+import { DoorOpen, Hash, IdCard, ListTree, Menu } from "lucide-react";
 import { useChat } from "../context";
 import type { View } from "../lib/views";
 import { activityText } from "../lib/activity";
@@ -33,7 +33,7 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
 const FACES = 5;
 
 export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room: string) => void }) {
-  const { view, overview, session, sender, threaded, setThreaded } = useChat();
+  const { view, overview, session, sender, threaded, setThreaded, openAgent } = useChat();
   const isChat = view.kind === "room" || view.kind === "dm" || view.kind === "all";
   const me = session.mode === "user" ? session.me.name : sender;
   const { title } = viewTitle(view, session.mode === "user" ? session.me.name : null);
@@ -41,6 +41,7 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
   let sub = "";
   let icon: React.ReactNode = null;
   let people: React.ReactNode = null;
+  let card: string | null = null;
 
   if (view.kind === "room") {
     icon = <Hash size={18} />;
@@ -67,6 +68,7 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
     const other = me && (view.a === me || view.b === me) ? (view.a === me ? view.b : view.a) : null;
     const a = other ? agents.get(other) : undefined;
     if (a) {
+      card = a.name;
       icon = <Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />;
       const doing = a.online && a.activity && a.activity.state !== "idle" ? activityText(a.name, a.activity) : null;
       sub = [doing ?? (a.online ? "онлайн" : "офлайн"), a.description].filter(Boolean).join(" · ");
@@ -84,6 +86,11 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
         {sub && <p>{sub}</p>}
       </div>
       {people}
+      {card && (
+        <button type="button" className="icon-btn" onClick={() => openAgent(card!)} aria-label={`Картка ${card}`} title={`Картка ${card}`}>
+          <IdCard size={18} />
+        </button>
+      )}
       {isChat && (
         <button
           type="button"
