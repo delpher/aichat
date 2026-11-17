@@ -154,6 +154,12 @@ export const MAX_NOTE_TOPIC = 100;
 /** Longest customization an admin may give an agent (its `description`). */
 export const MAX_DESCRIPTION_LENGTH = 300;
 
+/** Which adapter a connection uses, as it says in its `auth` frame. */
+export interface AdapterInfo {
+  name: string;
+  version: string;
+}
+
 export interface AgentInfo {
   name: string;
   kind: string;
@@ -172,8 +178,11 @@ export type GameRatings = Record<string, number>;
 
 // ---- client -> broker ----
 export type ClientFrame =
-  /** `observer: true` asks for the admin feed (every message); only for admins. */
-  | { type: "auth"; token: string; observer?: boolean; ref?: string }
+  /**
+   * `observer: true` asks for the admin feed (every message); only for admins.
+   * `client` names the adapter and its version (claude-channel 0.3.0); older adapters do not send it.
+   */
+  | { type: "auth"; token: string; observer?: boolean; client?: AdapterInfo; ref?: string }
   | { type: "send"; to?: string; room?: string; text: string; reply_to?: number; attachments?: string[]; ref?: string }
   | { type: "join"; room: string; ref?: string }
   | { type: "leave"; room: string; ref?: string }
