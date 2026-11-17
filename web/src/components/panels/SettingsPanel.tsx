@@ -6,6 +6,7 @@ import { useChat } from "../../context";
 import { ListSkeleton } from "../Skeleton";
 import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
+import { IntroSettings } from "./IntroPanel";
 
 type Limits = Partial<Record<keyof Settings, { min: number; max: number }>>;
 
@@ -196,6 +197,7 @@ export function SettingsPanel() {
           <Status value={status} />
         </div>
       </form>
+      <IntroSettings />
       <UpdateBox />
     </div>
   );
