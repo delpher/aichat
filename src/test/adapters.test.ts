@@ -12,6 +12,22 @@ import { WebSocket, WebSocketServer } from "ws";
 import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
+import { LEGACY_INSTRUCTIONS, PEER_RULE } from "../adapters/instructions.js";
+
+/** Starts the Claude channel adapter the way Claude Code does, as an MCP client over stdio. */
+async function startChannel(url: string, name: string) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL("../adapters/claude-channel.js", import.meta.url))],
+    env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok(name) } as Record<string, string>,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "fake-claude-code", version: "0.0.0" });
+  await client.connect(transport);
+  const call = async (tool: string, args: Record<string, unknown> = {}) =>
+    ((await client.callTool({ name: tool, arguments: args })).content as { text: string }[])[0].text;
+  return { client, call };
+}
 
 test("Claude channel adapter pushes channel notifications and sends via tool", async () => {
   const { broker, url } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "peer" }]);
@@ -32,7 +48,13 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
 
   const caps = client.getServerCapabilities();
   assert.deepEqual(caps?.experimental?.["claude/channel"], {});
-  assert.match(client.getInstructions() ?? "", /reply_to/);
+  // instructions: mechanics from the adapter, the world from the broker, the rule about peers last
+  const instructions = client.getInstructions() ?? "";
+  assert.match(instructions, /reply_to/);
+  assert.match(instructions, /--- AIChat intro \(from the broker\) ---\n# AIChat\n/);
+  assert.match(instructions, /Limits now: a reply chain stops after 8 replies; up to 30 messages per minute/);
+  assert.ok(instructions.endsWith(PEER_RULE));
+  assert.doesNotMatch(instructions, /chat network where AI agents talk to each other/);
 
   const deadline = Date.now() + 5000;
   while (!notes.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
@@ -59,6 +81,7 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "send_message",
     "set_room_brief",
     "set_status",
+    "world_info",
   ]);
 
   // briefs: joining a room shows its brief
@@ -466,4 +489,46 @@ test("П3: BrokerClient ignores frames and fields it does not know", async (t) =
   assert.equal((await got).text, "still here");
   // the connection still works after the unknown frames
   assert.equal((await c.request({ type: "ping" })).type, "pong");
+});
+
+test("А1: the adapter takes the intro from the broker; world_info shows the current one", async () => {
+  const { broker, url, http } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "boss", kind: "human", admin: true }]);
+  const put = (text: string) =>
+    fetch(`${http}/admin/api/intro`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tok("boss")}`, "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  try {
+    assert.equal((await put("Тут живуть люди й агенти.")).status, 200);
+    const { client, call } = await startChannel(url, "claude1");
+    try {
+      assert.match(client.getInstructions() ?? "", /--- AIChat intro \(from the broker\) ---\nТут живуть люди й агенти\.\n\nLimits now/);
+      await put("Новий текст вводної.");
+      assert.match(await call("world_info"), /^Новий текст вводної\.\n\nLimits now: a reply chain stops after 8 replies/);
+    } finally {
+      await client.close();
+    }
+  } finally {
+    await broker.close();
+  }
+});
+
+test("А1: with a broker that has no intro (0.2.1) the adapter keeps the 0.2.1 instructions", async () => {
+  // an old broker: /api/intro is unknown to it
+  const old = createServer((_req, res) => {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise<void>((r) => old.listen(0, "127.0.0.1", r));
+  const port = (old.address() as { port: number }).port;
+  const { client, call } = await startChannel(`ws://127.0.0.1:${port}`, "claude1");
+  try {
+    assert.equal(client.getInstructions(), LEGACY_INSTRUCTIONS);
+    assert.match(await call("world_info"), /no intro/);
+  } finally {
+    await client.close();
+    old.closeAllConnections();
+    await new Promise((r) => old.close(r));
+  }
 });

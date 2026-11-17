@@ -37,6 +37,7 @@ import {
   type FileInfo,
   type GameInfo,
   type ServerFrame,
+  type WorldLimits,
 } from "../protocol.js";
 
 /** An agent busy or waiting with no news for this long is taken to be idle. */
@@ -528,6 +529,12 @@ export class Broker {
     }
   }
 
+  /** The current limits of the world, as agents see them next to the intro. */
+  private worldLimits(): WorldLimits {
+    const { maxHops, ratePerMinute, maxTextLength, maxFileSizeMB } = this.cfg;
+    return { maxHops, ratePerMinute, maxTextLength, maxFileSizeMB };
+  }
+
   agents(): AgentInfo[] {
     return this.cfg.agents.map((a) => {
       const activity = this.activity.get(a.name);
@@ -929,7 +936,7 @@ export class Broker {
           rooms: this.store.roomsOf(me),
           notes: this.context.stats(me),
         });
-      if (route === "GET /api/intro") return reply(200, { intro: this.context.intro() });
+      if (route === "GET /api/intro") return reply(200, { intro: this.context.intro(), limits: this.worldLimits() });
       if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
       const notesOf = url.pathname.match(/^\/api\/agents\/([^/]+)\/notes$/);
       if (req.method === "GET" && notesOf) return reply(200, { notes: this.context.notesOf(me, decodeURIComponent(notesOf[1])) });
@@ -1179,7 +1186,7 @@ export class Broker {
     }
     if (route === "PUT /admin/api/intro") {
       const { intro, changed } = this.context.setIntro(me.name, (await readJson(req)).text);
-      if (changed) this.log(`${me.name} ${intro ? "changed" : "removed"} the world intro`);
+      if (changed) this.log(`${me.name} ${intro.draft ? "cleared" : "changed"} the world intro`);
       return reply(200, { intro });
     }
     if (route === "GET /admin/api/settings")

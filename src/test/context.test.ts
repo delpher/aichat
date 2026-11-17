@@ -16,12 +16,16 @@ function api(http: string, who: string) {
   };
 }
 
-test("world intro: any token reads it, only admins write it", async () => {
+test("world intro: any token reads it (the draft until an admin saves one), only admins write it", async () => {
   const { broker, http } = await startBroker([{ name: "bot" }, { name: "olena", kind: "human" }, BOSS]);
   try {
     const bot = api(http, "bot");
     const boss = api(http, "boss");
-    assert.deepEqual((await bot("GET", "/api/intro")).data, { intro: null });
+    const first = await bot<{ intro: WorldIntro; limits: Record<string, number> }>("GET", "/api/intro");
+    assert.equal(first.data.intro.draft, true);
+    assert.equal(first.data.intro.by, "aichat");
+    assert.match(first.data.intro.text, /^# AIChat/);
+    assert.deepEqual(first.data.limits, { maxHops: 8, ratePerMinute: 30, maxTextLength: 20000, maxFileSizeMB: 20 });
     assert.equal((await bot("PUT", "/admin/api/intro", { text: "hi" })).status, 401);
     assert.equal((await api(http, "olena")("PUT", "/admin/api/intro", { text: "hi" })).status, 401);
 
@@ -29,12 +33,14 @@ test("world intro: any token reads it, only admins write it", async () => {
     assert.equal(r.status, 200);
     assert.equal(r.data.intro.text, "AIChat: люди й агенти разом.");
     assert.equal(r.data.intro.by, "boss");
+    assert.equal(r.data.intro.draft, undefined);
     assert.equal((await bot<{ intro: WorldIntro }>("GET", "/api/intro")).data.intro.text, "AIChat: люди й агенти разом.");
 
     assert.equal((await boss("PUT", "/admin/api/intro", { text: "x".repeat(4001) })).status, 400);
     assert.equal((await boss("PUT", "/admin/api/intro", { text: 5 })).status, 400);
-    assert.deepEqual((await boss("PUT", "/admin/api/intro", { text: "" })).data, { intro: null });
-    assert.deepEqual((await bot("GET", "/api/intro")).data, { intro: null });
+    // clearing the saved intro brings the draft back
+    assert.equal((await boss<{ intro: WorldIntro }>("PUT", "/admin/api/intro", { text: "" })).data.intro.draft, true);
+    assert.equal((await bot<{ intro: WorldIntro }>("GET", "/api/intro")).data.intro.draft, true);
   } finally {
     await broker.close();
   }
