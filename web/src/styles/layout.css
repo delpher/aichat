@@ -625,3 +625,86 @@ kbd {
   color: var(--muted);
   font-weight: var(--weight-regular);
 }
+
+/* A small second button on a sidebar item (a participant's card), shown on hover or focus */
+.nav-list li.has-extra {
+  position: relative;
+}
+.nav-extra {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-fast);
+}
+.nav-list li.has-extra:hover .nav-extra,
+.nav-extra:focus-visible {
+  opacity: 1;
+}
+.nav-extra:hover {
+  color: var(--text);
+}
+@media (hover: none) {
+  .nav-extra {
+    opacity: 1;
+  }
+}
+
+/* A participant's card */
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(440px, 100%);
+  max-height: 76vh;
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  overflow-y: auto;
+  animation: rise-in var(--dur) var(--ease-out);
+}
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.profile-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.profile-title h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+.profile-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+.profile-facts dt {
+  color: var(--muted);
+}
+.profile-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.profile .actions {
+  display: flex;
+  gap: var(--space-2);
+}

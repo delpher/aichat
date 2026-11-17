@@ -12,6 +12,7 @@ import { PeoplePanel } from "./components/panels/PeoplePanel";
 import { RoomsPanel } from "./components/panels/RoomsPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
 import { IntroPanel } from "./components/panels/IntroPanel";
+import { AgentProfile } from "./components/AgentProfile";
 import { Sidebar } from "./components/Sidebar";
 import { CommandPalette } from "./components/CommandPalette";
 import { snippet } from "./components/MessageItem";
@@ -233,6 +234,8 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
 
   // ---- Ctrl+K: jump anywhere, search messages ----
   const [palette, setPalette] = useState(false);
+  /** Whose card is open, if any. */
+  const [profile, setProfile] = useState<string | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // the composer uses Ctrl+K for links and marks the event as handled
@@ -433,6 +436,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     threaded,
     setThreaded,
     openMessage,
+    openAgent: setProfile,
     openRoom: (room: string) => {
       if (session.mode === "admin" || overview.rooms.some((r) => r.name === room)) go({ kind: "room", room });
       else void joinRoom(room);
@@ -476,6 +480,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
           {main}
         </main>
         {palette && <CommandPalette onClose={() => setPalette(false)} />}
+        {profile && <AgentProfile name={profile} onClose={() => setProfile(null)} />}
         <div className="toasts" aria-live="assertive">
           {toasts.map((t) => (
             <div key={t.id} className={`toast${t.error ? " error" : ""}${t.leaving ? " leaving" : ""}`} role={t.error ? "alert" : "status"}>

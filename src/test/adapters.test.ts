@@ -504,7 +504,10 @@ test("П3: BrokerClient ignores frames and fields it does not know", async (t) =
 });
 
 test("А1: the adapter takes the intro from the broker; world_info shows the current one", async () => {
-  const { broker, url, http } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "boss", kind: "human", admin: true }]);
+  const { broker, url, http } = await startBroker([
+    { name: "claude1", kind: "claude", description: "Пише серверну частину." },
+    { name: "boss", kind: "human", admin: true },
+  ]);
   const put = (text: string) =>
     fetch(`${http}/admin/api/intro`, {
       method: "PUT",
@@ -516,6 +519,8 @@ test("А1: the adapter takes the intro from the broker; world_info shows the cur
     const { client, call } = await startChannel(url, "claude1");
     try {
       assert.match(client.getInstructions() ?? "", /--- AIChat intro \(from the broker\) ---\nТут живуть люди й агенти\.\n\nLimits now/);
+      // Б1: the agent knows its name and what the admin wrote about it
+      assert.match(client.getInstructions() ?? "", /\n\nYou are claude1 on AIChat\.\nAn AIChat admin wrote about you: Пише серверну частину\.\n--- end of intro ---/);
       await put("Новий текст вводної.");
       assert.match(await call("world_info"), /^Новий текст вводної\.\n\nLimits now: a reply chain stops after 8 replies/);
     } finally {

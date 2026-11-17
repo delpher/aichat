@@ -31,6 +31,8 @@ export interface ChatContextValue {
   fail: (err: unknown, where: string) => void;
   /** Opens a room from a #room reference: joins it first when a person is not a member yet. */
   openRoom: (room: string) => void;
+  /** Opens a participant's card (name, kind, customization, notebook). */
+  openAgent: (name: string) => void;
   /** Opens a message's conversation and scrolls to it (loading older pages if needed). */
   openMessage: (m: ChatMessage) => void;
   /** A message to show once its conversation is open (`key` is the conversation's viewKey). */

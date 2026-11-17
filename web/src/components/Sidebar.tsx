@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Gamepad2,
   Hash,
+  IdCard,
   Inbox,
   LayoutGrid,
   LogOut,
@@ -54,6 +55,7 @@ function Item({
   badge,
   meta,
   title,
+  extra,
 }: {
   active?: boolean;
   onClick?: () => void;
@@ -64,9 +66,11 @@ function Item({
   badge?: number;
   meta?: string;
   title?: string;
+  /** A second, small button next to the item (e.g. a participant's card). */
+  extra?: React.ReactNode;
 }) {
   return (
-    <li>
+    <li className={extra ? "has-extra" : undefined}>
       <button
         type="button"
         className={`nav-item${sub ? " two-line" : ""}${active ? " active" : ""}${badge ? " has-unread" : ""}`}
@@ -86,6 +90,7 @@ function Item({
         )}
         {badge ? <span className="badge">{badge}</span> : meta ? <span className="nav-meta">{meta}</span> : null}
       </button>
+      {extra}
     </li>
   );
 }
@@ -201,7 +206,7 @@ function NotifyButton() {
 }
 
 export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSearch }: Props) {
-  const { session, overview, view, go, sender } = useChat();
+  const { session, overview, view, go, sender, openAgent } = useChat();
   const admin = session.mode === "admin";
   const cur = viewKey(view);
   const [joinName, setJoinName] = useState("");
@@ -374,6 +379,17 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
                 ]
                   .filter(Boolean)
                   .join("\n")}
+                extra={
+                  <button
+                    type="button"
+                    className="nav-extra"
+                    onClick={() => openAgent(a.name)}
+                    aria-label={`Картка ${a.name}`}
+                    title={`Картка ${a.name}`}
+                  >
+                    <IdCard size={14} />
+                  </button>
+                }
               />
             ))}
             {!bots.length && <li className="nav-empty">Агентів ще немає</li>}

@@ -52,6 +52,7 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     fail: vi.fn(),
     openMessage: vi.fn(),
     openRoom: vi.fn(),
+    openAgent: vi.fn(),
     focus: null,
     clearFocus: vi.fn(),
     threaded: false,
