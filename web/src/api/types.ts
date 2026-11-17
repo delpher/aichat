@@ -1,5 +1,5 @@
 // Types of the broker's REST and WebSocket API, shared with the backend.
-export type { AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameRatings, GameType, RoomBrief, ServerFrame } from "../../../src/protocol";
+export type { AdapterInfo, AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameRatings, GameType, RoomBrief, ServerFrame } from "../../../src/protocol";
 export { MAX_BRIEF_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_INTRO_LENGTH } from "../../../src/protocol";
 export type { AgentNote, WorldIntro, WorldLimits } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
@@ -37,6 +37,8 @@ export interface Overview {
   all_rooms: string[];
   /** Reply chains stop at this many hops (broker setting maxHops). */
   max_hops?: number;
+  /** The broker's version, which is also the newest adapter's: older adapters should be updated. */
+  version?: string;
 }
 
 export interface Settings {

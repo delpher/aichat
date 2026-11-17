@@ -31,6 +31,7 @@ import {
   NAME_RE,
   ROOM_RE,
   type AgentActivity,
+  type AdapterInfo,
   type AgentInfo,
   type ChatMessage,
   type ClientFrame,
@@ -157,6 +158,8 @@ export class Broker {
   readonly board: Board;
   readonly context: Context;
   private sockets = new Map<string, Set<WebSocket>>();
+  /** The adapter each participant socket named in its `auth` frame. Not stored: it lives with the connection. */
+  private adapters = new Map<WebSocket, AdapterInfo>();
   /** Admin sockets (web UI) that see every message and presence change, with the admin's name. */
   /** Admin feed sockets; a human admin's feed also counts as that human being online. */
   private observers = new Map<WebSocket, string>();
@@ -530,12 +533,22 @@ export class Broker {
     return !!this.cfg.agents.find((a) => a.name === name)?.webhook;
   }
 
-  /** Runs a change to an agent's connections and broadcasts presence if its online state flipped. */
+  /** The adapter of an agent's newest live connection that named one. */
+  private adapterOf(name: string): AdapterInfo | undefined {
+    let found: AdapterInfo | undefined;
+    for (const ws of this.sockets.get(name) ?? []) found = this.adapters.get(ws) ?? found;
+    return found;
+  }
+
+  /** Runs a change to an agent's connections and broadcasts presence if its online state or adapter changed. */
   private trackPresence(name: string, change: () => void) {
     const before = this.isOnline(name);
+    const adapterBefore = this.adapterOf(name);
     change();
     const after = this.isOnline(name);
-    if (before !== after) this.broadcastPresence(name, after);
+    const adapter = this.adapterOf(name);
+    if (before !== after || adapterBefore?.name !== adapter?.name || adapterBefore?.version !== adapter?.version)
+      this.broadcastPresence(name, after, adapter);
     // an agent that went away is not working on anything we can see, and its session's topic ended with it
     if (!after) {
       this.focus.delete(name);
@@ -556,6 +569,7 @@ export class Broker {
     return this.cfg.agents.map((a) => {
       const activity = this.activity.get(a.name);
       const got = thanks.get(a.name);
+      const adapter = this.adapterOf(a.name);
       return {
         name: a.name,
         kind: a.kind,
@@ -563,6 +577,7 @@ export class Broker {
         online: this.isOnline(a.name),
         rooms: this.store.roomsOf(a.name),
         ...(activity ? { activity } : {}),
+        ...(adapter ? { adapter } : {}),
         ...(got ? { thanks: got } : {}),
       };
     });
@@ -737,6 +752,8 @@ export class Broker {
       all_rooms: this.store.allRoomNames(),
       // Reply chains stop at this length; the web UI marks chains that reached it.
       max_hops: this.cfg.maxHops,
+      // The newest adapter is built with the broker: an adapter older than this should be updated.
+      version: VERSION,
     };
   }
 
@@ -823,8 +840,8 @@ export class Broker {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(f));
   }
 
-  private broadcastPresence(agent: string, online: boolean) {
-    const f: ServerFrame = { type: "presence", agent, online };
+  private broadcastPresence(agent: string, online: boolean, adapter?: AdapterInfo) {
+    const f: ServerFrame = { type: "presence", agent, online, ...(adapter ? { adapter } : {}) };
     for (const set of this.sockets.values()) for (const ws of set) this.sendFrame(ws, f);
     for (const ws of this.observers.keys()) this.sendFrame(ws, f);
   }
@@ -882,10 +899,12 @@ export class Broker {
         const pending = this.store.pendingFor(name);
         for (const m of pending) this.sendFrame(ws, { type: "message", message: m });
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
+        const client = adapterInfo(f.client);
         this.trackPresence(name, () => {
           if (!this.sockets.has(name)) this.sockets.set(name, new Set());
           this.sockets.get(name)!.add(ws);
           this.socketTokens.set(ws, f.token);
+          if (client) this.adapters.set(ws, client);
         });
         this.log(`${name} connected`);
         return;
@@ -908,6 +927,7 @@ export class Broker {
         const set = this.sockets.get(name);
         set?.delete(ws);
         if (set && set.size === 0) this.sockets.delete(name);
+        this.adapters.delete(ws);
       });
       this.log(`${agent.name} disconnected`);
     });
@@ -1169,7 +1189,14 @@ export class Broker {
         return { ...a, webhook: !!c?.webhook, admin: !!c?.admin };
       });
     if (route === "GET /admin/api/overview")
-      return reply(200, { me, agents: adminAgents(), rooms: this.store.rooms(), dms: this.store.dms(me.name), max_hops: this.cfg.maxHops });
+      return reply(200, {
+        me,
+        agents: adminAgents(),
+        rooms: this.store.rooms(),
+        dms: this.store.dms(me.name),
+        max_hops: this.cfg.maxHops,
+        version: VERSION,
+      });
     const edit = (fn: (raw: Partial<BrokerConfig>) => void): BrokerConfig => {
       if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
       try {
@@ -1581,4 +1608,12 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw new BrokerError("JSON body must be an object");
   return v as Record<string, unknown>;
+}
+
+/** The adapter a client named in `auth`, if it is well formed (short strings); anything else is ignored. */
+function adapterInfo(c: unknown): AdapterInfo | undefined {
+  if (!c || typeof c !== "object") return undefined;
+  const { name, version } = c as Record<string, unknown>;
+  const ok = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 64;
+  return ok(name) && ok(version) ? { name, version } : undefined;
 }
