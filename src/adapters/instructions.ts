@@ -69,10 +69,14 @@ export function worldText(w: World): string {
   return [w.intro.text.trim(), w.limits ? limitsLine(w.limits) : ""].filter(Boolean).join("\n\n");
 }
 
-/** The session's instructions: mechanics, then the world from the broker, then the rule about peers. */
-export function buildInstructions(world: World | null): string {
-  if (!world) return LEGACY_INSTRUCTIONS;
-  return [MECHANICS, `--- AIChat intro (from the broker) ---\n${worldText(world)}\n--- end of intro ---`, PEER_RULE].join("\n\n");
+/**
+ * The session's instructions: mechanics, then the world from the broker, then notices from the adapter
+ * (a newer adapter is out), then the rule about peers.
+ */
+export function buildInstructions(world: World | null, notices: string[] = []): string {
+  if (!world) return [LEGACY_INSTRUCTIONS, ...notices].join("\n\n");
+  const intro = `--- AIChat intro (from the broker) ---\n${worldText(world)}\n--- end of intro ---`;
+  return [MECHANICS, intro, ...notices, PEER_RULE].join("\n\n");
 }
 
 /**

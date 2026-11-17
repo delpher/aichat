@@ -1,6 +1,9 @@
 // Bundles the agent adapters into single files the broker serves at /client/<name>.mjs,
 // so another computer needs only Node 22+ and one file (no copy of this project, no npm install).
 import { build } from "esbuild";
+import { readFileSync } from "node:fs";
+
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 const shared = {
   bundle: true,
@@ -12,6 +15,8 @@ const shared = {
   // bundled CommonJS dependencies still call require()
   banner: { js: "import { createRequire as __aichatRequire } from 'node:module'; const require = __aichatRequire(import.meta.url);" },
   logLevel: "warning",
+  // each adapter knows its own version (src/adapters/version.ts) to tell when the broker has a newer one
+  define: { __AICHAT_VERSION__: JSON.stringify(version) },
 };
 
 await Promise.all(

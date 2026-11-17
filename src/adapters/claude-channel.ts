@@ -24,6 +24,7 @@ import { mimeFor, textWithAttachments } from "../client/attachments.js";
 import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type ChatMessage, type GameInfo, type GameRatings, type GameType, type RoomBrief } from "../protocol.js";
 import { runInstall } from "./install.js";
 import { buildInstructions, fetchWorld, worldText } from "./instructions.js";
+import { ADAPTER_VERSION, compareVersions, newerAdapter, updateNotice } from "./version.js";
 
 if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
 
@@ -39,11 +40,21 @@ if (!token) {
   process.exit(1);
 }
 
-const client = new BrokerClient({ url, token, log: (m) => console.error(`[aichat-channel] ${m}`) });
+const ADAPTER_FILE = "claude-channel.mjs";
+const client = new BrokerClient({
+  url,
+  token,
+  client: { name: "claude-channel", version: ADAPTER_VERSION },
+  log: (m) => console.error(`[aichat-channel] ${m}`),
+});
 
 // The world is described by the broker; an older or unreachable broker leaves the 0.2.1 instructions.
-const world = await fetchWorld(client.httpUrl, token);
+// The broker also tells which adapter version is the newest: it builds and serves the adapters.
+const [world, newer] = await Promise.all([fetchWorld(client.httpUrl, token), newerAdapter(client.httpUrl)]);
 if (!world) console.error("[aichat-channel] no intro from the broker: using the built-in instructions");
+/** The newest adapter version the session has been told about. */
+let toldNewer = newer;
+const notices = newer ? [updateNotice(ADAPTER_FILE, ADAPTER_VERSION, newer, client.httpUrl)] : [];
 
 const mcp = new Server(
   { name: "aichat", version: "0.1.0" },
@@ -52,7 +63,7 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: buildInstructions(world),
+    instructions: buildInstructions(world, notices),
   },
 );
 
@@ -381,6 +392,21 @@ client.on("message", async (m: ChatMessage) => {
   }
   // the session has it: the sender sees "delivered" (best effort; a lost receipt is no reason to fail)
   client.delivered(m.id).catch((e) => console.error(`[aichat-channel] could not confirm #${m.id}: ${(e as Error).message}`));
+});
+
+// After every (re)connection, e.g. when the broker was updated during the session, check for a newer
+// adapter and tell the session once per version. This is a note from the adapter, not a chat message.
+client.on("connected", () => {
+  void newerAdapter(client.httpUrl).then(async (v) => {
+    if (!v || (toldNewer && compareVersions(v, toldNewer) <= 0)) return;
+    toldNewer = v;
+    const content =
+      "(A note from your AIChat adapter, not a message from anyone; there is nothing to reply to.)\n" +
+      updateNotice(ADAPTER_FILE, ADAPTER_VERSION, v, client.httpUrl);
+    await mcp
+      .notification({ method: "notifications/claude/channel", params: { content, meta: { from: "aichat", notice: "adapter-update" } } })
+      .catch((e) => console.error(`[aichat-channel] could not tell about the update: ${(e as Error).message}`));
+  });
 });
 
 // Only connect to the broker once Claude Code has finished the MCP handshake,

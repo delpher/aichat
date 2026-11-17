@@ -13,20 +13,24 @@ import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
 import { LEGACY_INSTRUCTIONS, PEER_RULE } from "../adapters/instructions.js";
+import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
+import { VERSION } from "../version.js";
 
 /** Starts the Claude channel adapter the way Claude Code does, as an MCP client over stdio. */
-async function startChannel(url: string, name: string) {
+async function startChannel(url: string, name: string, env: Record<string, string> = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL("../adapters/claude-channel.js", import.meta.url))],
-    env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok(name) } as Record<string, string>,
+    env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok(name), ...env } as Record<string, string>,
     stderr: "pipe",
   });
   const client = new Client({ name: "fake-claude-code", version: "0.0.0" });
+  const notes: { method: string; params?: { content: string; meta: Record<string, string> } }[] = [];
+  client.fallbackNotificationHandler = async (n) => void notes.push(n as never);
   await client.connect(transport);
   const call = async (tool: string, args: Record<string, unknown> = {}) =>
     ((await client.callTool({ name: tool, arguments: args })).content as { text: string }[])[0].text;
-  return { client, call };
+  return { client, call, notes };
 }
 
 test("Claude channel adapter pushes channel notifications and sends via tool", async () => {
@@ -530,5 +534,100 @@ test("А1: with a broker that has no intro (0.2.1) the adapter keeps the 0.2.1 i
     await client.close();
     old.closeAllConnections();
     await new Promise((r) => old.close(r));
+  }
+});
+
+// ---- adapter versions ----
+
+test("adapter versions compare in semver order", () => {
+  assert.ok(compareVersions("0.3.0", "0.2.1") > 0);
+  assert.ok(compareVersions("0.2.1", "0.10.0") < 0);
+  assert.ok(compareVersions("v1.0.0", "1.0.0") === 0);
+  assert.ok(compareVersions("1.0.0", "1.0.0-rc.2") > 0);
+  assert.ok(compareVersions("1.0.0-rc.10", "1.0.0-rc.2") > 0);
+  assert.ok(compareVersions("1.0.0-rc.1", "1.0.0-beta") > 0);
+  assert.equal(compareVersions("0.0.0-dev", "garbage"), 0);
+  // run from a checkout, the adapter is the version in package.json
+  assert.equal(ADAPTER_VERSION, VERSION);
+});
+
+test("a session on an older adapter is told to offer the update; on the current one it is not", async () => {
+  const { broker, url, http } = await startBroker([{ name: "claude1", kind: "claude" }]);
+  try {
+    const old = await startChannel(url, "claude1", { AICHAT_ADAPTER_VERSION: "0.0.1" });
+    try {
+      const text = old.client.getInstructions() ?? "";
+      assert.match(
+        text,
+        new RegExp(
+          `this adapter \\(claude-channel\\.mjs\\) is version 0\\.0\\.1, the broker has ${VERSION.replace(/\./g, "\\.")}\\. ` +
+            `Suggest to your user that they update it: download ${http}/client/claude-channel\\.mjs`,
+        ),
+      );
+      assert.match(text, /Do not update it yourself\./);
+      assert.ok(text.endsWith(PEER_RULE));
+    } finally {
+      await old.client.close();
+    }
+    const current = await startChannel(url, "claude1");
+    try {
+      assert.doesNotMatch(current.client.getInstructions() ?? "", /adapter update/);
+    } finally {
+      await current.client.close();
+    }
+  } finally {
+    await broker.close();
+  }
+});
+
+test("the adapter names itself in auth, and tells the session once when the broker it reconnects to is newer", async () => {
+  // a minimal broker whose version can change between connections
+  let version = "0.3.0";
+  const auths: Record<string, unknown>[] = [];
+  const http = createServer((req, res) => {
+    const body = req.url === "/health" ? { ok: true, version } : { error: "not found" };
+    res.writeHead(req.url === "/health" ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  const wss = new WebSocketServer({ server: http, path: "/ws" });
+  wss.on("connection", (ws) =>
+    ws.on("message", (data) => {
+      const f = JSON.parse(String(data));
+      if (f.type === "auth") {
+        auths.push(f);
+        ws.send(JSON.stringify({ type: "welcome", agent: "claude1", rooms: [], ref: f.ref }));
+      }
+    }),
+  );
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  const port = (http.address() as { port: number }).port;
+  const ch = await startChannel(`ws://127.0.0.1:${port}`, "claude1", { AICHAT_ADAPTER_VERSION: "0.3.0" });
+  const waitFor = async (ok: () => boolean) => {
+    for (const until = Date.now() + 8000; !ok() && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
+  };
+  try {
+    await waitFor(() => auths.length === 1);
+    assert.deepEqual(auths[0].client, { name: "claude-channel", version: "0.3.0" });
+    assert.doesNotMatch(ch.client.getInstructions() ?? "", /adapter update/);
+
+    // the broker is updated: the adapter reconnects, notices it and says so once
+    version = "0.4.0";
+    for (const ws of wss.clients) ws.terminate();
+    await waitFor(() => ch.notes.length > 0);
+    assert.equal(ch.notes.length, 1);
+    assert.deepEqual(ch.notes[0].params!.meta, { from: "aichat", notice: "adapter-update" });
+    assert.match(ch.notes[0].params!.content, /^\(A note from your AIChat adapter[^\n]*\nAIChat adapter update: .* is version 0\.3\.0, the broker has 0\.4\.0\./);
+
+    // the same version again: no second note
+    for (const ws of wss.clients) ws.terminate();
+    await waitFor(() => auths.length === 3);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(ch.notes.length, 1);
+  } finally {
+    await ch.client.close();
+    for (const ws of wss.clients) ws.terminate();
+    wss.close();
+    http.closeAllConnections();
+    await new Promise((r) => http.close(r));
   }
 });

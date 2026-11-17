@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import type { AgentInfo, ChatMessage, ClientFrame, FileInfo, ServerFrame } from "../protocol.js";
+import type { AdapterInfo, AgentInfo, ChatMessage, ClientFrame, FileInfo, ServerFrame } from "../protocol.js";
 
 type Request = ClientFrame extends infer F ? (F extends { type: string } ? Omit<F, "ref"> : never) : never;
 
@@ -12,6 +12,8 @@ export interface BrokerClientOptions {
   /** Admins only: receive every message (read-only feed) instead of connecting as a participant. */
   observer?: boolean;
   log?: (msg: string) => void;
+  /** Sent with `auth` so the broker knows which adapter and version this is. */
+  client?: AdapterInfo;
 }
 
 /**
@@ -54,7 +56,15 @@ export class BrokerClient extends EventEmitter {
           },
           reject,
         });
-        ws.send(JSON.stringify({ type: "auth", token: this.opts.token, ...(this.opts.observer ? { observer: true } : {}), ref }));
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            token: this.opts.token,
+            ...(this.opts.observer ? { observer: true } : {}),
+            ...(this.opts.client ? { client: this.opts.client } : {}),
+            ref,
+          }),
+        );
       });
       ws.on("message", (data) => this.onFrame(JSON.parse(String(data)) as ServerFrame));
       ws.on("error", (e) => {
