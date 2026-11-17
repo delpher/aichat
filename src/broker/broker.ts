@@ -20,7 +20,7 @@ import {
 import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
-import { groupByRoom, type WakeInfo } from "./wake.js";
+import { groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
 import { Context, ContextError } from "./context.js";
@@ -930,7 +930,9 @@ export class Broker {
         });
         this.log(`${name} connected`);
         if (wake) {
-          this.log(`${name} woke after ${wake.info.away}s: ${wake.info.missed} room messages not sent`);
+          const sent = !wake.skipped.size;
+          this.log(`${name} woke after ${wake.info.away}s: ${wake.info.missed} room messages ${sent ? "sent" : "not sent"}`);
+          this.brief(wake.info, sent);
           for (const fn of this.wakeListeners) fn(wake.info);
         }
         return;
@@ -967,7 +969,20 @@ export class Broker {
   /** close() has begun: the store may be gone before the sockets' close events arrive. */
   private closing = false;
 
-  /** Called whenever an agent is woken; returns an unsubscribe function. What to do with it is stage В's. */
+  /**
+   * A woken agent's brief (stage В): the keeper, if connected, gets the diff and writes the agent a retelling;
+   * otherwise the broker tells the agent itself how long it was away and how much it missed where.
+   */
+  private brief(w: WakeInfo, streamSent: boolean) {
+    const keeper = this.cfg.agents.find((a) => a.keeper);
+    if (keeper && this.sockets.get(keeper.name)?.size) {
+      this.notify(keeper.name, wakeText(w));
+      return;
+    }
+    this.notify(w.agent, wakeNotice(w, streamSent));
+  }
+
+  /** Called whenever an agent is woken (after its brief is on its way); returns an unsubscribe function. */
   onWake(fn: (w: WakeInfo) => void): () => void {
     this.wakeListeners.add(fn);
     return () => void this.wakeListeners.delete(fn);
@@ -984,11 +999,14 @@ export class Broker {
    */
   private wakeFor(agent: AgentConfig, pending: ChatMessage[]): { info: WakeInfo; skipped: Set<number> } | undefined {
     const cfg = this.cfg;
-    if (cfg.wakeMode !== "on" || agent.kind === "human" || agent.webhook) return undefined;
+    // the keeper gets missed rooms only as diffs; people, webhooks and the keeper are never woken
+    if (cfg.wakeMode === "off" || agent.kind === "human" || agent.webhook || agent.keeper) return undefined;
     const missed = pending.filter((m) => m.room && !GAME_ROOM_RE.test(m.room));
     if (!missed.length) return undefined;
     const since = this.store.lastSeen(agent.name);
-    const away = since ? Math.max(0, Math.round((this.now() - Date.parse(since)) / 1000)) : 0;
+    // never seen leaving: a first connection, which gets only the intro (alexey, 1342)
+    if (!since) return undefined;
+    const away = Math.max(0, Math.round((this.now() - Date.parse(since)) / 1000));
     if (away < cfg.wakeAfterMinutes * 60 && missed.length < cfg.wakeAfterMessages) return undefined;
     return {
       info: {
@@ -996,9 +1014,10 @@ export class Broker {
         away,
         missed: missed.length,
         rooms: groupByRoom(missed),
-        thanks: since ? this.store.thanksSince(agent.name, since) : [],
+        thanks: this.store.thanksSince(agent.name, since),
       },
-      skipped: new Set(missed.map((m) => m.id)),
+      // В1 ("brief") still sends the stream, to judge the briefs against it; В2 ("on") replaces it
+      skipped: new Set(cfg.wakeMode === "on" ? missed.map((m) => m.id) : []),
     };
   }
 

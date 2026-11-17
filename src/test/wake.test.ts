@@ -98,7 +98,8 @@ test("wake: a short absence with few missed messages delivers everything; many m
   r = await arrivals(url, "bot1");
   assert.equal(wakes.length, 1);
   assert.equal(wakes[0].missed, 3);
-  assert.equal(r.got.length, 0);
+  // no room stream; with no keeper online, the broker's own notice (stage В) is all that arrives
+  assert.deepEqual(r.got.map((m) => m.from), ["aichat"]);
   r.c.close();
   bot2.close();
   void bot1;

@@ -49,7 +49,7 @@ export interface Settings {
   maxNotes: number;
   maxNoteLength: number;
   /** "on": an agent back from a long absence gets the missed room messages as a wake, not as a stream. */
-  wakeMode: "off" | "on";
+  wakeMode: "off" | "brief" | "on";
   wakeAfterMinutes: number;
   wakeAfterMessages: number;
   publicUrl: string;

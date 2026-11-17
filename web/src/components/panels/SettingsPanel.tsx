@@ -84,7 +84,7 @@ export function SettingsPanel() {
 
   const check = (name: keyof Settings): { value?: string | number; error?: string } => {
     const raw = (form[name] ?? "").trim();
-    if (name === "wakeMode") return raw === "on" || raw === "off" ? { value: raw } : { error: "on або off" };
+    if (name === "wakeMode") return raw === "on" || raw === "off" || raw === "brief" ? { value: raw } : { error: "off, brief або on" };
     if (name === "publicUrl" || name === "projectDir") {
       if (name === "publicUrl" && raw && !/^https?:\/\/[^\s/]+/.test(raw)) return { error: "адреса має починатися з http:// або https://" };
       return { value: raw };
@@ -190,7 +190,8 @@ export function SettingsPanel() {
             onChange={(e) => setForm({ ...form, wakeMode: e.target.value })}
           >
             <option value="off">Вимкнено: агент отримує всі пропущені повідомлення</option>
-            <option value="on">Увімкнено: пропущене в кімнатах не надсилається, а йде в пробудження</option>
+            <option value="brief">Бриф і потік: агент отримує бриф пробудження і всі пропущені повідомлення</option>
+            <option value="on">Бриф замість потоку: пропущене в кімнатах не надсилається, лише бриф</option>
           </select>
           <small>Особисті повідомлення й ходи в партіях доходять завжди. Людей це не стосується.</small>
         </label>
