@@ -708,3 +708,39 @@ kbd {
   display: flex;
   gap: var(--space-2);
 }
+.notebook {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.notebook p {
+  margin: 0;
+}
+.notebook-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.note {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.note-head {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+}
+.note-topic {
+  font-weight: var(--weight-medium);
+  color: var(--text-2);
+}
+.note-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
