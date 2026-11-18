@@ -9,9 +9,12 @@ name: Release
 #   release.json                                    machine-readable manifest for the broker's self-update
 # The Docker image is pushed to ghcr.io/<owner>/aichat:<version> (and :latest for non-prereleases).
 #
-# It can also be started by hand (Actions -> Release -> Run workflow) on master, e.g. from a phone:
-# the tag is then v<package.json version>, and the workflow points it at the commit it built.
-# An existing tag is moved only while no GitHub Release uses it (a pushed tag whose run failed).
+# It can also be started by hand (Actions -> Release -> Run workflow) on master, e.g. from a phone.
+# Then it builds and tests v<package.json version> and leaves a DRAFT release with all assets,
+# aimed at the built commit. The workflow cannot create tags (the repo restricts tag creation and
+# has immutable releases), so a person publishes the draft and creates the tag in the web UI.
+# That tag push starts this workflow again: the release already exists, so it only pushes the Docker image.
+# Never delete or move a version tag: GitHub will not let anyone create that tag name again.
 
 on:
   push:
@@ -33,6 +36,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       tag: ${{ steps.version.outputs.tag }}
+      published: ${{ steps.version.outputs.published }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -57,6 +61,12 @@ jobs:
           else
             tag="${GITHUB_REF_NAME}"
           fi
+          # A tag created by publishing a draft from a manual run: the release and its assets already exist.
+          published=false
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "Release $tag is already published, only the Docker image is pushed"
+            published=true
+          fi
           version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Tag $tag is not a semver tag like v1.2.3 or v1.2.3-rc.1"; exit 1
@@ -68,18 +78,25 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "published=$published" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
+        if: steps.version.outputs.published != 'true'
       - name: Type check
+        if: steps.version.outputs.published != 'true'
         run: npm run typecheck
       - name: Build (broker, adapters, web UI)
+        if: steps.version.outputs.published != 'true'
         run: npm run build
       - name: Backend tests
+        if: steps.version.outputs.published != 'true'
         run: npm test
       - name: Web UI tests
+        if: steps.version.outputs.published != 'true'
         run: npm run test:web
 
       - name: Package
+        if: steps.version.outputs.published != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
@@ -126,6 +143,7 @@ jobs:
           ls -l "$out"; cat "$out/release.json"
 
       - name: Smoke test the archive
+        if: steps.version.outputs.published != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -142,6 +160,7 @@ jobs:
           kill %1; cat broker.log
 
       - uses: actions/upload-artifact@v7
+        if: steps.version.outputs.published != 'true'
         with:
           name: release
           path: ${{ runner.temp }}/release/
@@ -151,6 +170,8 @@ jobs:
     name: Docker image
     runs-on: ubuntu-latest
     needs: build
+    # A manual run only leaves a draft; the image is pushed by the tag push that publishing it creates.
+    if: github.event_name == 'push'
     permissions:
       contents: read
       packages: write
@@ -186,6 +207,9 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [build, docker]
+    if: >-
+      !cancelled() && needs.build.result == 'success' && needs.build.outputs.published != 'true' &&
+      (needs.docker.result == 'success' || needs.docker.result == 'skipped')
     permissions:
       contents: write
     steps:
@@ -203,16 +227,6 @@ jobs:
           set -euo pipefail
           flags=(--repo "$GITHUB_REPOSITORY" --title "AIChat $VERSION" --generate-notes)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            # Started by hand: the release itself creates the tag on the commit that was built and tested.
-            # GITHUB_TOKEN may neither move a tag ("Cannot update this protected ref") nor create one
-            # through the git refs API ("Reference update failed"), so a stale tag is only deleted here.
-            # A tag made with GITHUB_TOKEN does not start this workflow again.
-            # On 404 gh still prints the error body to stdout, so only trust the output when it succeeds.
-            old="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null)" || old=""
-            if [ -n "$old" ] && [ "$old" != "$GITHUB_SHA" ]; then
-              echo "Tag $TAG was at $old, deleting it"
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
-            fi
             flags+=(--target "$GITHUB_SHA")
           else
             flags+=(--verify-tag)
@@ -221,4 +235,8 @@ jobs:
           # Created as a draft and published only once every asset is uploaded,
           # so an updater never sees a "latest" release without its files.
           gh release create "$TAG" release/* --draft "${flags[@]}"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::notice::Draft release $TAG is ready. Publish it in the web UI with a new tag $TAG on $GITHUB_SHA."
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi

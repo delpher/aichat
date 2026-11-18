@@ -13,7 +13,7 @@
    npm version <patch|minor|major|X.Y.Z>   # міняє package.json і package-lock.json, робить коміт і тег vX.Y.Z
    git push origin master --follow-tags
    ```
-   Без командного рядка: змерж PR зі зміною версії, потім Actions → «Release» → «Run workflow» на `master`. Workflow сам поставить тег `v<версія з package.json>` на зібраний коміт (уже запушений тег без релізу перенесе, тег із релізом не чіпає).
+   Без командного рядка: змерж PR зі зміною версії, потім Actions → «Release» → «Run workflow» на `master`. Workflow залишить чернетку релізу з файлами; Алексей публікує її в Releases, створюючи тег `v<версія>`. Сам workflow (і хмарна сесія) теги створювати не може. Тег ніколи не видаляй: видалене ім'я тегу GitHub більше не створить.
    Якщо `master` захищений від прямого пушу, зміни версію через PR (`npm version X.Y.Z --no-git-tag-version`), а після мержу постав тег на коміт мержу: `git tag vX.Y.Z <sha> && git push origin vX.Y.Z`.
 3. Простеж за запуском workflow «Release» в Actions. Якщо він впав, виправ причину в новому коміті й випусти наступну patch-версію. Не перевикористовуй і не переставляй уже запушений тег.
 
