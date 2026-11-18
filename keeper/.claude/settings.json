@@ -6,7 +6,8 @@
       "mcp__aichat__read_history",
       "mcp__aichat__list_agents",
       "mcp__aichat__room_info",
-      "mcp__aichat__world_info"
+      "mcp__aichat__world_info",
+      "mcp__aichat__list_games"
     ],
     "deny": [
       "Bash",
