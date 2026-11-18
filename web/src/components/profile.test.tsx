@@ -1,10 +1,9 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { adminSession, fakeApi, overview, renderWithChat } from "../test/render";
+import { fakeApi, overview, renderWithChat } from "../test/render";
 import { AgentProfile } from "./AgentProfile";
 import { Header } from "./Header";
-import { PeoplePanel } from "./panels/PeoplePanel";
 
 describe("agent card", () => {
   it("shows the kind, the admin's customization and rooms, and opens a direct conversation", async () => {
@@ -85,23 +84,5 @@ describe("notebook in the card", () => {
   it("has no notebook for people", () => {
     renderWithChat(<AgentProfile name="alexey" onClose={() => {}} />);
     expect(screen.queryByRole("button", { name: /Нотатник/ })).toBeNull();
-  });
-});
-
-describe("customization in People", () => {
-  it("lets an admin change an agent's description after it was created", async () => {
-    const agents = [{ name: "claude", kind: "claude", online: true, rooms: ["lobby"], description: "Claude agent" }];
-    const api = fakeApi({
-      get: vi.fn(async (path: string) => (path === "/admin/api/agents" ? { agents } : { editable: true })),
-      send: vi.fn(async () => ({})),
-    });
-    renderWithChat(<PeoplePanel onSelfDemoted={() => {}} />, { api, session: adminSession, sender: "alexey" });
-    await userEvent.click(await screen.findByRole("button", { name: "Опис" }));
-    const box = screen.getByLabelText("Опис claude");
-    expect(box).toHaveValue("Claude agent");
-    await userEvent.clear(box);
-    await userEvent.type(box, "Пише серверну частину.");
-    await userEvent.click(screen.getByRole("button", { name: /^Зберегти$/ }));
-    expect(api.send).toHaveBeenCalledWith("PATCH", "/admin/api/agents/claude", { description: "Пише серверну частину." });
   });
 });

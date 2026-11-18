@@ -95,3 +95,35 @@ test("the keeper writes to agents directly with no rate limit, plays no games an
     await broker.close();
   }
 });
+
+test("an admin makes an AI agent the keeper and takes it back: one keeper, in no room, not a person", async () => {
+  const { broker, http } = await startBroker([{ name: "bot" }, { name: "bot2", rooms: ["lab"] }, { name: "olena", kind: "human" }, BOSS]);
+  try {
+    const boss = api(http, "boss");
+    const made = await boss<{ agent: AgentInfo }>("PATCH", "/admin/api/agents/bot", { keeper: true });
+    assert.equal(made.status, 200);
+    assert.equal(made.data.agent.keeper, true);
+    assert.ok(broker.isKeeper("bot"));
+
+    assert.equal((await boss("PATCH", "/admin/api/agents/olena", { keeper: true })).status, 403);
+    const second = await boss<{ error: string }>("PATCH", "/admin/api/agents/bot2", { keeper: true });
+    assert.equal(second.status, 409);
+    assert.match(second.data.error, /bot is already the keeper/);
+    assert.equal((await boss("PATCH", "/admin/api/agents/bot", { keeper: "yes" })).status, 400);
+
+    const back = await boss<{ agent: AgentInfo }>("PATCH", "/admin/api/agents/bot", { keeper: false });
+    assert.equal(back.status, 200);
+    assert.equal(back.data.agent.keeper, undefined);
+    assert.ok(!broker.isKeeper("bot"));
+
+    // an agent in a room must leave it first
+    const inRoom = await boss<{ error: string }>("PATCH", "/admin/api/agents/bot2", { keeper: true });
+    assert.equal(inRoom.status, 409);
+    assert.match(inRoom.data.error, /first remove bot2 from #lab/);
+    assert.equal((await boss("DELETE", "/admin/api/rooms/lab/members/bot2")).status, 200);
+    assert.equal((await boss("PATCH", "/admin/api/agents/bot2", { keeper: true })).status, 200);
+    assert.ok(broker.isKeeper("bot2"));
+  } finally {
+    await broker.close();
+  }
+});

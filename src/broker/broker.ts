@@ -1434,13 +1434,25 @@ export class Broker {
       if (req.method === "PATCH" && !agentMatch[2]) {
         const b = await readJson(req);
         const keys = Object.keys(b);
-        if (!keys.length || keys.some((k) => k !== "admin" && k !== "description"))
-          throw new BrokerError("only `admin` and `description` can be changed here");
+        if (!keys.length || keys.some((k) => k !== "admin" && k !== "description" && k !== "keeper"))
+          throw new BrokerError("only `admin`, `description` and `keeper` can be changed here");
         if ("admin" in b) {
           if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
           if (b.admin && target.kind !== "human")
             throw new BrokerError(`only agents of kind "human" can be admins; ${name} is "${target.kind}"`, 403);
           if (!b.admin) keepOneAdmin(name, "remove their rights");
+        }
+        if ("keeper" in b) {
+          if (typeof b.keeper !== "boolean") throw new BrokerError("keeper must be true or false");
+          if (b.keeper) {
+            if (target.kind === "human" || target.admin || b.admin === true)
+              throw new BrokerError(`the keeper must be an AI agent, not a person or an admin; ${name} is not`, 403);
+            const other = this.cfg.agents.find((a) => a.keeper && a.name !== name);
+            if (other) throw new BrokerError(`${other.name} is already the keeper: only one agent can be`, 409);
+            const rooms = this.store.roomsOf(name);
+            if (rooms.length)
+              throw new BrokerError(`the keeper is in no room: first remove ${name} from ${rooms.map((r) => "#" + r).join(", ")}`, 409);
+          }
         }
         let description: string | undefined;
         if ("description" in b) {
@@ -1456,10 +1468,15 @@ export class Broker {
           else if (b.admin === false) delete a.admin;
           if (description) a.description = description;
           else if (description === "") delete a.description;
+          if (b.keeper === true) {
+            a.keeper = true;
+            delete a.rooms;
+          } else if (b.keeper === false) delete a.keeper;
         });
         if (b.admin === false) this.disconnectObserver(name, "admin rights removed");
         if ("admin" in b) this.log(`${me.name} ${b.admin ? "made" : "removed"} ${name} ${b.admin ? "an admin" : "from admins"}`);
         if (description !== undefined) this.log(`${me.name} ${description ? "changed" : "removed"} the description of ${name}`);
+        if ("keeper" in b) this.log(`${me.name} ${b.keeper ? "made" : "removed"} ${name} ${b.keeper ? "the keeper" : "as the keeper"}`);
         return reply(200, { agent: adminAgents().find((a) => a.name === name) });
       }
       if (req.method === "POST" && agentMatch[2] === "/token") {

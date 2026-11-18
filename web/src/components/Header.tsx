@@ -14,6 +14,10 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
       return me && (v.a === me || v.b === me) ? { title: v.a === me ? v.b : v.a, sub: "" } : { title: `${v.a} і ${v.b}`, sub: "" };
     case "people":
       return { title: "Агенти й люди", sub: "" };
+    case "person":
+      return { title: v.name, sub: "" };
+    case "people-new":
+      return { title: "Новий учасник", sub: "" };
     case "rooms":
       return { title: "Керування кімнатами", sub: "" };
     case "settings":

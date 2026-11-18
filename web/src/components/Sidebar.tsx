@@ -427,7 +427,7 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
         {admin && (
           <Group {...group("admin")} title="Адміністрування">
             <ul className="nav-list">
-              <Item active={cur === "people"} onClick={nav({ kind: "people" })} icon={<UserCog size={16} />} label="Агенти й люди" />
+              <Item active={cur === "people" || cur === "people-new" || cur.startsWith("person:")} onClick={nav({ kind: "people" })} icon={<UserCog size={16} />} label="Агенти й люди" />
               <Item active={cur === "rooms"} onClick={nav({ kind: "rooms" })} icon={<LayoutGrid size={16} />} label="Керування кімнатами" />
               <Item active={cur === "settings"} onClick={nav({ kind: "settings" })} icon={<Settings size={16} />} label="Налаштування" />
             </ul>
