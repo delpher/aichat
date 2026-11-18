@@ -302,7 +302,84 @@ Keeper є частиною самого AIChat, а не учасником до�
 
 Агент, якого брокер ще ні разу не бачив від'єднаним (перше підключення), не прокидається: він отримує лише вводну. Keeper, люди й webhook-агенти не прокидаються ніколи.
 
-Інструкції keeper лежать у репозиторії, у `keeper/CLAUDE.md`. Налаштування його сесії Claude Code (`keeper/.claude/settings.json`) дозволяють лише потрібні інструменти AIChat і забороняють файли, shell і веб. Сесію запускають на DO з папки `keeper/` з власним `.mcp.json` і токеном keeper.
+Інструкції keeper лежать у репозиторії, у `keeper/CLAUDE.md`. Налаштування його сесії Claude Code (`keeper/.claude/settings.json`) дозволяють лише потрібні інструменти AIChat і забороняють файли, shell і веб. Сесію запускають на сервері з папки `keeper/` з власним `.mcp.json` і токеном keeper (див. нижче).
+
+#### Як запустити keeper на сервері
+
+Приклад для Linux-сервера (Ubuntu/Debian), де брокер працює в Docker (`docker compose`), а keeper запускається на тій самій машині.
+
+1. **Створити агента.** У вебі «👥 Агенти й люди»: ім'я, наприклад `keeper`, тип «Claude Code», **без кімнат**, опис на кшталт «Пише агентам бриф після перерви». Збережіть токен.
+
+2. **Позначити його keeper.** У вебі цього ще не можна зробити, тому в `agents.json` (у папці з `docker-compose.yml`) запису агента додається `"keeper": true`:
+
+   ```json
+   { "name": "keeper", "kind": "claude", "token": "…", "description": "…", "keeper": true }
+   ```
+
+   Брокер перечитує файл сам, перезапуск не потрібен. Якщо в keeper є `rooms` чи `admin`, він має тип `human` або keeper уже є інший, брокер файл не прийме. Причину показує `docker logs aichat-broker --tail 20`.
+
+3. **Node.js і Claude Code на сервері.** Адаптер запускається поза контейнером, тож Node.js 22.13+ потрібен на самій машині:
+
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs tmux
+   sudo npm install -g @anthropic-ai/claude-code
+   sudo adduser keeper        # окремий користувач, не root; далі все від нього
+   ```
+
+4. **Папка keeper.** Скопіюйте `keeper/` з репозиторію (там `CLAUDE.md` і `.claude/settings.json`), наприклад з робочого ПК:
+
+   ```bash
+   scp -r keeper keeper@<сервер>:~/aichat-keeper
+   ```
+
+   Далі на сервері від користувача `keeper`:
+
+   ```bash
+   cd ~/aichat-keeper
+   curl -fsSo claude-channel.mjs http://127.0.0.1:8787/client/claude-channel.mjs
+   cat > .mcp.json <<'JSON'
+   { "mcpServers": { "aichat": { "command": "node",
+     "args": ["/home/keeper/aichat-keeper/claude-channel.mjs"],
+     "env": { "AICHAT_URL": "ws://127.0.0.1:8787", "AICHAT_TOKEN": "<токен keeper>" } } } }
+   JSON
+   chmod 600 .mcp.json
+   ```
+
+5. **Вхід і перший запуск** у tmux:
+
+   ```bash
+   tmux new -s keeper
+   cd ~/aichat-keeper
+   claude --model claude-haiku-5-5 --dangerously-load-development-channels server:aichat
+   ```
+
+   На сервері без браузера `/login` показує посилання, а код із нього вставляється в термінал. Підтвердьте довіру до папки, попередження про development channels і MCP-сервер `aichat`. Від'єднатися, лишивши сесію працювати: `Ctrl+b`, потім `d`; повернутися: `tmux attach -t keeper`.
+
+6. **Автозапуск після перезавантаження** (systemd user unit). Від root: `loginctl enable-linger keeper`. Від `keeper` створіть `~/.config/systemd/user/aichat-keeper.service`:
+
+   ```ini
+   [Unit]
+   Description=AIChat keeper
+
+   [Service]
+   Type=forking
+   WorkingDirectory=/home/keeper/aichat-keeper
+   ExecStart=/usr/bin/tmux new -d -s keeper "claude --model claude-haiku-5-5 --dangerously-load-development-channels server:aichat"
+   ExecStop=/usr/bin/tmux kill-session -t keeper
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   ```bash
+   systemctl --user daemon-reload && systemctl --user enable --now aichat-keeper
+   ```
+
+   Шлях до `claude` має бути в `PATH` сервісу; якщо ні, вкажіть повний (`command -v claude`). Якщо Claude Code на старті знову питає про development channels, після перезавантаження зайдіть у `tmux attach -t keeper` і підтвердіть.
+
+7. **Перевірка.** `list_agents` або картка у вебі показують keeper онлайн з його роллю. У «Налаштуваннях» → «Пробудження агентів» поставте `wakeMode: brief`. Відключіть будь-якого агента більш ніж на `wakeAfterMinutes` (або напишіть у його кімнату `wakeAfterMessages`+ повідомлень) і підключіть знову: він має отримати бриф особистим повідомленням від keeper. Якщо натомість прийшла довідка від `aichat`, keeper офлайн.
+
+8. **Оновлення.** Після оновлення брокера заново завантажте `claude-channel.mjs` (крок 4) і перезапустіть сесію (`systemctl --user restart aichat-keeper`). Якщо змінився `keeper/CLAUDE.md` або `keeper/.claude/settings.json`, скопіюйте їх ще раз.
 
 ### Картка учасника й кастомізація
 
