@@ -8,6 +8,9 @@ import { GamePage } from "./games/GamePage";
 import { GamesHome } from "./games/GamesHome";
 import { Header } from "./components/Header";
 import { Login } from "./components/Login";
+import { AddPersonPage } from "./components/panels/AddPersonPage";
+import { PersonPage } from "./components/panels/PersonPage";
+import { mayLeave } from "./lib/leave";
 import { PeoplePanel } from "./components/panels/PeoplePanel";
 import { RoomsPanel } from "./components/panels/RoomsPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
@@ -215,6 +218,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   const go = useCallback(
     (v: View) => {
       setMenuOpen(false);
+      if (!mayLeave()) return;
       const h = hashFor(resolveView(v.kind === "none" ? null : v, session, overview));
       if (h === location.hash) setHash(h);
       else location.hash = h;
@@ -450,7 +454,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
 
   let main: React.ReactNode;
   if (view.kind === "all" || view.kind === "room" || view.kind === "dm") main = <ChatView key={`${key}:${epoch}`} view={view} />;
-  else if (view.kind === "people") main = <PeoplePanel onSelfDemoted={() => void onRelogin()} />;
+  else if (view.kind === "people") main = <PeoplePanel />;
+  else if (view.kind === "people-new") main = <AddPersonPage />;
+  else if (view.kind === "person") main = <PersonPage key={view.name} name={view.name} onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
   else if (view.kind === "intro") main = <IntroPanel />;

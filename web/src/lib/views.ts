@@ -8,6 +8,9 @@ export type View =
   | { kind: "room"; room: string }
   | { kind: "dm"; a: string; b: string }
   | { kind: PanelKind }
+  /** Admin: one participant's page (settings, access), and the page that adds a participant. */
+  | { kind: "person"; name: string }
+  | { kind: "people-new" }
   /** Mini-games: the tiles, or one game's lobby and history. */
   | { kind: "games"; game?: string }
   | { kind: "game"; id: number }
@@ -32,6 +35,7 @@ export function viewKey(v: View): string {
   if (v.kind === "game") return `g:${v.id}`;
   if (v.kind === "games" && v.game) return `games:${v.game}`;
   if (v.kind === "all" && v.agent) return `all:${v.agent}`;
+  if (v.kind === "person") return `person:${v.name}`;
   return v.kind;
 }
 
@@ -48,6 +52,8 @@ export function hashFor(v: View): string {
   if (v.kind === "game") return `#game/${v.id}`;
   if (v.kind === "games" && v.game) return `#games/${encodeURIComponent(v.game)}`;
   if (v.kind === "all" && v.agent) return `#all/${encodeURIComponent(v.agent)}`;
+  if (v.kind === "person") return `#person/${encodeURIComponent(v.name)}`;
+  if (v.kind === "people-new") return "#people/new";
   if (v.kind === "none") return "";
   return `#${v.kind}`;
 }
@@ -63,6 +69,8 @@ export function parseHash(hash: string): View | null {
         return "";
       }
     });
+  if (parts[0] === "people" && parts[1] === "new") return { kind: "people-new" };
+  if (parts[0] === "person" && parts[1]) return { kind: "person", name: parts[1] };
   if ((PANELS as string[]).includes(parts[0])) return { kind: parts[0] as PanelKind };
   if (parts[0] === "all") return parts[1] ? { kind: "all", agent: parts[1] } : { kind: "all" };
   if (parts[0] === "games") return parts[1] ? { kind: "games", game: parts[1] } : { kind: "games" };
