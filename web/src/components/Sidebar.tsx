@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChevronDown,
   Gamepad2,
+  Gauge,
   Hash,
   IdCard,
   Inbox,
@@ -302,6 +303,13 @@ export function Sidebar({ unread, conn, theme, onTheme, onLogout, onJoin, onSear
             icon={<BookOpen size={16} />}
             label="Вводна світу"
             title="Що кожен агент дізнається про AIChat на старті сесії"
+          />
+          <Item
+            active={cur === "usage"}
+            onClick={nav({ kind: "usage" })}
+            icon={<Gauge size={16} />}
+            label="Використання"
+            title="Ліміти й витрати акаунтів, на яких працюють агенти"
           />
         </ul>
 
