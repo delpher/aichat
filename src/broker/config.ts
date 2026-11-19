@@ -1,6 +1,10 @@
 import { readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { NAME_RE, ROOM_RE } from "../protocol.js";
+import { ACCOUNT_HASH_RE } from "../usage.js";
+
+/** Most accounts one person may name. */
+export const MAX_ACCOUNTS = 5;
 
 export interface AgentConfig {
   name: string;
@@ -20,6 +24,11 @@ export interface AgentConfig {
    * and plays no games. At most one agent may be the keeper.
    */
   keeper?: boolean;
+  /**
+   * A person's own AI accounts, as accountHash(e-mail): agents that report one of them work on this person's
+   * account, and the person sees their usage. Set by the person in the web; never the addresses themselves.
+   */
+  accounts?: string[];
 }
 
 export interface BrokerConfig {
@@ -222,6 +231,12 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
       if (a.rooms?.length) throw new Error(`agent ${a.name}: the keeper is in no rooms; remove its rooms`);
       if (keeper) throw new Error(`agents ${keeper} and ${a.name}: only one agent can be the keeper`);
       keeper = a.name;
+    }
+    if (a.accounts != null) {
+      if (!Array.isArray(a.accounts) || !a.accounts.every((h) => typeof h === "string" && ACCOUNT_HASH_RE.test(h)))
+        throw new Error(`agent ${a.name}: accounts must be a list of account hashes`);
+      if (a.kind !== "human") throw new Error(`agent ${a.name}: only people name their accounts; an agent reports its own`);
+      if (a.accounts.length > MAX_ACCOUNTS) throw new Error(`agent ${a.name}: at most ${MAX_ACCOUNTS} accounts`);
     }
     names.add(a.name);
     tokens.add(a.token);
