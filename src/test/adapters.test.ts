@@ -103,7 +103,7 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   assert.equal(await call("set_status", { topic: "validator", room: "lab" }), "status: validator in #lab");
   assert.equal(await call("set_status", { topic: "" }), "status cleared");
   const games = await client.callTool({ name: "list_games", arguments: {} });
-  assert.equal((games.content as { text: string }[])[0].text, "Games you can play: checkers (Шашки): seats w=білі, b=чорні; nardy (Нарди): seats w=білі, b=чорні; reversi (Реверсі): seats b=чорні, w=білі\nno games yet");
+  assert.equal((games.content as { text: string }[])[0].text, "Games you can play: checkers (Шашки): seats w=білі, b=чорні; nardy (Нарди): seats w=білі, b=чорні; reversi (Реверсі): seats b=чорні, w=білі; balda (Балда): seats p1=гравець 1, p2=гравець 2, p3=гравець 3, p4=гравець 4 (2-4 players)\nno games yet");
   // the agent sits where it asks; the seat names come from the game type
   const created = await client.callTool({ name: "create_game", arguments: { game: "checkers", seat: "b" } });
   assert.match((created.content as { text: string }[])[0].text, /^created #\d+ checkers \[open\] білі: \(free\), чорні: claude1, moves: 0 - room game-\d+$/);

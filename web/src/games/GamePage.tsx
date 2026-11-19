@@ -122,7 +122,7 @@ export function GamePage({ id }: { id: number }) {
       <div className="game">
         <div className="game-board">
           {others.map((i) => (
-            <PlayerBar key={i} name={game.players[i]} seat={i} seatId={t?.seats[i]?.id} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
+            <PlayerBar key={i} name={game.players[i]} seat={i} seatId={t?.seats[i]?.id} numbered={game.players.length > 2} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
           ))}
           {m ? (
             <m.Play game={game} ply={shownPly} canMove={canMove} bottom={bottom} onMove={(move) => void act("move", { move })} />
@@ -135,6 +135,7 @@ export function GamePage({ id }: { id: number }) {
             name={game.players[bottom]}
             seat={bottom}
             seatId={t?.seats[bottom]?.id}
+            numbered={game.players.length > 2}
             label={seatName(t, bottom)}
             turn={live && game.turn === bottom}
             rating={ratings[game.players[bottom] ?? ""]}
@@ -172,20 +173,23 @@ export function GamePage({ id }: { id: number }) {
             )}
             {game.status === "active" && mySeat !== null && (
               <div className="actions">
-                <button
-                  type="button"
-                  className="btn sm ghost"
-                  disabled={busy || game.draw_offer === sender}
-                  onClick={() => void act("draw")}
-                >
-                  {drawOfferedToMe ? "Прийняти нічию" : "Запропонувати нічию"}
-                </button>
+                {/* draws are only between two; with more, resigning takes a player out */}
+                {game.players.length === 2 && (
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={busy || game.draw_offer === sender}
+                    onClick={() => void act("draw")}
+                  >
+                    {drawOfferedToMe ? "Прийняти нічию" : "Запропонувати нічию"}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn sm danger-text"
                   disabled={busy}
                   onClick={() => {
-                    if (confirm("Здатися в цій партії?")) void act("resign");
+                    if (confirm(game.players.length > 2 ? "Здатися й вийти з цієї партії? Решта гратиме далі." : "Здатися в цій партії?")) void act("resign");
                   }}
                 >
                   Здатися
@@ -293,11 +297,19 @@ export function GamePage({ id }: { id: number }) {
   );
 }
 
-/** `seatId` colours the dot when it names a colour ("w", "b"); otherwise the seat's place in turn order does. */
-function PlayerBar({ name, seat, seatId, label, turn, rating }: { name: string | null; seat: number; seatId?: string; label: string; turn: boolean; rating?: number }) {
+/**
+ * The dot before a player: with more than two players (`numbered`) their place in turn order; otherwise a colour,
+ * from `seatId` when it names one ("w", "b") or else from the place.
+ */
+function PlayerBar(props: { name: string | null; seat: number; seatId?: string; numbered?: boolean; label: string; turn: boolean; rating?: number }) {
+  const { name, seat, seatId, numbered, label, turn, rating } = props;
   return (
     <div className={`player-bar${turn ? " turn" : ""}`}>
-      <span className={`seat-dot seat-${seat}${seatId ? ` seat-id-${seatId}` : ""}`} />
+      {numbered ? (
+        <span className="seat-dot seat-num">{seat + 1}</span>
+      ) : (
+        <span className={`seat-dot seat-${seat}${seatId ? ` seat-id-${seatId}` : ""}`} />
+      )}
       {name ? <b>{name}</b> : <span className="free-seat">{FREE_SEAT}</span>}
       {name && <Rating value={rating} />}
       <span className="muted small">{label}</span>

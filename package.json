@@ -11,7 +11,7 @@
     "aichat": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/bundle.mjs && npm run build:web",
+    "build": "tsc -p tsconfig.json && node scripts/copy-data.mjs && node scripts/bundle.mjs && npm run build:web",
     "start": "node dist/launcher.js",
     "broker": "node dist/broker/main.js",
     "add-agent": "node dist/broker/add-agent.js",
