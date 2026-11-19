@@ -14,6 +14,8 @@ export interface BrokerClientOptions {
   log?: (msg: string) => void;
   /** Sent with `auth` so the broker knows which adapter and version this is. */
   client?: AdapterInfo;
+  /** Sent with `auth`: one id per adapter process, so the broker greets a new session but not a reconnect. */
+  session?: string;
   /**
    * A connection that has heard nothing from the broker (not even its ping, sent every 30 s) for this long
    * is taken to be dead and is replaced (default 75 s). A network path can die without either side being
@@ -77,6 +79,7 @@ export class BrokerClient extends EventEmitter {
             token: this.opts.token,
             ...(this.opts.observer ? { observer: true } : {}),
             ...(this.opts.client ? { client: this.opts.client } : {}),
+            ...(this.opts.session ? { session: this.opts.session } : {}),
             ref,
           }),
         );

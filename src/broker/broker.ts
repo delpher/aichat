@@ -20,7 +20,7 @@ import {
 import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
-import { groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
+import { greeting, groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
 import { Context, ContextError } from "./context.js";
@@ -923,6 +923,8 @@ export class Broker {
         const pending = this.store.pendingFor(name);
         // coming back from offline, it may be woken: the room messages it missed are not sent but reported
         const wake = this.sockets.get(name)?.size ? undefined : this.wakeFor(agent, pending);
+        // a new adapter session is greeted, a dropped connection of the same session is not (alexey, 1703)
+        const fresh = this.newSession(agent, f.session);
         for (const m of wake ? pending.filter((p) => !wake.skipped.has(p.id)) : pending) this.sendFrame(ws, { type: "message", message: m });
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
         const client = adapterInfo(f.client);
@@ -938,6 +940,9 @@ export class Broker {
           this.log(`${name} woke after ${wake.info.away}s: ${wake.info.missed} room messages ${sent ? "sent" : "not sent"}`);
           this.brief(wake.info, sent);
           for (const fn of this.wakeListeners) fn(wake.info);
+        } else if (fresh) {
+          this.log(`${name} started a new session: greeted`);
+          this.notify(name, greeting(name));
         }
         return;
       }
@@ -981,8 +986,19 @@ export class Broker {
   private brief(w: WakeInfo, streamSent: boolean) {
     const k = this.cfg.agents.find((a) => a.keeper);
     const keeper = k && w.missed && this.sockets.get(k.name)?.size ? k.name : undefined;
-    this.notify(w.agent, wakeNotice(w, { streamSent, keeper }));
+    this.notify(w.agent, wakeNotice(w, { streamSent, keeper }, { notes: this.store.notes(w.agent), intro: this.context.intro() }));
     if (keeper) this.notify(keeper, wakeText(w));
+  }
+
+  /**
+   * Whether an agent's connection starts a new adapter session, which gets a greeting: the adapter sends the same
+   * `session` on every connection of one process. People, webhooks and the keeper are never greeted, and neither
+   * is an adapter that sends no session (before 0.9): it is still woken after a long absence.
+   */
+  private newSession(agent: AgentConfig, session: unknown): boolean {
+    if (agent.kind === "human" || agent.webhook || agent.keeper) return false;
+    if (typeof session !== "string" || !session || session.length > 100) return false;
+    return this.store.newSession(agent.name, session);
   }
 
   /** Called whenever an agent is woken (after its brief is on its way); returns an unsubscribe function. */

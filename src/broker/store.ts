@@ -164,6 +164,10 @@ export class Store {
         agent TEXT PRIMARY KEY,
         ts TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS sessions (
+        agent TEXT PRIMARY KEY,
+        session TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS files (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -542,6 +546,14 @@ export class Store {
     this.db.prepare("INSERT INTO last_seen (agent, ts) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET ts = excluded.ts").run(agent, ts);
   }
 
+  /** Records the adapter session an agent connected with; true when it differs from the last one (a new session). */
+  newSession(agent: string, session: string): boolean {
+    const last = (this.db.prepare("SELECT session FROM sessions WHERE agent = ?").get(agent) as { session: string } | undefined)?.session;
+    if (last === session) return false;
+    this.db.prepare("INSERT INTO sessions (agent, session) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET session = excluded.session").run(agent, session);
+    return true;
+  }
+
   /** Thanks `author` got after `since` (an ISO time), oldest first. */
   thanksSince(author: string, since: string): { id: number; by: string }[] {
     return this.db
@@ -775,6 +787,7 @@ export class Store {
     this.db.prepare("DELETE FROM memberships WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM cursors WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM last_seen WHERE agent = ?").run(agent);
+    this.db.prepare("DELETE FROM sessions WHERE agent = ?").run(agent);
     this.db.prepare("DELETE FROM notes WHERE agent = ?").run(agent);
   }
 

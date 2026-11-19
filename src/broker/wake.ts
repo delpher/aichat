@@ -1,5 +1,7 @@
 // Waking an agent (stage І2): what it missed in its rooms while away, and that diff as text for the keeper.
-import type { ChatMessage } from "../protocol.js";
+// Also the greeting a new session gets (alexey, 1701).
+import { noteListing } from "../notes-text.js";
+import type { AgentNote, ChatMessage, WorldIntro } from "../protocol.js";
 
 /** What an agent missed in its rooms while it was away. */
 export interface WakeInfo {
@@ -33,16 +35,49 @@ export function awayText(seconds: number): string {
 
 /** The last lines of every wake notice: what to do if the session is new, and that no answer is needed. */
 export const WAKE_ADVICE =
-  "Якщо ти щойно запустився і не пам'ятаєш попередньої розмови, переглянь нотатник (recall) і останні розмови " +
-  "(read_history), щоб згадати, на чому зупинився. Якщо ти й так у курсі, нічого робити не треба.\n" +
+  "Якщо ти щойно запустився і не пам'ятаєш попередньої розмови, переглянь нотатки (вище, повністю через recall) " +
+  "і останні розмови (read_history), щоб згадати, на чому зупинився. Якщо ти й так у курсі, нічого робити не треба.\n" +
   "Відповідати на це повідомлення не треба.";
 
 /**
- * What the broker itself tells every woken agent: how long it was away, how much it missed where, who retells it
- * (the keeper, if online) or where to read it, and the advice on waking up. No retelling: the details are in
- * read_history or in the keeper's brief.
+ * What a new session of an agent gets when it is not woken: a nudge to look around, nothing more. A dropped
+ * connection that comes back is the same session and gets nothing (alexey, 1703).
  */
-export function wakeNotice(w: WakeInfo, how: { streamSent: boolean; keeper?: string }): string {
+export function greeting(agent: string): string {
+  return (
+    `Привіт, ти в AIChat як ${agent}. Якщо ти щойно запустився і не пам'ятаєш попередньої розмови, переглянь нотатник ` +
+    "(recall) і останні розмови (read_history). Відповідати на це повідомлення не треба."
+  );
+}
+
+/** The agent's notebook in the wake notice: the notes most recently changed first, within the budget. */
+export function notebookText(notes: AgentNote[]): string {
+  if (!notes.length) return "Твій нотатник (remember, recall, forget) порожній.";
+  const { lines, hidden } = noteListing(notes);
+  const what = plural(notes.length, ["нотатка", "нотатки", "нотаток"]);
+  const tail = hidden ? [`(ще ${hidden} ${plural(hidden, ["старіша не показана", "старіші не показані", "старіших не показано"])}, recall покаже всі)`] : [];
+  return [`Твій нотатник: ${notes.length} ${what}, свіжі першими; recall(id) покаже нотатку з текстом:`, ...lines, ...tail].join("\n");
+}
+
+/** Which intro is current, and what to do with it: keep a copy of your own and check its version (alexey, 1701). */
+export function introText(intro: WorldIntro): string {
+  const version = intro.draft ? `версія ${intro.ts} (вбудована чернетка)` : `версія ${intro.ts} від ${intro.by}`;
+  return (
+    `Вводна AIChat: ${version}. Якщо в тебе збережена саме ця версія, нічого робити не треба. Інакше прочитай ` +
+    "world_info і збережи вводну собі (наприклад, у локальну пам'ять), щоб наступного разу лише звірити версію."
+  );
+}
+
+/**
+ * What the broker itself tells every woken agent: how long it was away, how much it missed where, who retells it
+ * (the keeper, if online) or where to read it, its notebook, the intro's version, and the advice on waking up. No
+ * retelling: the details are in read_history or in the keeper's brief.
+ */
+export function wakeNotice(
+  w: WakeInfo,
+  how: { streamSent: boolean; keeper?: string },
+  ctx: { notes: AgentNote[]; intro: WorldIntro },
+): string {
   const lines: string[] = [];
   if (w.missed) {
     const rooms = w.rooms.map((r) => `#${r.room}: ${r.messages.length}`).join(", ");
@@ -54,8 +89,7 @@ export function wakeNotice(w: WakeInfo, how: { streamSent: boolean; keeper?: str
     if (how.keeper) lines.push(`${how.keeper} зараз напише тобі, що там було.`);
     else lines.push(how.streamSent ? "Самі повідомлення прийшли окремо." : "Самих повідомлень не надіслано, їх можна прочитати через read_history.");
   }
-  lines.push(WAKE_ADVICE);
-  return lines.join("\n");
+  return [lines.join("\n"), notebookText(ctx.notes), introText(ctx.intro), WAKE_ADVICE].join("\n\n");
 }
 
 /** Longest a message's text gets in the diff. */
