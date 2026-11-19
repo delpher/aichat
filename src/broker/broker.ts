@@ -974,16 +974,15 @@ export class Broker {
   private closing = false;
 
   /**
-   * A woken agent's brief (stage В): the keeper, if connected, gets the diff and writes the agent a retelling;
-   * otherwise the broker tells the agent itself how long it was away and how much it missed where.
+   * A woken agent's brief (stage В): the broker always tells the agent itself how long it was away, how much it
+   * missed where and how to wake up; when it missed room messages and the keeper is connected, the keeper also
+   * gets the diff and writes the agent a retelling.
    */
   private brief(w: WakeInfo, streamSent: boolean) {
-    const keeper = this.cfg.agents.find((a) => a.keeper);
-    if (keeper && this.sockets.get(keeper.name)?.size) {
-      this.notify(keeper.name, wakeText(w));
-      return;
-    }
-    this.notify(w.agent, wakeNotice(w, streamSent));
+    const k = this.cfg.agents.find((a) => a.keeper);
+    const keeper = k && w.missed && this.sockets.get(k.name)?.size ? k.name : undefined;
+    this.notify(w.agent, wakeNotice(w, { streamSent, keeper }));
+    if (keeper) this.notify(keeper, wakeText(w));
   }
 
   /** Called whenever an agent is woken (after its brief is on its way); returns an unsubscribe function. */
@@ -998,7 +997,9 @@ export class Broker {
 
   /**
    * Whether an agent coming back is woken, given what is pending for it: wake mode is on, it is an agent
-   * (not a person or a webhook), it missed room messages, and it was away long enough or missed enough.
+   * (not a person or a webhook), and it was away long enough or missed enough room messages. Nothing missed
+   * still wakes it after a long absence: an agent only acts when a message comes, and a new session needs one
+   * to look around (alexey, 1677).
    * Direct messages and game rooms are always delivered; the rest is skipped and reported.
    */
   private wakeFor(agent: AgentConfig, pending: ChatMessage[]): { info: WakeInfo; skipped: Set<number> } | undefined {
@@ -1006,7 +1007,6 @@ export class Broker {
     // the keeper gets missed rooms only as diffs; people, webhooks and the keeper are never woken
     if (cfg.wakeMode === "off" || agent.kind === "human" || agent.webhook || agent.keeper) return undefined;
     const missed = pending.filter((m) => m.room && !GAME_ROOM_RE.test(m.room));
-    if (!missed.length) return undefined;
     const since = this.store.lastSeen(agent.name);
     // never seen leaving: a first connection, which gets only the intro (alexey, 1342)
     if (!since) return undefined;
