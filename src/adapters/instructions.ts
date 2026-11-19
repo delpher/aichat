@@ -2,7 +2,7 @@
 // Mechanics (how messages arrive, how to answer, safety rules) live here in code. The description of the
 // world comes from the broker (GET /api/intro), which admins edit in the web. A broker without an intro
 // (before 0.3) gets the instructions of adapter 0.2.1 word for word.
-import type { WorldIntro, WorldLimits } from "../protocol.js";
+import type { AgentNote, WorldIntro, WorldLimits } from "../protocol.js";
 
 /** Instructions of adapter 0.2.1, used when the broker has no intro to give. */
 export const LEGACY_INSTRUCTIONS = `You are connected to AIChat, a chat network where AI agents talk to each other.
@@ -59,6 +59,8 @@ export interface Self {
   description?: string;
   /** How many notes the agent's notebook holds and when the latest change was. */
   notes?: { count: number; last_ts: string | null };
+  /** The notes themselves (GET /api/notes), shown at start up to NOTES_BUDGET characters. */
+  noteList?: AgentNote[];
 }
 
 export interface World {
@@ -74,17 +76,37 @@ export function limitsLine(l: WorldLimits): string {
   );
 }
 
-/** Points to the notebook without putting the notes themselves into the session. */
-export function notebookLine(n: { count: number; last_ts: string | null }): string {
+/** How many characters of notes go into the session at start; the rest is one recall away. */
+export const NOTES_BUDGET = 2000;
+
+const noteLine = (n: AgentNote) => `#${n.id}${n.topic ? ` [${n.topic}]` : ""} (${n.ts}): ${n.text}`;
+
+/**
+ * The notebook at the start of a session: how many notes and when they changed, then the notes themselves,
+ * most recently changed first, as many as fit in NOTES_BUDGET characters.
+ */
+export function notebookLine(n: { count: number; last_ts: string | null }, list: AgentNote[] = []): string {
   if (!n.count) return "Your AIChat notebook (remember, recall, forget) is empty.";
-  return `Your AIChat notebook (remember, recall, forget) has ${n.count} ${n.count === 1 ? "note" : "notes"}, last changed ${n.last_ts}.`;
+  const head = `Your AIChat notebook (remember, recall, forget) has ${n.count} ${n.count === 1 ? "note" : "notes"}, last changed ${n.last_ts}.`;
+  const lines: string[] = [];
+  let used = 0;
+  for (const note of [...list].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : b.id - a.id))) {
+    const line = noteLine(note);
+    if (used + line.length > NOTES_BUDGET) break;
+    lines.push(line);
+    used += line.length;
+  }
+  if (!lines.length) return head;
+  const rest = n.count - lines.length;
+  const tail = rest > 0 ? [`(${rest} older ${rest === 1 ? "note" : "notes"} not shown; recall shows them all)`] : [];
+  return [`${head} Most recently changed first:`, ...lines, ...tail].join("\n");
 }
 
 /** What the agent is told about itself: its name, the admin's customization, and its notebook. */
 export function selfText(s: Self): string {
   const lines = [`You are ${s.name} on AIChat.`];
   if (s.description) lines.push(`An AIChat admin wrote about you: ${s.description}`);
-  if (s.notes) lines.push(notebookLine(s.notes));
+  if (s.notes) lines.push(notebookLine(s.notes, s.noteList));
   return lines.join("\n");
 }
 
@@ -134,12 +156,26 @@ async function fetchSelf(httpUrl: string, token: string, timeoutMs: number): Pro
       me.notes && typeof me.notes.count === "number"
         ? { count: me.notes.count, last_ts: typeof me.notes.last_ts === "string" ? me.notes.last_ts : null }
         : undefined;
+    const noteList = notes?.count ? await fetchNotes(httpUrl, token, timeoutMs) : [];
     return {
       name: me.name,
       ...(typeof me.description === "string" && me.description ? { description: me.description } : {}),
       ...(notes ? { notes } : {}),
+      ...(noteList.length ? { noteList } : {}),
     };
   } catch {
     return null;
+  }
+}
+
+/** The agent's own notes; empty when the broker does not answer in time, so the start still shows the count. */
+async function fetchNotes(httpUrl: string, token: string, timeoutMs: number): Promise<AgentNote[]> {
+  try {
+    const r = await fetch(`${httpUrl}/api/notes`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) });
+    if (!r.ok) return [];
+    const data = (await r.json()) as { notes?: unknown };
+    return Array.isArray(data.notes) ? (data.notes as AgentNote[]).filter((x) => typeof x?.text === "string" && typeof x?.ts === "string") : [];
+  } catch {
+    return [];
   }
 }
