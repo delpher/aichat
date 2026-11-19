@@ -61,7 +61,13 @@ export class Games {
 
   /** The games the broker can host, for GET /api/games/types. */
   types(): GameType[] {
-    return [...this.defs.values()].map(({ id, title, description, seats }) => ({ id, title, description, seats }));
+    return [...this.defs.values()].map(({ id, title, description, seats, minSeats }) => ({
+      id,
+      title,
+      description,
+      seats,
+      ...(minSeats ? { minSeats } : {}),
+    }));
   }
 
   private def(game: string): GameDefinition {
@@ -135,24 +141,34 @@ export class Games {
   /**
    * `players`: who sits where, in seat order (null = free). Or `seat`: the creator sits there alone and
    * the game waits for the others. People may set up games they do not play in; agents may not.
+   * `seats`: how many seats, for a game type with `minSeats`; without it, every seat of the type
+   * (or as many as `players` names, when that is fewer and allowed).
    */
-  create(by: string, args: { game?: unknown; players?: unknown; seat?: unknown }): GameRecord {
+  create(by: string, args: { game?: unknown; players?: unknown; seat?: unknown; seats?: unknown }): GameRecord {
     if (typeof args.game !== "string") throw new GameError("set game (see GET /api/games/types)");
     const def = this.def(args.game);
+    const max = def.seats.length;
+    const min = def.minSeats ?? max;
+    let n = max;
+    if (args.seats != null) {
+      if (!Number.isInteger(args.seats) || (args.seats as number) < min || (args.seats as number) > max)
+        throw new GameError(min === max ? `${def.title} is for ${max} players` : `seats must be from ${min} to ${max}`);
+      n = args.seats as number;
+    } else if (Array.isArray(args.players) && args.players.length >= min && args.players.length < max) n = args.players.length;
     let players: (string | null)[];
     if (args.players !== undefined) {
-      if (!Array.isArray(args.players) || args.players.length > def.seats.length)
-        throw new GameError(`players must be a list of up to ${def.seats.length} names (null for a free seat)`);
-      players = def.seats.map((_, i) => this.player((args.players as unknown[])[i]));
+      if (!Array.isArray(args.players) || args.players.length > n)
+        throw new GameError(`players must be a list of up to ${n} names (null for a free seat)`);
+      players = Array.from({ length: n }, (_, i) => this.player((args.players as unknown[])[i]));
     } else {
-      players = def.seats.map(() => null);
-      players[this.seatIndex(def, args.seat ?? def.seats[0].id)] = by;
+      players = Array.from({ length: n }, () => null);
+      players[this.seatIndex(def, args.seat ?? def.seats[0].id, n)] = by;
     }
     const named = players.filter((p): p is string => !!p);
     if (!named.length) throw new GameError("name at least one player");
     if (new Set(named).size !== named.length) throw new GameError("a player cannot take two seats");
     if (!named.includes(by) && !this.host.isHuman(by)) throw new GameError("agents may only create games they play in", 403);
-    const status = named.length === def.seats.length ? "active" : "open";
+    const status = named.length === n ? "active" : "open";
     let g = this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
     const room = gameRoom(g.id);
     for (const n of new Set([...named, by])) this.host.join(n, room);
@@ -177,9 +193,9 @@ export class Games {
     const def = this.def(g.game);
     if (g.status !== "open") throw new GameError("the game has already started", 409);
     if (g.players.includes(by)) throw new GameError("you are already in this game", 409);
-    const i = seat == null || seat === "" ? g.players.indexOf(null) : this.seatIndex(def, seat);
+    const i = seat == null || seat === "" ? g.players.indexOf(null) : this.seatIndex(def, seat, g.players.length);
     if (i < 0 || g.players[i] !== null) {
-      const free = def.seats.filter((_, j) => g.players[j] === null).map((s) => s.id);
+      const free = g.players.flatMap((p, j) => (p === null ? [def.seats[j].id] : []));
       throw new GameError(`that seat is taken; free: ${free.join(", ") || "none"}`, 409);
     }
     g.players[i] = by;
@@ -217,22 +233,45 @@ export class Games {
     return saved;
   }
 
-  /** With two seats the other player wins; with more, the game ends without a winner. */
+  /**
+   * With two seats the other player wins. With more, a game that has dropOut() takes the player out and
+   * goes on (its rules tell when it is over); one without ends without a winner.
+   */
   resign(by: string, id: number): GameRecord {
     const g = this.activeFor(by, id);
     const def = this.def(g.game);
     const me = g.players.indexOf(by);
-    this.finish(g, { winner: def.seats.length === 2 ? 1 - me : null, reason: "resign" });
+    if (g.players.length > 2 && def.dropOut) {
+      let entry: string;
+      try {
+        entry = def.dropOut(g.moves, me);
+      } catch (e) {
+        throw new GameError((e as Error).message, 409);
+      }
+      g.moves = [...g.moves, entry];
+      g.draw_offer = null;
+      let outcome = def.outcome(g.moves);
+      const notes = outcome ? [] : this.runAuto(def, g);
+      outcome ??= def.outcome(g.moves);
+      if (outcome) this.finish(g, outcome);
+      const saved = this.host.store.updateGame(g);
+      const head = [`${by} здається й вибуває з партії.`, ...notes].join("\n");
+      this.host.announce(gameRoom(id), outcome ? `${head}\n${this.finalText(def, saved)}` : this.turnText(def, saved, head));
+      this.publish(saved);
+      return saved;
+    }
+    this.finish(g, { winner: g.players.length === 2 ? 1 - me : null, reason: "resign" });
     const saved = this.host.store.updateGame(g);
     this.host.announce(gameRoom(id), `${by} здається.\n${this.finalText(def, saved)}`);
     this.publish(saved);
     return saved;
   }
 
-  /** Offers a draw, or accepts another player's offer. */
+  /** Offers a draw, or accepts another player's offer. Only between two players. */
   draw(by: string, id: number): GameRecord {
     const g = this.activeFor(by, id);
     const def = this.def(g.game);
+    if (g.players.length > 2) throw new GameError("no draws in a game of more than two: play on, or resign to leave", 409);
     if (g.draw_offer && g.draw_offer !== by) {
       this.finish(g, { winner: null, reason: "agreement" });
       const saved = this.host.store.updateGame(g);
@@ -269,8 +308,8 @@ export class Games {
       // list the legal moves only for a bad move (not when it is not your turn or the game is over),
       // and only if the rules did not list them in the error already (checkers does)
       const badMove = !(e instanceof GameError) || e.status === 400;
-      const legal = badMove && g.status === "active" && !/legal moves/i.test(msg) ? this.def(g.game).legalMoves(g.moves) : [];
-      this.host.announce(room, `${from}: ${msg}` + (legal.length ? `\nМожливі ходи: ${legal.join(", ")}` : ""));
+      const hint = badMove && g.status === "active" && !/legal moves/i.test(msg) ? this.movesText(this.def(g.game), g.moves) : "";
+      this.host.announce(room, `${from}: ${msg}` + (hint ? `\n${hint}` : ""));
     }
   }
 
@@ -280,10 +319,19 @@ export class Games {
     return v;
   }
 
-  private seatIndex(def: GameDefinition, seat: unknown): number {
-    const i = def.seats.findIndex((s) => s.id === seat);
-    if (i < 0) throw new GameError(`unknown seat: ${String(seat)}; seats: ${def.seats.map((s) => s.id).join(", ")}`);
+  /** The index of seat id `seat` among the first `n` seats of the type. */
+  private seatIndex(def: GameDefinition, seat: unknown, n = def.seats.length): number {
+    const seats = def.seats.slice(0, n);
+    const i = seats.findIndex((s) => s.id === seat);
+    if (i < 0) throw new GameError(`unknown seat: ${String(seat)}; seats: ${seats.map((s) => s.id).join(", ")}`);
     return i;
+  }
+
+  /** "Можливі ходи: a, b", or the game's own hint when it has too many moves to list; "" when none. */
+  private movesText(def: GameDefinition, moves: string[]): string {
+    if (def.movesHint) return def.movesHint(moves);
+    const legal = def.legalMoves(moves);
+    return legal.length ? `Можливі ходи: ${legal.join(", ")}` : "";
   }
 
   private activeFor(by: string, id: number): GameRecord {
@@ -319,9 +367,9 @@ export class Games {
   /** "білі — alice, чорні — вільне місце"; with `rated`, each player's rating in this game follows the name. */
   private seatsText(def: GameDefinition, g: GameRecord, rated = false): string {
     const ratings = rated && def.rate ? this.ratingsOf(def.id) : {};
-    return def.seats
-      .map((s, i) => {
-        const p = g.players[i];
+    return g.players
+      .map((p, i) => {
+        const s = def.seats[i];
         return `${s.name} — ${p ?? FREE}${p && ratings[p] !== undefined ? ` (рейтинг ${ratings[p]})` : ""}`;
       })
       .join(", ");
@@ -334,7 +382,7 @@ export class Games {
   private runAuto(def: GameDefinition, g: GameRecord): string[] {
     const notes: string[] = [];
     for (let i = 0; def.auto && i < 64 && !def.outcome(g.moves); i++) {
-      const a = def.auto(g.moves, this.host.random ?? Math.random);
+      const a = def.auto(g.moves, this.host.random ?? Math.random, g.players.length);
       if (!a) break;
       g.moves = [...g.moves, a.move];
       notes.push(a.note);
@@ -356,8 +404,10 @@ export class Games {
       "```",
       def.board(g.moves),
       "```",
-      `${label} (${g.players[turn]}). Можливі ходи: ${def.legalMoves(g.moves).join(", ")}`,
-      `Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign, draw.`,
+      `${label} (${g.players[turn]}). ${this.movesText(def, g.moves)}`,
+      g.players.length > 2
+        ? "Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign (вийти з партії)."
+        : "Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign, draw.",
     ].join("\n");
   }
 

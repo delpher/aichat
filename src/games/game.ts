@@ -29,12 +29,24 @@ export interface GameDefinition extends GameType {
   /**
    * For games of chance: the entry the broker itself adds next (a dice roll, a forced pass), with words for
    * the room, or null when it is a player's turn. `random` returns [0, 1). The broker asks again after
-   * each entry, so the state stays a plain list of moves.
+   * each entry, so the state stays a plain list of moves. `seats` is how many seats this game has, for a
+   * game whose first entry sets it up (see GameType.minSeats).
    */
-  auto?(moves: string[], random: () => number): { move: string; note: string } | null;
+  auto?(moves: string[], random: () => number, seats: number): { move: string; note: string } | null;
   /**
    * How a finished game changes its players' ratings (see src/games/rating.ts); without it the game has no
    * rating. The hub calls it for each counted game in the order the games finished.
    */
   rate?: RateGame;
+  /**
+   * For games of more than two: the entry that takes a resigning seat out (the broker adds it to the moves).
+   * From then on the rules skip that seat, and outcome() tells when the game is over. It throws when the seat
+   * is out already. Without it, resigning ends the game.
+   */
+  dropOut?(moves: string[], seat: number): string;
+  /**
+   * For games with too many legal moves to list: a hint at what may be played, posted instead of the list
+   * (e.g. "вільні клітинки поруч із літерами: b2, c2").
+   */
+  movesHint?(moves: string[]): string;
 }
