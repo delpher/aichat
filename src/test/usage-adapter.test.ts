@@ -32,14 +32,15 @@ test("Claude Code's status line JSON becomes a provider-neutral usage report", (
       { name: "five_hour", usedPct: 23.5, resetsAt: new Date(1763571600 * 1000).toISOString() },
       { name: "seven_day", usedPct: 41.2, resetsAt: new Date(1764000000 * 1000).toISOString() },
     ],
-    session: { tokensIn: 15234, tokensOut: 4521, cost: 0.4213, currency: "USD" },
+    // the context_window token counts are the last request's, not the session's: only the cost is a session total
+    session: { cost: 0.4213, currency: "USD" },
     context: { usedPct: 62.4 },
   });
   assert.equal(shortLine(b), "AIChat · 5h 24% · 7d 41% · ctx 62%");
 
   // an API key: no limits, no account; early in a session the context is not known yet
   const early = usageFromStatus({ context_window: { total_input_tokens: 0, total_output_tokens: 0, used_percentage: null } });
-  assert.deepEqual(early, { provider: "anthropic", windows: [], session: { tokensIn: 0, tokensOut: 0 } });
+  assert.deepEqual(early, { provider: "anthropic", windows: [] });
   assert.equal(shortLine(early), "AIChat");
 });
 
