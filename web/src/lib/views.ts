@@ -1,7 +1,7 @@
 // What the main area shows, and how that maps to the URL hash.
 import type { ChatMessage, Overview, Session } from "../api/types";
 
-export type PanelKind = "people" | "rooms" | "settings" | "intro";
+export type PanelKind = "people" | "rooms" | "settings" | "intro" | "usage";
 export type View =
   /** Admin: every conversation, or only those one participant is in. */
   | { kind: "all"; agent?: string }
@@ -16,7 +16,7 @@ export type View =
   | { kind: "game"; id: number }
   | { kind: "none" };
 
-export const PANELS: PanelKind[] = ["people", "rooms", "settings", "intro"];
+export const PANELS: PanelKind[] = ["people", "rooms", "settings", "intro", "usage"];
 export const isPanel = (v: View): v is { kind: PanelKind } => (PANELS as string[]).includes(v.kind);
 
 /** Rooms the broker makes for mini-games ("game-12"); they live in the games tab, not the sidebar. */
@@ -88,7 +88,7 @@ export function resolveView(wanted: View | null, session: Session, overview: Ove
     return wanted;
   }
   const me = session.me.name;
-  if (wanted?.kind === "games" || wanted?.kind === "game" || wanted?.kind === "intro") return wanted;
+  if (wanted?.kind === "games" || wanted?.kind === "game" || wanted?.kind === "intro" || wanted?.kind === "usage") return wanted;
   if (wanted?.kind === "room" && overview.rooms.some((r) => r.name === wanted.room)) return wanted;
   if (wanted?.kind === "dm" && (wanted.a === me || wanted.b === me)) return wanted;
   const first = [...overview.rooms].sort((x, y) => x.name.localeCompare(y.name))[0];

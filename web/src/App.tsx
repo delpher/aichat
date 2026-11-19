@@ -1,7 +1,7 @@
 import { LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthError, detectSession, makeApi } from "./api/http";
-import type { ChatMessage, GameInfo, GameRatings, Overview, Session } from "./api/types";
+import type { ChatMessage, GameInfo, GameRatings, Overview, Session, UsageReport } from "./api/types";
 import { ChatView } from "./components/ChatView";
 import { GameLobby } from "./games/GameLobby";
 import { GamePage } from "./games/GamePage";
@@ -15,6 +15,7 @@ import { PeoplePanel } from "./components/panels/PeoplePanel";
 import { RoomsPanel } from "./components/panels/RoomsPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
 import { IntroPanel } from "./components/panels/IntroPanel";
+import { UsagePanel } from "./components/panels/UsagePanel";
 import { AgentProfile } from "./components/AgentProfile";
 import { Sidebar } from "./components/Sidebar";
 import { CommandPalette } from "./components/CommandPalette";
@@ -320,6 +321,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     boardSubscribers.current.add(fn);
     return () => void boardSubscribers.current.delete(fn);
   }, []);
+  const usageSubscribers = useRef(new Set<(u: UsageReport) => void>());
+  const subscribeUsage = useCallback((fn: (u: UsageReport) => void) => {
+    usageSubscribers.current.add(fn);
+    return () => void usageSubscribers.current.delete(fn);
+  }, []);
   const gameSubscribers = useRef(new Set<(g: GameInfo) => void>());
   const gameDeletedSubscribers = useRef(new Set<(id: number) => void>());
   const subscribeGames = useCallback((fn: (g: GameInfo) => void, onDeleted?: (id: number) => void) => {
@@ -372,6 +378,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     onError: (e) => toast(`Брокер: ${e}`, true),
     onBrief: (room, brief) => {
       for (const fn of boardSubscribers.current) fn({ kind: "brief", room, brief });
+    },
+    onUsage: (u) => {
+      for (const fn of usageSubscribers.current) fn(u);
     },
     onGame: (g) => {
       for (const fn of gameSubscribers.current) fn(g);
@@ -437,6 +446,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribeDelivered,
     subscribeThanks,
     subscribeBoard,
+    subscribeUsage,
     addLive,
     toast,
     fail,
@@ -460,6 +470,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "rooms") main = <RoomsPanel />;
   else if (view.kind === "settings") main = <SettingsPanel />;
   else if (view.kind === "intro") main = <IntroPanel />;
+  else if (view.kind === "usage") main = <UsagePanel />;
   else if (view.kind === "games")
     main = view.game ? <GameLobby key={`${view.game}:${epoch}`} type={view.game} /> : <GamesHome key={epoch} />;
   else if (view.kind === "game") main = <GamePage key={`${view.id}:${epoch}`} id={view.id} />;

@@ -9,6 +9,8 @@ import { clearSetup, peekSetup } from "../../lib/handoff";
 import { setLeaveGuard } from "../../lib/leave";
 import { Avatar } from "../Avatar";
 import { ListSkeleton } from "../Skeleton";
+import { UsageList } from "../usage/UsageList";
+import { useUsage } from "../usage/useUsage";
 import { SetupBox } from "./SetupBox";
 import { Status, type StatusValue } from "./Status";
 import { useAgents } from "./useAgents";
@@ -309,6 +311,8 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
         )}
       </form>
 
+      {!human && <AgentUsage name={name} />}
+
       <section className="section">
         <h2>Доступ</h2>
         {confirm === "rotate" ? (
@@ -354,5 +358,25 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
         )}
       </section>
     </div>
+  );
+}
+
+/** What the agent last reported about its account and session (admins see every agent's). */
+function AgentUsage({ name }: { name: string }) {
+  const { reports } = useUsage();
+  const report = reports?.find((r) => r.agent === name);
+  return (
+    <section className="section">
+      <h2>Використання</h2>
+      {report ? (
+        <UsageList reports={[report]} label={(account) => `Акаунт ${account.slice(0, 6)}`} />
+      ) : (
+        <p className="muted small">
+          {reports
+            ? "Агент ще не надсилав даних про використання. Їх надсилає рядок статусу Claude Code (команда підключення з --statusline), поки сесія працює."
+            : "Завантаження…"}
+        </p>
+      )}
+    </section>
   );
 }
