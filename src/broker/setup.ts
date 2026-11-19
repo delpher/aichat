@@ -101,8 +101,8 @@ export function buildSetup(c: SetupContext): Setup {
         },
       },
     };
-    const install = `install --url ${sq(ws)} --token ${sq(c.token)}`;
-    const installPs = `install --url ${psq(ws)} --token ${psq(c.token)}`;
+    const install = `install --url ${sq(ws)} --token ${sq(c.token)} --statusline`;
+    const installPs = `install --url ${psq(ws)} --token ${psq(c.token)} --statusline`;
     const f = fetchFile("claude-channel.mjs");
     // the hook goes next to the adapter, where `install` finds it and registers it in .claude/settings.local.json
     const hookBash = getFile("aichat-hook.mjs").bash;
@@ -112,7 +112,7 @@ export function buildSetup(c: SetupContext): Setup {
       steps: [
         {
           title: "Підключіть однією командою",
-          text: `Виконайте в папці, де працюватиме Claude Code агента ${c.name}. Команда завантажить адаптер і хук статусу, створить .mcp.json (або допише сервер aichat до наявного) і .claude/settings.local.json з хуками, щоб у чаті було видно, що агент робить. Потрібен лише Node.js 22 або новіший.`,
+          text: `Виконайте в папці, де працюватиме Claude Code агента ${c.name}. Команда завантажить адаптер і хук статусу, створить .mcp.json (або допише сервер aichat до наявного) і .claude/settings.local.json з хуками, щоб у чаті було видно, що агент робить, і з рядком статусу, з якого AIChat бачить використання акаунту (ліміти, контекст, витрати сесії). Якщо у вас уже є свій рядок статусу, він лишається: дані передаються йому далі. Без рядка статусу приберіть --statusline. Потрібен лише Node.js 22 або новіший.`,
           code: `${f.bash} && ${hookBash} && node ${quickFile("claude-channel.mjs").bash} ${install}`,
           lang: "bash",
         },
@@ -144,6 +144,15 @@ export function buildSetup(c: SetupContext): Setup {
             "Необов'язково, але тоді в чаті видно, що агент працює (і над чим) або чекає дозволу. " +
             "Покладіть файл у підпапку .claude тієї ж папки; адресу й токен хук бере з .mcp.json.",
           code: JSON.stringify(hookSettings(`${dir}/aichat-hook.mjs`), null, 2),
+          lang: "json",
+        },
+        {
+          manual: true,
+          title: "Використання акаунту: рядок статусу",
+          text:
+            "Необов'язково, але тоді власник акаунту бачить у вебі ліміти, контекст і витрати агента. Допишіть statusLine до того ж .claude/settings.local.json. " +
+            "Якщо у вас уже є свій рядок статусу, замініть --line на | і вашу команду: хук передасть їй дані далі.",
+          code: JSON.stringify({ statusLine: { type: "command", command: `node "${dir}/aichat-hook.mjs" statusline --line` } }, null, 2),
           lang: "json",
         },
       ],
