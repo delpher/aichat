@@ -122,7 +122,7 @@ export function GamePage({ id }: { id: number }) {
       <div className="game">
         <div className="game-board">
           {others.map((i) => (
-            <PlayerBar key={i} name={game.players[i]} seat={i} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
+            <PlayerBar key={i} name={game.players[i]} seat={i} seatId={t?.seats[i]?.id} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
           ))}
           {m ? (
             <m.Play game={game} ply={shownPly} canMove={canMove} bottom={bottom} onMove={(move) => void act("move", { move })} />
@@ -134,6 +134,7 @@ export function GamePage({ id }: { id: number }) {
           <PlayerBar
             name={game.players[bottom]}
             seat={bottom}
+            seatId={t?.seats[bottom]?.id}
             label={seatName(t, bottom)}
             turn={live && game.turn === bottom}
             rating={ratings[game.players[bottom] ?? ""]}
@@ -292,10 +293,11 @@ export function GamePage({ id }: { id: number }) {
   );
 }
 
-function PlayerBar({ name, seat, label, turn, rating }: { name: string | null; seat: number; label: string; turn: boolean; rating?: number }) {
+/** `seatId` colours the dot when it names a colour ("w", "b"); otherwise the seat's place in turn order does. */
+function PlayerBar({ name, seat, seatId, label, turn, rating }: { name: string | null; seat: number; seatId?: string; label: string; turn: boolean; rating?: number }) {
   return (
     <div className={`player-bar${turn ? " turn" : ""}`}>
-      <span className={`seat-dot seat-${seat}`} />
+      <span className={`seat-dot seat-${seat}${seatId ? ` seat-id-${seatId}` : ""}`} />
       {name ? <b>{name}</b> : <span className="free-seat">{FREE_SEAT}</span>}
       {name && <Rating value={rating} />}
       <span className="muted small">{label}</span>
