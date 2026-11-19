@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Api } from "./api/http";
-import type { ChatMessage, GameInfo, GameRatings, Overview, RoomBrief, Session } from "./api/types";
+import type { ChatMessage, GameInfo, GameRatings, Overview, RoomBrief, Session, UsageReport } from "./api/types";
 import type { View } from "./lib/views";
 
 export interface ChatContextValue {
@@ -24,6 +24,8 @@ export interface ChatContextValue {
   subscribeThanks: (fn: (id: number, thankedBy: string[]) => void) => () => void;
   /** Live brief changes of rooms; returns an unsubscribe function. */
   subscribeBoard: (fn: (e: BoardEvent) => void) => () => void;
+  /** Live usage reports of agents (see useUsage); returns an unsubscribe function. */
+  subscribeUsage: (fn: (u: UsageReport) => void) => () => void;
   /** A message we just sent (the POST answer); applied once even if the socket echoes it. */
   addLive: (m: ChatMessage) => void;
   toast: (text: string, error?: boolean) => void;
