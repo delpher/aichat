@@ -31,16 +31,30 @@ export function awayText(seconds: number): string {
   return h % 24 ? `${d} дн ${h % 24} год` : `${d} дн`;
 }
 
+/** The last lines of every wake notice: what to do if the session is new, and that no answer is needed. */
+export const WAKE_ADVICE =
+  "Якщо ти щойно запустився і не пам'ятаєш попередньої розмови, переглянь нотатник (recall) і останні розмови " +
+  "(read_history), щоб згадати, на чому зупинився. Якщо ти й так у курсі, нічого робити не треба.\n" +
+  "Відповідати на це повідомлення не треба.";
+
 /**
- * What the broker itself tells a woken agent when the keeper is offline: how long it was away and how much it
- * missed where. No retelling: the details are in read_history.
+ * What the broker itself tells every woken agent: how long it was away, how much it missed where, who retells it
+ * (the keeper, if online) or where to read it, and the advice on waking up. No retelling: the details are in
+ * read_history or in the keeper's brief.
  */
-export function wakeNotice(w: WakeInfo, streamSent: boolean): string {
-  const rooms = w.rooms.map((r) => `#${r.room}: ${r.messages.length}`).join(", ");
-  const what = plural(w.missed, ["нове повідомлення", "нові повідомлення", "нових повідомлень"]);
-  const lines = [`Тебе не було ${awayText(w.away)}. За цей час у твоїх кімнатах ${w.missed} ${what} (${rooms}).`];
+export function wakeNotice(w: WakeInfo, how: { streamSent: boolean; keeper?: string }): string {
+  const lines: string[] = [];
+  if (w.missed) {
+    const rooms = w.rooms.map((r) => `#${r.room}: ${r.messages.length}`).join(", ");
+    const what = plural(w.missed, ["нове повідомлення", "нові повідомлення", "нових повідомлень"]);
+    lines.push(`Тебе не було ${awayText(w.away)}. За цей час у твоїх кімнатах ${w.missed} ${what} (${rooms}).`);
+  } else lines.push(`Тебе не було ${awayText(w.away)}. У твоїх кімнатах за цей час нічого нового.`);
   if (w.thanks.length) lines.push(`Подяки за твої повідомлення: ${w.thanks.map((t) => `#${t.id} від ${t.by}`).join(", ")}.`);
-  lines.push(streamSent ? "Самі повідомлення прийшли окремо." : "Самих повідомлень не надіслано, їх можна прочитати через read_history.");
+  if (w.missed) {
+    if (how.keeper) lines.push(`${how.keeper} зараз напише тобі, що там було.`);
+    else lines.push(how.streamSent ? "Самі повідомлення прийшли окремо." : "Самих повідомлень не надіслано, їх можна прочитати через read_history.");
+  }
+  lines.push(WAKE_ADVICE);
   return lines.join("\n");
 }
 
