@@ -36,7 +36,8 @@ describe("usage page", () => {
     const card = (await screen.findByRole("heading", { name: "Ваш акаунт" })).closest("section")!;
     expect(within(card).getByRole("meter", { name: "5 годин" })).toHaveAttribute("aria-valuenow", "40");
     expect(within(card).getByText("40%")).toBeInTheDocument();
-    expect(within(card).getByText(/скидання о/)).toBeInTheDocument();
+    // "о 14:05" today; after 23:00 the reset an hour on falls tomorrow and the day comes first
+    expect(within(card).getByText(/скидання (.+ )?о \d\d:\d\d/)).toBeInTheDocument();
     expect(within(card).getByText("claude")).toBeInTheDocument();
     expect(within(card).getByText("контекст 62%")).toBeInTheDocument();
     expect(within(card).getByText("$0.42 за сесію")).toBeInTheDocument();

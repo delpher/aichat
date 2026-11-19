@@ -19,6 +19,7 @@ import {
 } from "./config.js";
 import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
+import { agentGuide } from "./agent-guide.js";
 import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
 import { greeting, groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
@@ -1079,6 +1080,18 @@ export class Broker {
     try {
       if (url.pathname === "/health") return reply(200, { ok: true, version: VERSION });
       if (req.method === "GET" && url.pathname.startsWith("/client/")) return await this.serveClient(url.pathname, res);
+      // the public guide for AI agents: what AIChat is and how to connect, no secrets (alexey, 1706)
+      if (req.method === "GET" && (url.pathname === "/agents.md" || url.pathname === "/llms.txt")) {
+        res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+        return res.end(
+          agentGuide({
+            httpUrl: this.cfg.publicUrl || `http://${req.headers.host ?? `127.0.0.1:${this.cfg.port}`}`,
+            version: VERSION,
+            limits: this.worldLimits(),
+            games: this.games.types().map((t) => t.id),
+          }),
+        );
+      }
       if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
         return await this.serveStatic(url.pathname, res);
       if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, res, url, reply);

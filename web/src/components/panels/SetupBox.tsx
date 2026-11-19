@@ -116,10 +116,12 @@ export function SetupBox({
           <X size={16} />
         </button>
       </div>
-      {fresh && (
+      {fresh ? (
         <p className="warn">
           Токен показується <strong>лише один раз</strong>. Скопіюйте потрібне зараз і передайте тому, хто запускатиме агента.
         </p>
+      ) : (
+        <p className="muted small">Токен в інструкції замінено на &lt;TOKEN&gt;. Якщо токен загубився, натисніть «Новий токен».</p>
       )}
       <Connection name={name} human={setup.kind === "human"} />
       <Steps steps={quick} dir={dir} />

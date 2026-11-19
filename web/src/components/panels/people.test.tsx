@@ -133,6 +133,28 @@ describe("participant page", () => {
     renderWithChat(<PersonPage name="helper" onSelfDemoted={() => {}} />, asAdmin());
     expect(await screen.findByText("Підключіть однією командою")).toBeInTheDocument();
     expect(screen.getByText(/лише один раз/)).toBeInTheDocument();
+    // on top, before the participant's card
+    const box = screen.getByRole("heading", { name: "Як підключити helper" }).closest("section")!;
+    expect(box.compareDocumentPosition(screen.getByRole("heading", { name: "helper" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("opens the setup under the Access buttons, where it was asked for, with the link to the agents' guide (alexey, 1709)", async () => {
+    const api = fakeApi({
+      get: vi.fn(async (path: string) =>
+        path === "/admin/api/agents"
+          ? { agents: AGENTS }
+          : path.endsWith("/setup")
+            ? { setup: { kind: "claude", steps: [{ title: "Підключіть однією командою", code: "curl … '<TOKEN>'" }] } }
+            : { editable: true },
+      ),
+    });
+    renderWithChat(<PersonPage name="claude" onSelfDemoted={() => {}} />, asAdmin(api));
+    expect(await screen.findByText(/agents\.md/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Інструкція" }));
+    const heading = await screen.findByRole("heading", { name: "Як підключити claude" });
+    const access = screen.getByRole("heading", { name: "Доступ" }).closest("section")!;
+    expect(access.contains(heading)).toBe(true);
+    expect(screen.getByText(/Токен в інструкції замінено на <TOKEN>/)).toBeInTheDocument();
   });
 });
 
