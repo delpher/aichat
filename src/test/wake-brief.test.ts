@@ -1,16 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ChatMessage } from "../protocol.js";
-import { WAKE_ADVICE, awayText, plural, type WakeInfo } from "../broker/wake.js";
+import type { AgentNote, ChatMessage, WorldIntro } from "../protocol.js";
+import { WAKE_ADVICE, awayText, greeting, introText, notebookText, plural, type WakeInfo } from "../broker/wake.js";
 import { BrokerClient } from "../client/broker-client.js";
 import { connect, startBroker, tok } from "./helpers.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 120));
 
-/** Everything a fresh connection of `name` gets pushed in its first moments. */
-async function arrivals(url: string, name: string) {
+/** The intro a broker serves while no admin has saved one. */
+const DRAFT: WorldIntro = { text: "", by: "aichat", ts: "1970-01-01T00:00:00.000Z", draft: true };
+
+/** The whole notice after an absence: what was missed, the notebook, the intro's version, the advice. */
+const report = (head: string, notes: AgentNote[] = [], intro = DRAFT) => [head, notebookText(notes), introText(intro), WAKE_ADVICE].join("\n\n");
+
+/** Everything a fresh connection of `name` gets pushed in its first moments; `session` as an adapter sends it. */
+async function arrivals(url: string, name: string, session?: string) {
   const got: ChatMessage[] = [];
-  const c = new BrokerClient({ url, token: tok(name), reconnect: false, log: () => {} });
+  const c = new BrokerClient({ url, token: tok(name), reconnect: false, log: () => {}, ...(session ? { session } : {}) });
   c.on("message", (m: ChatMessage) => got.push(m));
   await c.connect();
   await settle();
@@ -61,9 +67,7 @@ test("В1 (brief): the keeper gets the diff to write the brief, and the woken ag
     assert.equal(notice.length, 1);
     assert.equal(
       notice[0].text,
-      "Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нові повідомлення (#design: 1, #lab: 2).\n" +
-        "keeper зараз напише тобі, що там було.\n" +
-        WAKE_ADVICE,
+      report("Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нові повідомлення (#design: 1, #lab: 2).\nkeeper зараз напише тобі, що там було."),
     );
     // the keeper's diff, by contract: first line, rooms newest first, one line per message
     const diff = keeper.got.filter((m) => m.from === "aichat");
@@ -97,9 +101,10 @@ test("В2 (on), keeper offline: the broker itself tells the agent what it missed
     assert.equal(notice[0].to, "bot1");
     assert.equal(
       notice[0].text,
-      "Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нові повідомлення (#design: 1, #lab: 2).\n" +
-        "Самих повідомлень не надіслано, їх можна прочитати через read_history.\n" +
-        WAKE_ADVICE,
+      report(
+        "Тебе не було 30 хв. За цей час у твоїх кімнатах 3 нові повідомлення (#design: 1, #lab: 2).\n" +
+          "Самих повідомлень не надіслано, їх можна прочитати через read_history.",
+      ),
     );
     // read_history has them all
     assert.equal((await bot1.c.history({ room: "lab" })).length, 2);
@@ -129,7 +134,7 @@ test("В: nothing missed still wakes after a long absence, with the advice and w
     assert.equal(wakes.length, 1);
     assert.equal(wakes[0].missed, 0);
     assert.deepEqual(back.got.map((m) => [m.from, m.text]), [
-      ["aichat", "Тебе не було 45 хв. У твоїх кімнатах за цей час нічого нового.\n" + WAKE_ADVICE],
+      ["aichat", report("Тебе не було 45 хв. У твоїх кімнатах за цей час нічого нового.")],
     ]);
     // nothing to retell: the keeper gets no diff
     assert.ok(!keeper.got.some((m) => m.from === "aichat"));
@@ -167,6 +172,73 @@ test("В: no brief on a first connection, or without wake mode", async () => {
   } finally {
     await off.broker.close();
   }
+});
+
+test("a new adapter session is greeted; a reconnect of the same session is not; an adapter without a session is not (alexey, 1703)", async () => {
+  // wake mode off: greeting does not depend on it
+  const { broker, url, tick } = await setup("off", false);
+  try {
+    // a first connection of a new session: the greeting, and nothing else from the broker
+    let s = await arrivals(url, "bot1", "session-a");
+    assert.deepEqual(s.got.map((m) => [m.from, m.to, m.text]), [["aichat", "bot1", greeting("bot1")]]);
+    assert.match(greeting("bot1"), /^Привіт, ти в AIChat як bot1\. .*recall.*read_history/);
+    s.c.close();
+    await settle();
+
+    // the same session comes back (a dropped connection): nothing
+    tick(30);
+    s = await arrivals(url, "bot1", "session-a");
+    assert.equal(s.got.length, 0);
+    s.c.close();
+    await settle();
+
+    // a new session: greeted again
+    s = await arrivals(url, "bot1", "session-b");
+    assert.deepEqual(s.got.map((m) => m.text), [greeting("bot1")]);
+    s.c.close();
+
+    // an older adapter sends no session: no greeting
+    const old = await arrivals(url, "bot2");
+    assert.equal(old.got.length, 0);
+    old.c.close();
+  } finally {
+    await broker.close();
+  }
+});
+
+test("a woken new session gets only the report: notes most recently changed first and the intro's version", async () => {
+  const { broker, url, http, wakes, tick } = await setup("brief", false);
+  try {
+    let s = await arrivals(url, "bot1", "one");
+    s.c.close();
+    await settle();
+    const remember = (body: object) =>
+      fetch(`${http}/api/notes`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tok("bot1")}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await remember({ title: "Olena", description: "prefers short answers", text: "said so", topic: "people" })).status, 201);
+    tick(45);
+    s = await arrivals(url, "bot1", "two");
+    assert.equal(wakes.length, 1);
+    const notes = (await (await fetch(`${http}/api/notes`, { headers: { authorization: `Bearer ${tok("bot1")}` } })).json()) as { notes: AgentNote[] };
+    assert.deepEqual(s.got.map((m) => m.text), [report("Тебе не було 45 хв. У твоїх кімнатах за цей час нічого нового.", notes.notes)]);
+    assert.match(s.got[0].text, /\n\nТвій нотатник: 1 нотатка, свіжі першими; recall\(id\) покаже нотатку з текстом:\n#\d+ \[people\] Olena \(.+\): prefers short answers \(text: 7 characters\)\n\n/);
+    assert.match(s.got[0].text, /\n\nВводна AIChat: версія 1970-01-01T00:00:00\.000Z \(вбудована чернетка\)\. Якщо в тебе збережена саме ця версія, нічого робити не треба\. Інакше прочитай world_info/);
+    assert.doesNotMatch(s.got[0].text, /said so/);
+    s.c.close();
+  } finally {
+    await broker.close();
+  }
+});
+
+test("the intro's version in the report: who saved it and when", () => {
+  assert.equal(
+    introText({ text: "x", by: "alexey", ts: "2026-11-19T12:00:00.000Z" }),
+    "Вводна AIChat: версія 2026-11-19T12:00:00.000Z від alexey. Якщо в тебе збережена саме ця версія, нічого робити не треба. " +
+      "Інакше прочитай world_info і збережи вводну собі (наприклад, у локальну пам'ять), щоб наступного разу лише звірити версію.",
+  );
 });
 
 test("Ukrainian number agreement in the broker's notice", () => {

@@ -12,7 +12,9 @@ import { WebSocket, WebSocketServer } from "ws";
 import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
-import { LEGACY_INSTRUCTIONS, NOTES_BUDGET, PEER_RULE, TITLES_BUDGET, notebookLine } from "../adapters/instructions.js";
+import { LEGACY_INSTRUCTIONS, MECHANICS, PEER_RULE } from "../adapters/instructions.js";
+import { NOTES_BUDGET, TITLES_BUDGET, noteListing } from "../notes-text.js";
+import { notebookText } from "../broker/wake.js";
 import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
 import { VERSION } from "../version.js";
 
@@ -52,12 +54,14 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
 
   const caps = client.getServerCapabilities();
   assert.deepEqual(caps?.experimental?.["claude/channel"], {});
-  // instructions: mechanics from the adapter, the world from the broker, the rule about peers last
+  // instructions: what AIChat is and what there is to use, who the agent is, the rule about peers last; the intro
+  // itself is read with world_info and the notebook with recall, so they stay short (alexey, 1701)
   const instructions = client.getInstructions() ?? "";
-  assert.match(instructions, /reply_to/);
-  assert.match(instructions, /--- AIChat intro \(from the broker\) ---\n# AIChat\n/);
-  assert.match(instructions, /Limits now: a reply chain stops after 8 replies; up to 30 messages per minute/);
+  assert.ok(instructions.startsWith(MECHANICS));
+  assert.match(instructions, /\n\nYou are claude1 on AIChat\.\n\n/);
+  assert.doesNotMatch(instructions, /AIChat intro \(from the broker\)|Limits now|notebook \(remember, recall, forget\) (has|is empty)/);
   assert.ok(instructions.endsWith(PEER_RULE));
+  assert.ok(instructions.length < 2500, `instructions are ${instructions.length} characters`);
   assert.doesNotMatch(instructions, /chat network where AI agents talk to each other/);
 
   const deadline = Date.now() + 5000;
@@ -506,7 +510,7 @@ test("П3: BrokerClient ignores frames and fields it does not know", async (t) =
   assert.equal((await c.request({ type: "ping" })).type, "pong");
 });
 
-test("А1: the adapter takes the intro from the broker; world_info shows the current one", async () => {
+test("А1: world_info shows the broker's current intro with its version; the instructions name the agent", async () => {
   const { broker, url, http } = await startBroker([
     { name: "claude1", kind: "claude", description: "Пише серверну частину." },
     { name: "boss", kind: "human", admin: true },
@@ -521,11 +525,16 @@ test("А1: the adapter takes the intro from the broker; world_info shows the cur
     assert.equal((await put("Тут живуть люди й агенти.")).status, 200);
     const { client, call } = await startChannel(url, "claude1");
     try {
-      assert.match(client.getInstructions() ?? "", /--- AIChat intro \(from the broker\) ---\nТут живуть люди й агенти\.\n\nLimits now/);
+      assert.doesNotMatch(client.getInstructions() ?? "", /Тут живуть люди й агенти/);
       // Б1: the agent knows its name and what the admin wrote about it
-      assert.match(client.getInstructions() ?? "", /\n\nYou are claude1 on AIChat\.\nAn AIChat admin wrote about you: Пише серверну частину\.\nYour AIChat notebook \(remember, recall, forget\) is empty\.\n--- end of intro ---/);
+      assert.match(client.getInstructions() ?? "", /\n\nYou are claude1 on AIChat\.\nAn AIChat admin wrote about you: Пише серверну частину\.\n\n/);
+      const first = await call("world_info");
+      assert.match(first, /^Intro version: (\S+), by boss\.\n\nТут живуть люди й агенти\.\n\nLimits now/);
+      await new Promise((r) => setTimeout(r, 5));
       await put("Новий текст вводної.");
-      assert.match(await call("world_info"), /^Новий текст вводної\.\n\nLimits now: a reply chain stops after 8 replies/);
+      const second = await call("world_info");
+      assert.match(second, /^Intro version: (\S+), by boss\.\n\nНовий текст вводної\.\n\nLimits now: a reply chain stops after 8 replies/);
+      assert.notEqual(second.split("\n")[0], first.split("\n")[0], "a changed intro has a new version");
     } finally {
       await client.close();
     }
@@ -648,24 +657,24 @@ test("the adapter names itself in auth, and tells the session once when the brok
   }
 });
 
-test("Б2: the notes at start come most recently changed first: descriptions within one budget, then titles within another", () => {
+test("Б2: the notebook after an absence lists notes most recently changed first: descriptions within one budget, then titles within another", () => {
   const notes = [
     { id: 1, title: "Oldest", description: "oldest", ts: "2026-11-01T00:00:00.000Z" },
     { id: 2, topic: "people", title: "Newest", description: "newest", text_length: 120, ts: "2026-11-03T00:00:00.000Z" },
     { id: 3, title: "Middle", description: "middle", ts: "2026-11-02T00:00:00.000Z" },
   ];
-  const all = notebookLine({ count: 3, last_ts: "2026-11-03T00:00:00.000Z" }, notes);
-  assert.deepEqual(all.split("\n").slice(1), [
+  assert.deepEqual(notebookText(notes).split("\n"), [
+    "Твій нотатник: 3 нотатки, свіжі першими; recall(id) покаже нотатку з текстом:",
     "#2 [people] Newest (2026-11-03T00:00:00.000Z): newest (text: 120 characters)",
     "#3 Middle (2026-11-02T00:00:00.000Z): middle",
     "#1 Oldest (2026-11-01T00:00:00.000Z): oldest",
   ]);
-  assert.doesNotMatch(all, /not shown/);
 
   // a long description takes the description budget: the older notes show only their titles
   const long = { id: 4, title: "Long", description: "x".repeat(NOTES_BUDGET - 60), ts: "2026-11-04T00:00:00.000Z" };
-  const cut = notebookLine({ count: 4, last_ts: long.ts }, [...notes, long]);
-  assert.deepEqual(cut.split("\n").slice(1).map((l) => l.replace(/: x+$/, ": x…")), [
+  const cut = noteListing([...notes, long]);
+  assert.equal(cut.hidden, 0);
+  assert.deepEqual(cut.lines.map((l) => l.replace(/: x+$/, ": x…")), [
     "#4 Long (2026-11-04T00:00:00.000Z): x…",
     "#2 [people] Newest (2026-11-03T00:00:00.000Z) (text: 120 characters)",
     "#3 Middle (2026-11-02T00:00:00.000Z)",
@@ -674,20 +683,18 @@ test("Б2: the notes at start come most recently changed first: descriptions wit
 
   // titles have a budget of their own; the rest is left to recall
   const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 10, title: "t".repeat(90), description: "d".repeat(900), ts: `2026-10-01T00:00:${String(i % 60).padStart(2, "0")}.000Z` }));
-  const capped = notebookLine({ count: 200, last_ts: "x" }, many);
+  const capped = notebookText(many);
   assert.ok(capped.length < NOTES_BUDGET + TITLES_BUDGET + 500);
-  assert.match(capped, /\n\(\d+ older notes not shown; recall shows them all\)$/);
+  assert.match(capped, /\n\(ще \d+ старіших не показано, recall покаже всі\)$/);
 
-  // the broker gave no list (an older broker, or it did not answer): only the count
-  assert.equal(notebookLine({ count: 2, last_ts: "t" }), "Your AIChat notebook (remember, recall, forget) has 2 notes, last changed t.");
+  assert.equal(notebookText([]), "Твій нотатник (remember, recall, forget) порожній.");
 });
 
-test("Б2: the notebook tools keep notes across sessions; the next session starts with titles and descriptions", async () => {
+test("Б2: the notebook tools keep notes across sessions", async () => {
   const { broker, url } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "claude2", kind: "claude" }]);
   try {
     const first = await startChannel(url, "claude1");
     try {
-      assert.match(first.client.getInstructions() ?? "", /Your AIChat notebook \(remember, recall, forget\) is empty\./);
       assert.match(
         await first.call("remember", { title: "Olena", description: "olena prefers short answers", text: "she said so on 17.11", topic: "people" }),
         /^remembered #(\d+) \[people\] Olena \(.+\): olena prefers short answers \(text: 20 characters\)$/,
@@ -710,16 +717,10 @@ test("Б2: the notebook tools keep notes across sessions; the next session start
       await first.client.close();
     }
 
-    // a new session: it is told how many notes there are, when they changed, their titles and descriptions, not their texts
+    // a new session reads them with recall; the instructions do not carry them (the report after an absence does)
     const next = await startChannel(url, "claude1");
     try {
-      const text = next.client.getInstructions() ?? "";
-      assert.match(
-        text,
-        /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT[^\n]*\. Most recently changed first; recall\(id\) shows a note with its text:\n#\d+ \[people\] Olena \(.+\): olena prefers short answers \(text: 20 characters\)\n/,
-      );
-      assert.doesNotMatch(text, /she said so/);
-      assert.doesNotMatch(text, /use --test-timeout/);
+      assert.doesNotMatch(next.client.getInstructions() ?? "", /olena/);
       assert.match(await next.call("recall"), /olena prefers short answers/);
     } finally {
       await next.client.close();

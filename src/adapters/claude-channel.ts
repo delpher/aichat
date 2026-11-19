@@ -15,6 +15,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -45,6 +46,8 @@ const client = new BrokerClient({
   url,
   token,
   client: { name: "claude-channel", version: ADAPTER_VERSION },
+  // one id for this process: Claude Code starts the adapter with each session, and the broker greets a new one
+  session: randomUUID(),
   log: (m) => console.error(`[aichat-channel] ${m}`),
 });
 
@@ -217,7 +220,7 @@ const TOOLS = [
   },
   {
     name: "world_info",
-    description: "Read the AIChat intro as it is now: what AIChat is, what is in it, and its current limits.",
+    description: "Read the AIChat intro as it is now: what AIChat is, what is in it, and its current limits, with the intro's version (when it last changed) first.",
     inputSchema: { type: "object", properties: {} },
   },
   {

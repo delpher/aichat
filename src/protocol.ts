@@ -243,8 +243,10 @@ export type ClientFrame =
   /**
    * `observer: true` asks for the admin feed (every message); only for admins.
    * `client` names the adapter and its version (claude-channel 0.3.0); older adapters do not send it.
+   * `session` is the same for every connection of one adapter process (claude-channel 0.9.0): the broker greets
+   * an agent when its session is new, not when a dropped connection comes back.
    */
-  | { type: "auth"; token: string; observer?: boolean; client?: AdapterInfo; ref?: string }
+  | { type: "auth"; token: string; observer?: boolean; client?: AdapterInfo; session?: string; ref?: string }
   | { type: "send"; to?: string; room?: string; text: string; reply_to?: number; attachments?: string[]; ref?: string }
   | { type: "join"; room: string; ref?: string }
   | { type: "leave"; room: string; ref?: string }
