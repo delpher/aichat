@@ -24,7 +24,6 @@ export interface UsageBody {
 
 const num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 const pct = (x: number) => Math.min(100, Math.max(0, x));
-const whole = (x: unknown) => (num(x) && x >= 0 ? Math.round(x) : undefined);
 
 /**
  * The report for one status line update. The limit windows are whatever `rate_limits` holds (five_hour,
@@ -43,11 +42,9 @@ export function usageFromStatus(s: StatusInput, email?: string): UsageBody {
   }
   const body: UsageBody = { provider: "anthropic", windows: windows.slice(0, 8) };
   if (email) body.account = accountHash(email);
+  // No token counts: Claude Code's context_window.total_*_tokens are the last request's context and the last
+  // answer's output, not the session's totals; the context is reported as a percentage below instead.
   const session: NonNullable<UsageBody["session"]> = {};
-  const tokensIn = whole(s.context_window?.total_input_tokens);
-  const tokensOut = whole(s.context_window?.total_output_tokens);
-  if (tokensIn !== undefined) session.tokensIn = tokensIn;
-  if (tokensOut !== undefined) session.tokensOut = tokensOut;
   if (num(s.cost?.total_cost_usd) && s.cost.total_cost_usd >= 0) {
     session.cost = s.cost.total_cost_usd;
     session.currency = "USD";
