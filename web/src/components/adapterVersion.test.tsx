@@ -25,6 +25,12 @@ describe("adapter versions", () => {
     expect(adapterText(undefined, "0.3.0")).toBe("");
   });
 
+  it("does not compare an adapter the broker does not serve with the broker", () => {
+    const own = { name: "opencode-channel", version: "0.1.0" };
+    expect(adapterOutdated(own, "0.9.0")).toBe(false);
+    expect(adapterText(own, "0.9.0")).toBe("адаптер opencode-channel 0.1.0");
+  });
+
   it("marks an online agent on an older adapter in the sidebar and names the version in its tooltip", () => {
     renderWithChat(<Sidebar {...props} />, {
       overview: {
