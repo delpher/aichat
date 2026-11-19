@@ -738,3 +738,147 @@
   background: #2f7a4b;
   box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.35);
 }
+
+/* Balda: a 5x5 grid of letter tiles, the controls for a move, then the scores and the words. */
+.balda {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.balda-board {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(5, 1fr);
+  gap: 4px;
+  aspect-ratio: 1;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+}
+.bd-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+}
+.bd-cell:disabled {
+  opacity: 1;
+}
+.bd-cell.filled {
+  background: #f3e7cf;
+  border-color: #d8c4a0;
+  color: #2a2420;
+}
+.bd-letter {
+  font-size: clamp(20px, 6vw, 34px);
+  font-weight: var(--weight-strong);
+  text-transform: uppercase;
+}
+.bd-cell.open {
+  cursor: pointer;
+  border-style: dashed;
+  border-color: var(--accent);
+}
+.bd-cell.filled:not(:disabled) {
+  cursor: pointer;
+}
+.bd-cell.new {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+.bd-cell.picked {
+  background: color-mix(in srgb, var(--accent) 30%, #f3e7cf);
+}
+.bd-cell.last {
+  box-shadow: inset 0 0 0 100px rgba(255, 214, 10, 0.25);
+}
+.bd-step {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 10px;
+  font-weight: var(--weight-strong);
+  color: var(--accent);
+}
+.bd-cell:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.bd-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.bd-controls p {
+  margin: 0;
+}
+.bd-letters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.bd-letters .btn {
+  min-width: 32px;
+  justify-content: center;
+}
+.bd-word {
+  text-transform: uppercase;
+}
+.bd-scores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bd-scores li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.bd-scores li.turn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.bd-scores li.out {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.bd-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  color: var(--muted);
+}
+.balda-tile {
+  grid-template-columns: repeat(3, 34px);
+}
+.balda-tile > span {
+  border: 1px solid #d8c4a0;
+  background: #f3e7cf;
+  color: #2a2420;
+  font-weight: var(--weight-strong);
+  text-transform: uppercase;
+}
+
+/* With more than two players the dot shows the place in turn order. */
+.seat-dot.seat-num {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: var(--weight-strong);
+  background: var(--surface-2);
+}
