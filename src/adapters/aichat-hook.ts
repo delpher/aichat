@@ -5,8 +5,16 @@
 // The broker address and token come from the aichat server in .mcp.json (searched from the session's folder
 // upwards), or from AICHAT_URL / AICHAT_TOKEN. It never fails the hook and never prints anything: some hook
 // output would otherwise end up in Claude's context.
-import { readFileSync } from "node:fs";
+//
+// `aichat-hook.mjs statusline` is a status line command instead (see usage-report.ts): now and then it reports
+// the account's usage to AIChat, and it passes Claude Code's JSON on unchanged, so the person's own status line
+// keeps working behind a pipe: `node aichat-hook.mjs statusline | <their command>`. With --line it prints a
+// short line of its own instead.
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { accountEmail, shortLine, shouldSend, usageFromStatus, type StatusInput } from "./usage-report.js";
 
 const TIMEOUT_MS = 2000;
 
@@ -124,6 +132,52 @@ export function findConfig(dir: string): { url: string; token: string } | null {
   }
 }
 
+/** The broker's HTTP address and the token: from AICHAT_URL / AICHAT_TOKEN, else from the nearest .mcp.json. */
+function brokerFor(dir: string): { http: string; token: string } | null {
+  const cfg = process.env.AICHAT_TOKEN
+    ? { url: process.env.AICHAT_URL ?? "ws://127.0.0.1:8787", token: process.env.AICHAT_TOKEN }
+    : findConfig(dir);
+  if (!cfg) return null;
+  return { http: cfg.url.replace(/\/?$/, "").replace(/\/ws$/, "").replace(/^ws(s?):/, "http$1:"), token: cfg.token };
+}
+
+const write = (text: string) => new Promise<void>((resolve) => process.stdout.write(text, () => resolve()));
+
+/** The status line command: pass the JSON on (or print a short line), then report the usage when it is time. */
+async function statusline(args: string[]) {
+  const raw = await readStdin();
+  const own = args.includes("--line");
+  if (!own) await write(raw);
+  let input: StatusInput;
+  try {
+    input = JSON.parse(raw) as StatusInput;
+  } catch {
+    if (own) await write("AIChat\n");
+    return;
+  }
+  const body = usageFromStatus(input, accountEmail());
+  if (own) await write(`${shortLine(body)}\n`);
+  const broker = brokerFor(input.workspace?.project_dir ?? input.cwd ?? process.cwd());
+  if (!broker) return;
+  // the status line is a new process on every update: what was sent last is kept in a file per token
+  const state = join(tmpdir(), `aichat-usage-${createHash("sha256").update(broker.token).digest("hex").slice(0, 16)}.json`);
+  let last: { sig?: string; at?: number } | undefined;
+  try {
+    last = JSON.parse(readFileSync(state, "utf8")) as { sig?: string; at?: number };
+  } catch {
+    last = undefined;
+  }
+  const now = Date.now();
+  if (!shouldSend(body, last, now)) return;
+  writeFileSync(state, JSON.stringify({ sig: JSON.stringify(body), at: now }));
+  await fetch(`${broker.http}/api/usage`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${broker.token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+}
+
 async function main() {
   const raw = await readStdin();
   let input: HookInput = {};
@@ -134,15 +188,11 @@ async function main() {
   }
   const report = reportFor(input);
   if (!report) return;
-  const cfg =
-    process.env.AICHAT_TOKEN
-      ? { url: process.env.AICHAT_URL ?? "ws://127.0.0.1:8787", token: process.env.AICHAT_TOKEN }
-      : findConfig(input.cwd ?? process.cwd());
-  if (!cfg) return;
-  const http = cfg.url.replace(/\/?$/, "").replace(/\/ws$/, "").replace(/^ws(s?):/, "http$1:");
-  await fetch(`${http}/api/activity`, {
+  const broker = brokerFor(input.cwd ?? process.cwd());
+  if (!broker) return;
+  await fetch(`${broker.http}/api/activity`, {
     method: "POST",
-    headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${broker.token}`, "content-type": "application/json" },
     body: JSON.stringify(report),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -150,6 +200,6 @@ async function main() {
 
 // run only as a script, not when a test imports it
 if (process.argv[1] && /aichat-hook\.m?[jt]s$/.test(process.argv[1]))
-  main()
+  (process.argv[2] === "statusline" ? statusline(process.argv.slice(3)) : main())
     .catch(() => {})
     .finally(() => process.exit(0));
