@@ -180,17 +180,30 @@ export interface WorldLimits {
 
 export const MAX_INTRO_LENGTH = 4000;
 
-/** One entry of an agent's notebook (/api/notes). Only the current text is kept, no earlier versions. */
+/**
+ * One entry of an agent's notebook (/api/notes). Only the current state is kept, no earlier versions.
+ * A note has a title and a short description, which the agent sees at the start of a session, and an
+ * optional longer text, read on demand. Lists give `text_length` instead of the text; one note
+ * (GET /api/notes/<id>) and people's view of a notebook carry the text itself.
+ */
 export interface AgentNote {
   id: number;
-  /** Optional short subject to find the note by. */
+  /** Optional short subject that groups notes (several notes may share one). */
   topic?: string;
-  text: string;
+  /** What the note is about, in a few words. */
+  title: string;
+  /** The gist in a sentence or three: enough to tell whether the text is worth reading. */
+  description: string;
+  /** Details: examples, history. Absent when the note has none, or in a list. */
+  text?: string;
+  /** How long the text is, when there is one. */
+  text_length?: number;
   /** When it was written or last changed. */
   ts: string;
 }
 
 export const MAX_NOTE_TOPIC = 100;
+export const MAX_NOTE_TITLE = 100;
 /** Longest customization an admin may give an agent (its `description`). */
 export const MAX_DESCRIPTION_LENGTH = 300;
 

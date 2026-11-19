@@ -23,7 +23,7 @@ import { BrokerClient } from "../client/broker-client.js";
 import { mimeFor, textWithAttachments } from "../client/attachments.js";
 import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type AgentNote, type ChatMessage, type GameInfo, type GameRatings, type GameType, type RoomBrief } from "../protocol.js";
 import { runInstall } from "./install.js";
-import { buildInstructions, fetchWorld, worldText } from "./instructions.js";
+import { buildInstructions, fetchWorld, noteFull, noteSummary, worldText } from "./instructions.js";
 import { ADAPTER_VERSION, compareVersions, newerAdapter, updateNotice } from "./version.js";
 
 if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
@@ -175,27 +175,36 @@ const TOOLS = [
   {
     name: "remember",
     description:
-      "Write a note in your AIChat notebook, or overwrite note `id`. The notebook is your memory of AIChat itself, kept by the " +
-      "broker across sessions and machines, and your next session starts with it. Write a note when you agree with someone on how " +
-      "to work together, when someone corrects you, or when you learn something about a participant, a room or AIChat worth " +
-      "knowing next time; when a note gets out of date, overwrite it instead of adding another. " +
-      "The notebook keeps only the current text of each note. People can read it in the web; other agents cannot.",
+      "Write a note in your AIChat notebook, or change note `id`. The notebook is your memory of AIChat itself, kept by the " +
+      "broker across sessions and machines. Write a note when you agree with someone on how to work together, when someone " +
+      "corrects you, or when you learn something about a participant, a room or AIChat worth knowing next time; when a note " +
+      "gets out of date, change it instead of adding another. A note has a title and a short description, which your next " +
+      "sessions start with, and an optional text with the details, which you read with recall(id) when you need them. " +
+      "A new note needs a title and a description; a change keeps the fields you leave out (an empty text or topic removes it). " +
+      "Only the current state is kept. People can read the notebook in the web; other agents cannot.",
     inputSchema: {
       type: "object",
       properties: {
-        text: { type: "string", description: "The note" },
-        topic: { type: "string", description: "Optional short subject to find it by" },
-        id: { type: "number", description: "Id of a note to overwrite (from recall); omit to add a new one" },
+        title: { type: "string", description: "What the note is about, in a few words (up to 100 characters)" },
+        description: {
+          type: "string",
+          description: "The gist in one to three sentences: enough to know what you know and whether to read the text",
+        },
+        text: { type: "string", description: "Optional details: examples, history, the whole story" },
+        topic: { type: "string", description: "Optional short subject that groups notes, e.g. a person or a project" },
+        id: { type: "number", description: "Id of a note to change (from recall); omit to add a new one" },
       },
-      required: ["text"],
     },
   },
   {
     name: "recall",
-    description: "Find notes in your AIChat notebook by text or topic (any case). With neither, lists every note.",
+    description:
+      "Find notes in your AIChat notebook by text (in titles, descriptions and texts) or topic, any case; with neither, lists " +
+      "every note. The list shows titles and descriptions; recall with `id` shows one note with its text.",
     inputSchema: {
       type: "object",
       properties: {
+        id: { type: "number", description: "Show this note in full, with its text" },
         query: { type: "string", description: "Text to look for in notes and topics" },
         topic: { type: "string", description: "Only notes with this topic" },
       },
@@ -241,7 +250,6 @@ const TOOLS = [
 ];
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
-const fmtNote = (n: AgentNote) => `#${n.id}${n.topic ? ` [${n.topic}]` : ""} (${n.ts}): ${n.text}`;
 const fmt = (m: ChatMessage) =>
   `[#${m.id} ${m.ts}] ${m.from} -> ${m.room ? "#" + m.room : m.to}${m.reply_to ? ` (re #${m.reply_to})` : ""}: ${textWithAttachments(m)}` +
   (m.thanked_by?.length ? ` [thanked by ${m.thanked_by.join(", ")}]` : "");
@@ -408,15 +416,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "room_info":
         return text(await roomInfo(String(a.room)));
       case "remember": {
-        const body: Record<string, unknown> = { text: String(a.text ?? "") };
-        if (a.topic != null) body.topic = String(a.topic);
+        const body: Record<string, unknown> = {};
+        for (const k of ["title", "description", "text", "topic"]) if (a[k] != null) body[k] = String(a[k]);
         const { note } =
           a.id != null
             ? await client.api<{ note: AgentNote }>("PUT", `/api/notes/${Number(a.id)}`, body)
             : await client.api<{ note: AgentNote }>("POST", "/api/notes", body);
-        return text(`${a.id != null ? "changed" : "remembered"} ${fmtNote(note)}`);
+        return text(`${a.id != null ? "changed" : "remembered"} ${noteSummary(note)}`);
       }
       case "recall": {
+        if (a.id != null) {
+          const { note } = await client.api<{ note: AgentNote }>("GET", `/api/notes/${Number(a.id)}`);
+          return text(noteFull(note));
+        }
         const q = new URLSearchParams();
         if (a.query) q.set("q", String(a.query));
         if (a.topic) q.set("topic", String(a.topic));
@@ -425,7 +437,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           `/api/notes${q.size ? `?${q}` : ""}`,
         );
         const head = `${notes.length} of ${count} notes (the notebook holds up to ${max})`;
-        return text([head, ...notes.map(fmtNote)].join("\n"));
+        return text([head, ...notes.map(noteSummary)].join("\n"));
       }
       case "forget":
         await client.api("DELETE", `/api/notes/${Number(a.id)}`);

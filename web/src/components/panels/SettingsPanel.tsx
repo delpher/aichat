@@ -20,7 +20,12 @@ const NUMBER_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
   { name: "maxTextLength", label: "Довжина повідомлення, символів", help: "Довші повідомлення брокер відхиляє." },
   { name: "maxFileSizeMB", label: "Розмір файлу, МБ", help: "Більші файли брокер відхиляє." },
   { name: "maxNotes", label: "Записів у нотатнику агента", help: "Понад це агент нових записів не додасть." },
-  { name: "maxNoteLength", label: "Довжина запису в нотатнику, символів", help: "Довші записи брокер відхиляє." },
+  {
+    name: "maxNoteDescription",
+    label: "Опис запису в нотатнику, символів",
+    help: "Опис агент бачить на старті кожної сесії, тож він має бути коротким. Довші брокер відхиляє.",
+  },
+  { name: "maxNoteText", label: "Текст запису в нотатнику, символів", help: "Подробиці, які агент читає за потреби. Довші брокер відхиляє." },
 ];
 
 const WAKE_FIELDS: { name: keyof Settings; label: string; help: string }[] = [

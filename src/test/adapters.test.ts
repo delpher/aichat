@@ -12,7 +12,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
-import { LEGACY_INSTRUCTIONS, NOTES_BUDGET, PEER_RULE, notebookLine } from "../adapters/instructions.js";
+import { LEGACY_INSTRUCTIONS, NOTES_BUDGET, PEER_RULE, TITLES_BUDGET, notebookLine } from "../adapters/instructions.js";
 import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
 import { VERSION } from "../version.js";
 
@@ -648,50 +648,77 @@ test("the adapter names itself in auth, and tells the session once when the brok
   }
 });
 
-test("Б2: the notes at start come most recently changed first and stop at the budget", () => {
+test("Б2: the notes at start come most recently changed first: descriptions within one budget, then titles within another", () => {
   const notes = [
-    { id: 1, text: "oldest", ts: "2026-11-01T00:00:00.000Z" },
-    { id: 2, topic: "people", text: "newest", ts: "2026-11-03T00:00:00.000Z" },
-    { id: 3, text: "middle", ts: "2026-11-02T00:00:00.000Z" },
+    { id: 1, title: "Oldest", description: "oldest", ts: "2026-11-01T00:00:00.000Z" },
+    { id: 2, topic: "people", title: "Newest", description: "newest", text_length: 120, ts: "2026-11-03T00:00:00.000Z" },
+    { id: 3, title: "Middle", description: "middle", ts: "2026-11-02T00:00:00.000Z" },
   ];
   const all = notebookLine({ count: 3, last_ts: "2026-11-03T00:00:00.000Z" }, notes);
-  assert.deepEqual(all.split("\n").slice(1).map((l) => l.replace(/^#\d+ (\[\w+\] )?\(.+?\): /, "")), ["newest", "middle", "oldest"]);
+  assert.deepEqual(all.split("\n").slice(1), [
+    "#2 [people] Newest (2026-11-03T00:00:00.000Z): newest (text: 120 characters)",
+    "#3 Middle (2026-11-02T00:00:00.000Z): middle",
+    "#1 Oldest (2026-11-01T00:00:00.000Z): oldest",
+  ]);
   assert.doesNotMatch(all, /not shown/);
 
-  // a long note takes the whole budget: the older ones are left to recall
-  const long = { id: 4, text: "x".repeat(NOTES_BUDGET - 60), ts: "2026-11-04T00:00:00.000Z" };
+  // a long description takes the description budget: the older notes show only their titles
+  const long = { id: 4, title: "Long", description: "x".repeat(NOTES_BUDGET - 60), ts: "2026-11-04T00:00:00.000Z" };
   const cut = notebookLine({ count: 4, last_ts: long.ts }, [...notes, long]);
-  assert.match(cut, /^Your AIChat notebook .* has 4 notes, .* Most recently changed first:\n#4 \(.+\): x+\n\(3 older notes not shown; recall shows them all\)$/);
+  assert.deepEqual(cut.split("\n").slice(1).map((l) => l.replace(/: x+$/, ": x…")), [
+    "#4 Long (2026-11-04T00:00:00.000Z): x…",
+    "#2 [people] Newest (2026-11-03T00:00:00.000Z) (text: 120 characters)",
+    "#3 Middle (2026-11-02T00:00:00.000Z)",
+    "#1 Oldest (2026-11-01T00:00:00.000Z)",
+  ]);
+
+  // titles have a budget of their own; the rest is left to recall
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 10, title: "t".repeat(90), description: "d".repeat(900), ts: `2026-10-01T00:00:${String(i % 60).padStart(2, "0")}.000Z` }));
+  const capped = notebookLine({ count: 200, last_ts: "x" }, many);
+  assert.ok(capped.length < NOTES_BUDGET + TITLES_BUDGET + 500);
+  assert.match(capped, /\n\(\d+ older notes not shown; recall shows them all\)$/);
 
   // the broker gave no list (an older broker, or it did not answer): only the count
   assert.equal(notebookLine({ count: 2, last_ts: "t" }), "Your AIChat notebook (remember, recall, forget) has 2 notes, last changed t.");
 });
 
-test("Б2: the notebook tools keep notes across sessions; the next session starts with the notes", async () => {
+test("Б2: the notebook tools keep notes across sessions; the next session starts with titles and descriptions", async () => {
   const { broker, url } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "claude2", kind: "claude" }]);
   try {
     const first = await startChannel(url, "claude1");
     try {
       assert.match(first.client.getInstructions() ?? "", /Your AIChat notebook \(remember, recall, forget\) is empty\./);
-      assert.match(await first.call("remember", { text: "olena prefers short answers", topic: "people" }), /^remembered #(\d+) \[people\] \(.+\): olena prefers short answers$/);
-      const second = await first.call("remember", { text: "npm test hangs without a timeout" });
+      assert.match(
+        await first.call("remember", { title: "Olena", description: "olena prefers short answers", text: "she said so on 17.11", topic: "people" }),
+        /^remembered #(\d+) \[people\] Olena \(.+\): olena prefers short answers \(text: 20 characters\)$/,
+      );
+      const second = await first.call("remember", { title: "Tests", description: "npm test hangs without a timeout" });
       const id = Number(second.match(/#(\d+)/)![1]);
-      assert.match(await first.call("remember", { id, text: "use --test-timeout" }), new RegExp(`^changed #${id} \(.+\): use --test-timeout$`));
-      assert.match(await first.call("recall", { query: "OLENA" }), /^1 of 2 notes \(the notebook holds up to 200\)\n#\d+ \[people\] .*olena prefers short answers$/);
+      assert.match(await first.call("remember", { id, description: "use --test-timeout" }), new RegExp(`^changed #${id} Tests \\(.+\\): use --test-timeout$`));
+      const bad = await first.client.callTool({ name: "remember", arguments: { description: "no title" } });
+      assert.equal(bad.isError, true);
+      assert.match(await first.call("recall", { query: "OLENA" }), /^1 of 2 notes \(the notebook holds up to 200\)\n#(\d+) \[people\] Olena .*olena prefers short answers \(text: 20 characters\)$/);
+      assert.match(await first.call("recall", { query: "17.11" }), /^1 of 2 notes/);
       assert.match(await first.call("recall", { topic: "people" }), /^1 of 2 notes/);
       assert.match(await first.call("recall"), /^2 of 2 notes/);
+      const olena = Number((await first.call("recall", { topic: "people" })).match(/\n#(\d+)/)![1]);
+      assert.match(await first.call("recall", { id: olena }), /^#\d+ \[people\] Olena \(.+\)\nolena prefers short answers\n\nshe said so on 17\.11$/);
       assert.equal(await first.call("forget", { id }), `forgot note #${id}`);
-      const bad = await first.client.callTool({ name: "forget", arguments: { id } });
-      assert.equal(bad.isError, true);
+      const gone = await first.client.callTool({ name: "forget", arguments: { id } });
+      assert.equal(gone.isError, true);
     } finally {
       await first.client.close();
     }
 
-    // a new session: it is told how many notes there are, when they changed, and what they say
+    // a new session: it is told how many notes there are, when they changed, their titles and descriptions, not their texts
     const next = await startChannel(url, "claude1");
     try {
       const text = next.client.getInstructions() ?? "";
-      assert.match(text, /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT[^\n]*\. Most recently changed first:\n#\d+ \[people\] \(.+\): olena prefers short answers\n/);
+      assert.match(
+        text,
+        /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT[^\n]*\. Most recently changed first; recall\(id\) shows a note with its text:\n#\d+ \[people\] Olena \(.+\): olena prefers short answers \(text: 20 characters\)\n/,
+      );
+      assert.doesNotMatch(text, /she said so/);
       assert.doesNotMatch(text, /use --test-timeout/);
       assert.match(await next.call("recall"), /olena prefers short answers/);
     } finally {

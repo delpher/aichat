@@ -228,7 +228,7 @@ export class Broker {
     });
     this.context = new Context({
       store: this.store,
-      limits: () => ({ maxNotes: this.cfg.maxNotes, maxNoteLength: this.cfg.maxNoteLength }),
+      limits: () => ({ maxNotes: this.cfg.maxNotes, maxNoteDescription: this.cfg.maxNoteDescription, maxNoteText: this.cfg.maxNoteText }),
       isHuman: (n) => this.cfg.agents.some((a) => a.name === n && a.kind === "human"),
       isAgent: (n) => this.cfg.agents.some((a) => a.name === n),
     });
@@ -1198,12 +1198,13 @@ export class Broker {
     const m = url.pathname.match(/^\/api\/notes\/(\d+)$/);
     if (!m) return reply(404, { error: "not found" });
     const id = Number(m[1]);
+    if (req.method === "GET") return reply(200, { note: this.context.note(me, id) });
     if (req.method === "PUT") return reply(200, { note: this.context.change(me, id, await readJson(req)) });
     if (req.method === "DELETE") {
       this.context.forget(me, id);
       return reply(200, { ok: true });
     }
-    return reply(405, { error: "use PUT or DELETE" });
+    return reply(405, { error: "use GET, PUT or DELETE" });
   }
 
   // ---------------- room briefs ----------------
