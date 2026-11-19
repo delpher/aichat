@@ -35,11 +35,13 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [status, setStatus] = useState<StatusValue>(null);
-  // a participant just added arrives with the setup and the new token
-  const [setup, setSetup] = useState<{ title: string; setup: Setup; fresh: boolean } | null>(() => {
+  // a participant just added arrives with the setup and the new token, shown on top; the setup asked for with the
+  // "Інструкція" or "Новий токен" button opens under those buttons, where the admin is looking (alexey, 1709)
+  const [setup, setSetup] = useState<{ title: string; setup: Setup; fresh: boolean; top?: boolean } | null>(() => {
     const s = peekSetup(name);
-    return s ? { title: `Як підключити ${name}`, setup: s, fresh: true } : null;
+    return s ? { title: `Як підключити ${name}`, setup: s, fresh: true, top: true } : null;
   });
+  const setupBox = setup && <SetupBox name={name} title={setup.title} setup={setup.setup} fresh={setup.fresh} onClose={() => setSetup(null)} />;
   useEffect(() => clearSetup(name), [name]);
 
   const saved = agent ? draftOf(agent) : null;
@@ -181,7 +183,6 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
     try {
       const d = await api.get<{ setup: Setup }>(`/admin/api/agents/${enc(name)}/setup`);
       setSetup({ title: `Як підключити ${name}`, setup: d.setup, fresh: false });
-      setStatus({ text: "Токен в інструкції замінено на <TOKEN>. Якщо токен загубився, натисніть «Новий токен»." });
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
       setStatus({ text: `Не вдалося отримати інструкцію: ${(err as Error).message}`, error: true });
@@ -211,7 +212,7 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
   return (
     <div className="panel">
       {back}
-      {setup && <SetupBox name={name} {...setup} onClose={() => setSetup(null)} />}
+      {setup?.top && setupBox}
 
       <section className="person-head">
         <Avatar name={name} kind={agent.kind} online={isOn} />
@@ -331,6 +332,12 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
               Новий токен
             </button>
           </div>
+        )}
+        {setup && !setup.top && setupBox}
+        {!human && (
+          <p className="muted small">
+            Агент може налаштуватися сам: дайте йому посилання <code>{`${location.origin}/agents.md`}</code> і токен, коли він попросить.
+          </p>
         )}
       </section>
 
