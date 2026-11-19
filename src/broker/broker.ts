@@ -24,6 +24,7 @@ import { groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
 import { Context, ContextError } from "./context.js";
+import { UsageError, accountHashes, checkUsage } from "./usage.js";
 import {
   INLINE_IMAGE_TYPES,
   MAX_ATTACHMENTS,
@@ -38,6 +39,7 @@ import {
   type ClientFrame,
   type FileInfo,
   type GameInfo,
+  type UsageReport,
   type ServerFrame,
   type WorldLimits,
 } from "../protocol.js";
@@ -176,6 +178,8 @@ export class Broker {
   /** The conversation of the agent's latest message, sent or received. */
   private lastConv = new Map<string, { room?: string; with?: string }>();
   private activityTouched = new Map<string, number>();
+  /** The newest usage report of each agent (memory only: it lives while the broker runs). */
+  private usage = new Map<string, UsageReport>();
   /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
   private hooked = new Set<string>();
   private activityTimer?: NodeJS.Timeout;
@@ -1079,6 +1083,7 @@ export class Broker {
           ...(agent.description ? { description: agent.description } : {}),
           rooms: this.store.roomsOf(me),
           notes: this.context.stats(me),
+          ...(agent.kind === "human" ? { accounts: agent.accounts?.length ?? 0 } : {}),
         });
       if (route === "GET /api/intro") return reply(200, { intro: this.context.intro(), limits: this.worldLimits() });
       if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
@@ -1088,6 +1093,10 @@ export class Broker {
       if (route === "GET /api/agents") return reply(200, { agents: this.agents() });
       if (route === "POST /api/activity") return reply(200, { activity: this.reportActivity(me, await body()) });
       if (route === "POST /api/status") return reply(200, { activity: this.reportStatus(me, await body()) });
+      if (route === "POST /api/usage") return reply(200, { usage: this.reportUsage(agent, await body()) });
+      if (route === "GET /api/usage")
+        return reply(200, { usage: this.usageFor(agent), ...(agent.kind === "human" ? { accounts: agent.accounts ?? [] } : {}) });
+      if (route === "PUT /api/me/accounts") return reply(200, { accounts: this.setAccounts(agent, await body()) });
       if (route === "POST /api/messages") {
         const b = await body();
         const m = this.send(me, b as unknown as SendArgs);
@@ -1120,10 +1129,58 @@ export class Broker {
       }
       return reply(404, { error: "not found" });
     } catch (e) {
-      const status = e instanceof BrokerError || e instanceof ContextError ? e.status : 500;
+      const status = e instanceof BrokerError || e instanceof ContextError || e instanceof UsageError ? e.status : 500;
       if (status === 500) this.log(`HTTP error: ${(e as Error).stack}`);
       return reply(status, { error: (e as Error).message });
     }
+  }
+
+  // ---------------- usage ----------------
+
+  /** POST /api/usage: an agent's adapter reports the account it works on, its limits and its session. */
+  private reportUsage(agent: AgentConfig, b: Record<string, unknown>): UsageReport {
+    if (agent.kind === "human") throw new BrokerError("people do not report usage: their agents' adapters do", 403);
+    const report = checkUsage(agent.name, b, new Date(this.now()));
+    this.usage.set(agent.name, report);
+    const f: ServerFrame = { type: "usage", usage: report };
+    for (const name of new Set([agent.name, ...this.ownersOf(report.account)]))
+      for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
+    for (const ws of this.observers.keys()) this.sendFrame(ws, f);
+    return report;
+  }
+
+  /** The people who named `account` as theirs. */
+  private ownersOf(account: string | undefined): string[] {
+    if (!account) return [];
+    return this.cfg.agents.filter((a) => a.kind === "human" && a.accounts?.includes(account)).map((a) => a.name);
+  }
+
+  /** GET /api/usage: an admin sees every report, a person those on their own accounts, an agent its own. */
+  private usageFor(me: AgentConfig): UsageReport[] {
+    const known = new Set(this.cfg.agents.map((a) => a.name));
+    const all = [...this.usage.values()].filter((r) => known.has(r.agent));
+    if (this.isAdminName(me.name)) return all;
+    if (me.kind === "human") return all.filter((r) => r.account && me.accounts?.includes(r.account));
+    return all.filter((r) => r.agent === me.name);
+  }
+
+  /** PUT /api/me/accounts {emails}: a person names their accounts; only the hashes are kept. Returns how many. */
+  private setAccounts(me: AgentConfig, b: Record<string, unknown>): number {
+    if (me.kind !== "human") throw new BrokerError("an agent's account comes from its adapter: only people name theirs", 403);
+    const hashes = accountHashes(b);
+    if (!this.opts.editConfig) throw new BrokerError("the config is read-only in this broker", 403);
+    try {
+      this.opts.editConfig((raw) => {
+        const a = raw.agents?.find((x) => x.name === me.name);
+        if (!a) throw new BrokerError(`unknown agent: ${me.name}`, 404);
+        if (hashes.length) a.accounts = hashes;
+        else delete a.accounts;
+      });
+    } catch (e) {
+      throw e instanceof BrokerError ? e : new BrokerError((e as Error).message);
+    }
+    this.log(hashes.length ? `${me.name} named ${hashes.length} account(s)` : `${me.name} removed their accounts`);
+    return hashes.length;
   }
 
   // ---------------- agent notebook ----------------
@@ -1497,6 +1554,7 @@ export class Broker {
         });
         this.disconnect(name, "agent removed");
         this.store.forgetAgent(name);
+        this.usage.delete(name);
         this.log(`${me.name} removed ${name}`);
         this.notifyObservers({ type: "rooms_changed" });
         return reply(200, { ok: true });

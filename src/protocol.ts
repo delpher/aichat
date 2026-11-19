@@ -86,6 +86,39 @@ export interface GameInfo {
   updated_ts: string;
 }
 
+/** One limit window of an account, e.g. a 5-hour one: how much of it is used and when it starts over. */
+export interface UsageWindow {
+  /** The provider's name for the window, e.g. "five_hour" or "seven_day". */
+  name: string;
+  /** How much of the window is used, 0 to 100. */
+  usedPct: number;
+  /** When the window starts over (ISO time), if the provider says. */
+  resetsAt?: string;
+}
+
+/**
+ * What an agent's adapter last reported about the account it works on (POST /api/usage). The broker keeps only
+ * the newest report of each agent, in memory. Nothing in it is tied to one provider: the adapter fills it in.
+ */
+export interface UsageReport {
+  agent: string;
+  /** When the broker got it (ISO time). */
+  at: string;
+  /** Whose limits these are, e.g. "anthropic". */
+  provider: string;
+  /**
+   * The account, as accountHash(e-mail) (see src/usage.ts), never the address itself. Missing when the adapter
+   * cannot tell, e.g. when the agent signs in with an API key.
+   */
+  account?: string;
+  /** The account's limit windows; shared by every agent on the account. */
+  windows: UsageWindow[];
+  /** This agent's current session. */
+  session?: { tokensIn?: number; tokensOut?: number; cost?: number; currency?: string };
+  /** How full the agent's context is, 0 to 100. */
+  context?: { usedPct: number };
+}
+
 /**
  * What an agent is doing right now, reported by Claude Code hooks (POST /api/activity) and by its adapter.
  * busy: working (detail: the tool, e.g. "Bash"); waiting: needs a person (detail: what for); idle: done.
@@ -221,6 +254,8 @@ export type ServerFrame =
   | { type: "game"; game: GameInfo }
   /** Sent to every connected client when an admin deleted a game, together with its room and messages. */
   | { type: "game_deleted"; id: number }
+  /** A new usage report, sent only to those who may see it: admins, the owners of its account and the agent. */
+  | { type: "usage"; usage: UsageReport }
   /** Sent to every connected client when an agent's activity changed. */
   | { type: "activity"; agent: string; activity: AgentActivity }
   /** Sent to the sender of message `id` and to admin observers when agent `to` received it. */
