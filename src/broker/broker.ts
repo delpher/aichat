@@ -1094,7 +1094,8 @@ export class Broker {
       if (route === "POST /api/activity") return reply(200, { activity: this.reportActivity(me, await body()) });
       if (route === "POST /api/status") return reply(200, { activity: this.reportStatus(me, await body()) });
       if (route === "POST /api/usage") return reply(200, { usage: this.reportUsage(agent, await body()) });
-      if (route === "GET /api/usage") return reply(200, { usage: this.usageFor(agent) });
+      if (route === "GET /api/usage")
+        return reply(200, { usage: this.usageFor(agent), ...(agent.kind === "human" ? { accounts: agent.accounts ?? [] } : {}) });
       if (route === "PUT /api/me/accounts") return reply(200, { accounts: this.setAccounts(agent, await body()) });
       if (route === "POST /api/messages") {
         const b = await body();

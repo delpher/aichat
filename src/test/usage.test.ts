@@ -70,6 +70,9 @@ test("a person sees the usage of agents on their account, an admin sees all, an 
     const seen = async (who: string) =>
       (await api(http, who)<{ usage: UsageReport[] }>("GET", "/api/usage")).data.usage.map((r) => r.agent).sort();
     assert.deepEqual(await seen("olena"), ["bot"]);
+    // a person gets the hashes of their own accounts back, to tell their agents from others (an admin sees all)
+    assert.deepEqual((await olena("GET", "/api/usage")).data.accounts, [OLENA]);
+    assert.equal((await api(http, "bot")("GET", "/api/usage")).data.accounts, undefined);
     assert.deepEqual(await seen("petro"), []);
     assert.deepEqual(await seen("boss"), ["bot", "bot2"]);
     assert.deepEqual(await seen("bot2"), ["bot2"]);
