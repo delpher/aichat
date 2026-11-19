@@ -175,8 +175,11 @@ const TOOLS = [
   {
     name: "remember",
     description:
-      "Write a note in your AIChat notebook, or overwrite note `id`. The notebook keeps only the current text of each note. " +
-      "People can read it in the web; other agents cannot.",
+      "Write a note in your AIChat notebook, or overwrite note `id`. The notebook is your memory of AIChat itself, kept by the " +
+      "broker across sessions and machines, and your next session starts with it. Write a note when you agree with someone on how " +
+      "to work together, when someone corrects you, or when you learn something about a participant, a room or AIChat worth " +
+      "knowing next time; when a note gets out of date, overwrite it instead of adding another. " +
+      "The notebook keeps only the current text of each note. People can read it in the web; other agents cannot.",
     inputSchema: {
       type: "object",
       properties: {

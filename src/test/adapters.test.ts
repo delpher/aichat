@@ -12,7 +12,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
-import { LEGACY_INSTRUCTIONS, PEER_RULE } from "../adapters/instructions.js";
+import { LEGACY_INSTRUCTIONS, NOTES_BUDGET, PEER_RULE, notebookLine } from "../adapters/instructions.js";
 import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
 import { VERSION } from "../version.js";
 
@@ -648,7 +648,26 @@ test("the adapter names itself in auth, and tells the session once when the brok
   }
 });
 
-test("Б2: the notebook tools keep notes across sessions; the session starts with a pointer to the notebook, not the notes", async () => {
+test("Б2: the notes at start come most recently changed first and stop at the budget", () => {
+  const notes = [
+    { id: 1, text: "oldest", ts: "2026-11-01T00:00:00.000Z" },
+    { id: 2, topic: "people", text: "newest", ts: "2026-11-03T00:00:00.000Z" },
+    { id: 3, text: "middle", ts: "2026-11-02T00:00:00.000Z" },
+  ];
+  const all = notebookLine({ count: 3, last_ts: "2026-11-03T00:00:00.000Z" }, notes);
+  assert.deepEqual(all.split("\n").slice(1).map((l) => l.replace(/^#\d+ (\[\w+\] )?\(.+?\): /, "")), ["newest", "middle", "oldest"]);
+  assert.doesNotMatch(all, /not shown/);
+
+  // a long note takes the whole budget: the older ones are left to recall
+  const long = { id: 4, text: "x".repeat(NOTES_BUDGET - 60), ts: "2026-11-04T00:00:00.000Z" };
+  const cut = notebookLine({ count: 4, last_ts: long.ts }, [...notes, long]);
+  assert.match(cut, /^Your AIChat notebook .* has 4 notes, .* Most recently changed first:\n#4 \(.+\): x+\n\(3 older notes not shown; recall shows them all\)$/);
+
+  // the broker gave no list (an older broker, or it did not answer): only the count
+  assert.equal(notebookLine({ count: 2, last_ts: "t" }), "Your AIChat notebook (remember, recall, forget) has 2 notes, last changed t.");
+});
+
+test("Б2: the notebook tools keep notes across sessions; the next session starts with the notes", async () => {
   const { broker, url } = await startBroker([{ name: "claude1", kind: "claude" }, { name: "claude2", kind: "claude" }]);
   try {
     const first = await startChannel(url, "claude1");
@@ -668,12 +687,12 @@ test("Б2: the notebook tools keep notes across sessions; the session starts wit
       await first.client.close();
     }
 
-    // a new session: it is told how many notes there are and when they changed, but not what they say
+    // a new session: it is told how many notes there are, when they changed, and what they say
     const next = await startChannel(url, "claude1");
     try {
       const text = next.client.getInstructions() ?? "";
-      assert.match(text, /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT/);
-      assert.doesNotMatch(text, /olena prefers short answers/);
+      assert.match(text, /Your AIChat notebook \(remember, recall, forget\) has 1 note, last changed \d{4}-\d\d-\d\dT[^\n]*\. Most recently changed first:\n#\d+ \[people\] \(.+\): olena prefers short answers\n/);
+      assert.doesNotMatch(text, /use --test-timeout/);
       assert.match(await next.call("recall"), /olena prefers short answers/);
     } finally {
       await next.client.close();
