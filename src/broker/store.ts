@@ -64,8 +64,53 @@ function toGame(r: GameRow): GameRecord {
   };
 }
 
-function toNote(r: { id: number; topic: string | null; text: string; ts: string }): AgentNote {
-  return { id: r.id, ...(r.topic ? { topic: r.topic } : {}), text: r.text, ts: r.ts };
+type NoteRow = { id: number; topic: string | null; title: string; description: string; text?: string; text_length: number; ts: string };
+
+/** A row as a note: with the text when it was selected, otherwise only its length. */
+function toNote(r: NoteRow): AgentNote {
+  return {
+    id: r.id,
+    ...(r.topic ? { topic: r.topic } : {}),
+    title: r.title,
+    description: r.description,
+    ...(r.text ? { text: r.text } : {}),
+    ...(r.text_length ? { text_length: r.text_length } : {}),
+    ts: r.ts,
+  };
+}
+
+/** What a note gets written with; an empty text means "no text". */
+export interface NoteFields {
+  topic: string | null;
+  title: string;
+  description: string;
+  text: string;
+}
+
+/** Description length notes migrated from a single text get (the default limit of descriptions). */
+const MIGRATED_DESCRIPTION = 1000;
+
+const NOTE_COLS = "id, topic, title, description, length(text) AS text_length, ts";
+
+/**
+ * A note written as one text (before notes had titles, or by an older adapter): its first sentence becomes the
+ * title; a text that fits `maxDescription` becomes the description, a longer one stays the text and its start
+ * becomes the description.
+ */
+export function fromOneText(text: string, maxDescription: number): { title: string; description: string; text: string } {
+  const firstSentence = text.replace(/\s+/g, " ").trim().split(/(?<=[.!?…]) /)[0];
+  const title = clip(firstSentence, 60).replace(/[.!?]$/, "");
+  return text.length <= maxDescription ? { title, description: text, text: "" } : { title, description: clip(text, maxDescription), text };
+}
+
+/** The start of `s` up to `max` characters, cut after a sentence or a word when one ends late enough. */
+export function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const head = s.slice(0, max - 1);
+  const sentence = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "), head.lastIndexOf("\n"));
+  if (sentence > max / 2) return head.slice(0, sentence + 1).trim();
+  const word = head.lastIndexOf(" ");
+  return (word > max / 2 ? head.slice(0, word) : head).trim().replace(/[\s,;:—–-]+$/, "") + "…";
 }
 
 /** Room messages, and direct messages only where the bound person (twice) is a side. */
@@ -170,6 +215,8 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent TEXT NOT NULL,
         topic TEXT,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
         text TEXT NOT NULL,
         ts TEXT NOT NULL
       );
@@ -181,6 +228,31 @@ export class Store {
     const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "attachments")) this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
     this.migrateGameSeats();
+    this.migrateNotes();
+  }
+
+  /**
+   * Notes written before they had a title and a description were one text. The title becomes its first
+   * words; a text that fits a description becomes the description, a longer one keeps the full text and
+   * its start becomes the description.
+   */
+  private migrateNotes() {
+    const cols = this.db.prepare("PRAGMA table_info(notes)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "title")) return;
+    this.db.exec("ALTER TABLE notes ADD COLUMN title TEXT NOT NULL DEFAULT ''; ALTER TABLE notes ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+    const rows = this.db.prepare("SELECT id, text FROM notes").all() as { id: number; text: string }[];
+    const set = this.db.prepare("UPDATE notes SET title = ?, description = ?, text = ? WHERE id = ?");
+    this.db.exec("BEGIN");
+    try {
+      for (const r of rows) {
+        const n = fromOneText(r.text, MIGRATED_DESCRIPTION);
+        set.run(n.title, n.description, n.text, r.id);
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   /**
@@ -309,32 +381,30 @@ export class Store {
 
   // ---- agent notebooks: only the current state, a change overwrites, forget deletes ----
 
-  /** An agent's notes, oldest first; `q` matches text or topic (any case), `topic` the topic exactly (any case). */
-  notes(agent: string, q: { q?: string; topic?: string } = {}): AgentNote[] {
+  /**
+   * An agent's notes, oldest first, without their texts (each says how long its text is) unless `full`.
+   * `q` matches the title, description, text or topic (any case), `topic` the topic exactly (any case).
+   */
+  notes(agent: string, q: { q?: string; topic?: string } = {}, full = false): AgentNote[] {
     const where = ["agent = ?"];
     const args: string[] = [agent];
     if (q.q) {
-      where.push("(instr(fold(text), ?) > 0 OR instr(fold(COALESCE(topic, '')), ?) > 0)");
+      where.push("(" + ["title", "description", "text", "COALESCE(topic, '')"].map((c) => `instr(fold(${c}), ?) > 0`).join(" OR ") + ")");
       const t = q.q.toLocaleLowerCase();
-      args.push(t, t);
+      args.push(t, t, t, t);
     }
     if (q.topic) {
       where.push("fold(topic) = ?");
       args.push(q.topic.toLocaleLowerCase());
     }
-    const rows = this.db.prepare(`SELECT id, topic, text, ts FROM notes WHERE ${where.join(" AND ")} ORDER BY id`).all(...args) as {
-      id: number;
-      topic: string | null;
-      text: string;
-      ts: string;
-    }[];
+    const cols = full ? `${NOTE_COLS}, text` : NOTE_COLS;
+    const rows = this.db.prepare(`SELECT ${cols} FROM notes WHERE ${where.join(" AND ")} ORDER BY id`).all(...args) as NoteRow[];
     return rows.map(toNote);
   }
 
+  /** One note with its text. */
   note(agent: string, id: number): AgentNote | undefined {
-    const r = this.db.prepare("SELECT id, topic, text, ts FROM notes WHERE agent = ? AND id = ?").get(agent, id) as
-      | { id: number; topic: string | null; text: string; ts: string }
-      | undefined;
+    const r = this.db.prepare(`SELECT ${NOTE_COLS}, text FROM notes WHERE agent = ? AND id = ?`).get(agent, id) as NoteRow | undefined;
     return r && toNote(r);
   }
 
@@ -346,17 +416,21 @@ export class Store {
     };
   }
 
-  addNote(agent: string, text: string, topic: string | null): AgentNote {
+  addNote(agent: string, f: NoteFields): AgentNote {
     const ts = new Date().toISOString();
-    const res = this.db.prepare("INSERT INTO notes (agent, topic, text, ts) VALUES (?, ?, ?, ?)").run(agent, topic, text, ts);
-    return toNote({ id: Number(res.lastInsertRowid), topic, text, ts });
+    const res = this.db
+      .prepare("INSERT INTO notes (agent, topic, title, description, text, ts) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(agent, f.topic, f.title, f.description, f.text, ts);
+    return this.note(agent, Number(res.lastInsertRowid))!;
   }
 
-  /** Overwrites a note in place: the old text is gone. */
-  updateNote(agent: string, id: number, text: string, topic: string | null): AgentNote | undefined {
+  /** Overwrites a note in place: the old version is gone. */
+  updateNote(agent: string, id: number, f: NoteFields): AgentNote | undefined {
     const ts = new Date().toISOString();
-    const res = this.db.prepare("UPDATE notes SET text = ?, topic = ?, ts = ? WHERE agent = ? AND id = ?").run(text, topic, ts, agent, id);
-    return Number(res.changes) ? toNote({ id, topic, text, ts }) : undefined;
+    const res = this.db
+      .prepare("UPDATE notes SET topic = ?, title = ?, description = ?, text = ?, ts = ? WHERE agent = ? AND id = ?")
+      .run(f.topic, f.title, f.description, f.text, ts, agent, id);
+    return Number(res.changes) ? this.note(agent, id) : undefined;
   }
 
   deleteNote(agent: string, id: number): boolean {

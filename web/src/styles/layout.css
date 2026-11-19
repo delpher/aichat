@@ -746,7 +746,19 @@ kbd {
   font-weight: var(--weight-medium);
   color: var(--text-2);
 }
+.note-title {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.note-description,
 .note-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.note-more summary {
+  cursor: pointer;
+  margin-top: var(--space-1);
+}
+.note-more .note-text {
+  margin-top: var(--space-1);
 }

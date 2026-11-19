@@ -57,10 +57,10 @@ describe("agent card", () => {
 });
 
 describe("notebook in the card", () => {
-  it("shows an agent's notes read-only, newest first, with nothing to react with", async () => {
+  it("shows an agent's notes read-only, most recently changed first: title, description, text on demand", async () => {
     const notes = [
-      { id: 1, text: "olena prefers short answers", topic: "people", ts: "2026-11-17T09:00:00Z" },
-      { id: 2, text: "npm test needs a timeout", ts: "2026-11-17T10:00:00Z" },
+      { id: 1, title: "Olena", description: "olena prefers short answers", text: "she said so on 17.11", topic: "people", ts: "2026-11-17T09:00:00Z" },
+      { id: 2, title: "Tests", description: "npm test needs a timeout", ts: "2026-11-17T10:00:00Z" },
     ];
     const api = fakeApi({ get: vi.fn(async () => ({ notes })) });
     renderWithChat(<AgentProfile name="claude" onClose={() => {}} />, { api });
@@ -69,9 +69,17 @@ describe("notebook in the card", () => {
     const book = await screen.findByRole("region", { name: "Нотатник claude" });
     expect(api.get).toHaveBeenCalledWith("/api/agents/claude/notes");
     const items = await within(book).findAllByRole("listitem");
-    expect(items.map((li) => li.querySelector(".note-text")!.textContent)).toEqual(["npm test needs a timeout", "olena prefers short answers"]);
+    expect(items.map((li) => li.querySelector(".note-title")!.textContent)).toEqual(["Tests", "Olena"]);
+    expect(items.map((li) => li.querySelector(".note-description")!.textContent)).toEqual(["npm test needs a timeout", "olena prefers short answers"]);
     expect(items[1]).toHaveTextContent("people");
-    expect(within(book).queryByRole("button")).toBeNull();
+    // the text is folded away until asked for; a note without one has nothing to unfold
+    expect(items[0].querySelector("details")).toBeNull();
+    const more = items[1].querySelector("details")!;
+    expect(more.open).toBe(false);
+    expect(within(more).getByText("Текст, 20 символів")).toBeInTheDocument();
+    await userEvent.click(within(more).getByText("Текст, 20 символів"));
+    expect(more.open).toBe(true);
+    expect(within(more).getByText("she said so on 17.11")).toBeVisible();
     expect(within(book).queryByRole("textbox")).toBeNull();
   });
 

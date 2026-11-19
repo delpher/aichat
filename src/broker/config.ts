@@ -44,8 +44,10 @@ export interface BrokerConfig {
   maxFileSizeMB: number;
   /** Most notes one agent may keep in its notebook. */
   maxNotes: number;
-  /** Longest note, in characters. */
-  maxNoteLength: number;
+  /** Longest description of a note, in characters: what the agent sees of it at the start of a session. */
+  maxNoteDescription: number;
+  /** Longest text of a note, in characters: its details, read on demand. */
+  maxNoteText: number;
   /**
    * Waking agents: "on" stops sending an agent that comes back the room messages it missed (direct messages
    * and game rooms still arrive) and reports them as a wake instead; "off" (default) delivers everything.
@@ -106,7 +108,8 @@ export const DEFAULTS: Omit<BrokerConfig, "agents"> = {
   maxTextLength: 20000,
   maxFileSizeMB: 20,
   maxNotes: 200,
-  maxNoteLength: 2000,
+  maxNoteDescription: 1000,
+  maxNoteText: 5000,
   wakeMode: "off",
   wakeAfterMinutes: 10,
   wakeAfterMessages: 10,
@@ -126,7 +129,8 @@ export const SETTING_LIMITS = {
   maxTextLength: { min: 100, max: 1_000_000 },
   maxFileSizeMB: { min: 1, max: 500 },
   maxNotes: { min: 1, max: 10_000 },
-  maxNoteLength: { min: 100, max: 100_000 },
+  maxNoteDescription: { min: 100, max: 10_000 },
+  maxNoteText: { min: 100, max: 100_000 },
   wakeAfterMinutes: { min: 1, max: 10_080 },
   wakeAfterMessages: { min: 1, max: 100_000 },
 } as const;
@@ -143,7 +147,8 @@ export function settingsOf(cfg: BrokerConfig): Settings {
     maxTextLength: cfg.maxTextLength,
     maxFileSizeMB: cfg.maxFileSizeMB,
     maxNotes: cfg.maxNotes,
-    maxNoteLength: cfg.maxNoteLength,
+    maxNoteDescription: cfg.maxNoteDescription,
+    maxNoteText: cfg.maxNoteText,
     wakeMode: cfg.wakeMode,
     wakeAfterMinutes: cfg.wakeAfterMinutes,
     wakeAfterMessages: cfg.wakeAfterMessages,

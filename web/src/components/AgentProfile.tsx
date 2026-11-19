@@ -141,15 +141,24 @@ function Notebook({ name }: { name: string }) {
         <p className="muted">Нотатник порожній.</p>
       ) : (
         <ul className="notebook-list">
-          {[...notes].reverse().map((n) => (
-            <li key={n.id} className="note">
-              <div className="note-head muted small">
-                {n.topic && <span className="note-topic">{n.topic}</span>}
-                <span className="num">{fmtShort(n.ts)}</span>
-              </div>
-              <div className="note-text">{n.text}</div>
-            </li>
-          ))}
+          {[...notes]
+            .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : b.id - a.id))
+            .map((n) => (
+              <li key={n.id} className="note">
+                <div className="note-head muted small">
+                  {n.topic && <span className="note-topic">{n.topic}</span>}
+                  <span className="num">{fmtShort(n.ts)}</span>
+                </div>
+                <div className="note-title">{n.title}</div>
+                <div className="note-description">{n.description}</div>
+                {n.text && (
+                  <details className="note-more">
+                    <summary className="muted small">Текст, {n.text.length} символів</summary>
+                    <div className="note-text">{n.text}</div>
+                  </details>
+                )}
+              </li>
+            ))}
         </ul>
       )}
     </section>

@@ -76,30 +76,47 @@ export function limitsLine(l: WorldLimits): string {
   );
 }
 
-/** How many characters of notes go into the session at start; the rest is one recall away. */
-export const NOTES_BUDGET = 2000;
+/** How many characters of descriptions go into the session at start; older notes show only their titles. */
+export const NOTES_BUDGET = 4000;
+/** How many more characters the titles of the older notes may take; the rest is one recall away. */
+export const TITLES_BUDGET = 4000;
 
-const noteLine = (n: AgentNote) => `#${n.id}${n.topic ? ` [${n.topic}]` : ""} (${n.ts}): ${n.text}`;
+const noteHead = (n: AgentNote) => `#${n.id}${n.topic ? ` [${n.topic}]` : ""} ${n.title} (${n.ts})`;
+const textMark = (n: AgentNote) => (n.text_length ? ` (text: ${n.text_length} characters)` : "");
+
+/** A note as recall lists it: title and description, and how long its text is. */
+export const noteSummary = (n: AgentNote) => `${noteHead(n)}: ${n.description}${textMark(n)}`;
+
+/** A note with everything in it. */
+export const noteFull = (n: AgentNote) => [noteHead(n), n.description, ...(n.text ? ["", n.text] : [])].join("\n");
 
 /**
- * The notebook at the start of a session: how many notes and when they changed, then the notes themselves,
- * most recently changed first, as many as fit in NOTES_BUDGET characters.
+ * The notebook at the start of a session: how many notes and when they changed, then the notes most
+ * recently changed first: with their descriptions while they fit in NOTES_BUDGET characters, then only
+ * their titles while those fit in TITLES_BUDGET.
  */
 export function notebookLine(n: { count: number; last_ts: string | null }, list: AgentNote[] = []): string {
   if (!n.count) return "Your AIChat notebook (remember, recall, forget) is empty.";
   const head = `Your AIChat notebook (remember, recall, forget) has ${n.count} ${n.count === 1 ? "note" : "notes"}, last changed ${n.last_ts}.`;
   const lines: string[] = [];
-  let used = 0;
+  let described = 0;
+  let titled = 0;
   for (const note of [...list].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : b.id - a.id))) {
-    const line = noteLine(note);
-    if (used + line.length > NOTES_BUDGET) break;
-    lines.push(line);
-    used += line.length;
+    const full = noteSummary(note);
+    if (titled === 0 && described + full.length <= NOTES_BUDGET) {
+      lines.push(full);
+      described += full.length;
+      continue;
+    }
+    const short = noteHead(note) + textMark(note);
+    if (titled + short.length > TITLES_BUDGET) break;
+    lines.push(short);
+    titled += short.length;
   }
   if (!lines.length) return head;
   const rest = n.count - lines.length;
   const tail = rest > 0 ? [`(${rest} older ${rest === 1 ? "note" : "notes"} not shown; recall shows them all)`] : [];
-  return [`${head} Most recently changed first:`, ...lines, ...tail].join("\n");
+  return [`${head} Most recently changed first; recall(id) shows a note with its text:`, ...lines, ...tail].join("\n");
 }
 
 /** What the agent is told about itself: its name, the admin's customization, and its notebook. */
@@ -174,7 +191,7 @@ async function fetchNotes(httpUrl: string, token: string, timeoutMs: number): Pr
     const r = await fetch(`${httpUrl}/api/notes`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) });
     if (!r.ok) return [];
     const data = (await r.json()) as { notes?: unknown };
-    return Array.isArray(data.notes) ? (data.notes as AgentNote[]).filter((x) => typeof x?.text === "string" && typeof x?.ts === "string") : [];
+    return Array.isArray(data.notes) ? (data.notes as AgentNote[]).filter((x) => typeof x?.title === "string" && typeof x?.description === "string" && typeof x?.ts === "string") : [];
   } catch {
     return [];
   }
