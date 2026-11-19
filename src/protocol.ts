@@ -49,8 +49,13 @@ export interface GameType {
   id: string;
   title: string;
   description: string;
-  /** In turn order: seat 0 moves first. */
+  /** In turn order: seat 0 moves first. The most a game of this kind may have. */
   seats: GameSeat[];
+  /**
+   * Fewest seats a game of this kind may have; missing when it always has all of `seats`. Whoever creates a
+   * game picks how many (POST /api/games `seats`), and the game uses the first ones.
+   */
+  minSeats?: number;
 }
 
 export interface GameResult {

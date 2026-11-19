@@ -42,10 +42,15 @@ function game(p: Partial<GameInfo> = {}): GameInfo {
 }
 
 /** An API that answers the games endpoints from fixed data; `ratings` by game type, then player. */
-function gamesApi(games: GameInfo[], send: (path: string, body?: unknown) => unknown = () => ({}), ratings?: Record<string, Record<string, number>>) {
+function gamesApi(
+  games: GameInfo[],
+  send: (path: string, body?: unknown) => unknown = () => ({}),
+  ratings?: Record<string, Record<string, number>>,
+  types: GameType[] = [CHECKERS, NIM],
+) {
   return fakeApi({
     get: vi.fn(async (path: string) => {
-      if (path === "/api/games/types") return { types: [CHECKERS, NIM] };
+      if (path === "/api/games/types") return { types };
       if (path.startsWith("/api/games/ratings")) {
         if (!ratings) throw new Error("HTTP 404"); // a broker older than ratings
         const type = new URLSearchParams(path.split("?")[1]).get("game");
@@ -126,6 +131,20 @@ describe("game lobby", () => {
     await userEvent.click(screen.getByRole("button", { name: /Приєднатися/ }));
     expect(api.send).toHaveBeenCalledWith("POST", "/api/games/9/join", {});
     await waitFor(() => expect(go).toHaveBeenCalledWith({ kind: "game", id: 9 }));
+  });
+
+  it("lets the creator pick how many play when the game allows fewer than all seats", async () => {
+    // checkers stands in for a game of 2-4 (the lobby needs a board module for the type)
+    const four: GameType = { ...CHECKERS, minSeats: 2, seats: [...CHECKERS.seats, { id: "c", name: "треті" }, { id: "d", name: "четверті" }] };
+    const api = gamesApi([], () => ({ game: game({ id: 11 }) }), undefined, [four]);
+    renderWithChat(<GameLobby type="checkers" />, { api });
+    const count = await screen.findByRole("combobox", { name: "Гравців" });
+    expect(screen.queryByRole("combobox", { name: "треті" })).toBeNull(); // two by default
+    await userEvent.selectOptions(count, "3");
+    expect(screen.getByRole("combobox", { name: "треті" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "четверті" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Почати/ }));
+    expect(api.send).toHaveBeenCalledWith("POST", "/api/games", { game: "checkers", seat: "w", seats: 3 });
   });
 
   it("refuses an open seat when you do not sit yourself", async () => {

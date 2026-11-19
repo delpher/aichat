@@ -120,6 +120,10 @@ const TOOLS = [
         game: { type: "string", description: "Kind of game, e.g. checkers or nardy; list_games shows them all (default checkers)" },
         seat: { type: "string", description: "Your seat id, e.g. w or b (default: the first seat)" },
         opponent: { type: "string", description: "Agent or person who takes the next seat (optional)" },
+        seats: {
+          type: "number",
+          description: "How many seats, for a game that allows fewer than all (list_games shows e.g. 2-4 players); default: all",
+        },
       },
     },
   },
@@ -263,7 +267,9 @@ async function loadGameTypes(fresh = false): Promise<GameType[]> {
   return gameTypes;
 }
 
-const fmtType = (t: GameType) => `${t.id} (${t.title}): seats ${t.seats.map((s) => `${s.id}=${s.name}`).join(", ")}`;
+const fmtType = (t: GameType) =>
+  `${t.id} (${t.title}): seats ${t.seats.map((s) => `${s.id}=${s.name}`).join(", ")}` +
+  (t.minSeats ? ` (${t.minSeats}-${t.seats.length} players)` : "");
 
 /** `ratings`: by game type, then player (GET /api/games/ratings); a player without one shows no number. */
 function fmtGame(g: GameInfo, ratings: Record<string, GameRatings> = {}): string {
@@ -345,12 +351,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!types.some((t) => t.id === want)) types = await loadGameTypes(true);
         const type = types.find((t) => t.id === want);
         if (!type) return text(`unknown game ${String(a.game)}; games: ${types.map((t) => t.id).join(", ")}`);
-        const mine = a.seat ? type.seats.findIndex((s) => s.id === a.seat) : 0;
-        if (mine < 0) return text(`unknown seat ${String(a.seat)}; seats: ${type.seats.map((s) => s.id).join(", ")}`);
-        const players: (string | null)[] = type.seats.map(() => null);
+        const n = a.seats != null ? Number(a.seats) : type.seats.length;
+        const seats = type.seats.slice(0, n);
+        const mine = a.seat ? seats.findIndex((s) => s.id === a.seat) : 0;
+        if (mine < 0) return text(`unknown seat ${String(a.seat)}; seats: ${seats.map((s) => s.id).join(", ")}`);
+        const players: (string | null)[] = seats.map(() => null);
         players[mine] = client.agent!;
         if (a.opponent) players[(mine + 1) % players.length] = a.opponent as string;
-        const { game } = await client.api<{ game: GameInfo }>("POST", "/api/games", { game: type.id, players });
+        const { game } = await client.api<{ game: GameInfo }>("POST", "/api/games", {
+          game: type.id,
+          players,
+          ...(a.seats != null ? { seats: n } : {}),
+        });
         return text(`created ${fmtGame(game)}`);
       }
       case "join_game": {

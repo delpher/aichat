@@ -29,6 +29,8 @@ export function GameLobby({ type: typeId }: { type: string }) {
   const m = findGame(typeId);
   /** Who sits on each seat; "" leaves it open for whoever joins. The first seat defaults to you. */
   const [seats, setSeats] = useState<string[]>([sender]);
+  /** How many seats, for a game that allows fewer than all (minSeats); null until picked: the fewest. */
+  const [count, setCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
 
@@ -50,11 +52,13 @@ export function GameLobby({ type: typeId }: { type: string }) {
       </div>
     );
 
-  const picked = t.seats.map((_, i) => seats[i] ?? "");
+  const n = t.minSeats ? Math.min(Math.max(count ?? t.minSeats, t.minSeats), t.seats.length) : t.seats.length;
+  const tableSeats = t.seats.slice(0, n);
+  const picked = tableSeats.map((_, i) => seats[i] ?? "");
   const filled = picked.filter(Boolean);
   // Either every seat is taken by different players, or you take one seat and wait for the rest.
   const distinct = new Set(filled).size === filled.length;
-  const full = filled.length === t.seats.length;
+  const full = filled.length === n;
   const valid = distinct && (full || (filled.length === 1 && filled[0] === sender));
   const hint = !distinct
     ? "Один гравець не може сидіти на двох місцях."
@@ -78,7 +82,10 @@ export function GameLobby({ type: typeId }: { type: string }) {
     if (!valid) return;
     setBusy(true);
     try {
-      const body = full ? { game: t.id, players: picked } : { game: t.id, seat: t.seats[picked.indexOf(sender)].id };
+      const body = {
+        ...(full ? { game: t.id, players: picked } : { game: t.id, seat: tableSeats[picked.indexOf(sender)].id }),
+        ...(t.minSeats ? { seats: n } : {}),
+      };
       const d = await api.send<{ game: GameInfo }>("POST", "/api/games", body);
       go({ kind: "game", id: d.game.id });
     } catch (e) {
@@ -119,8 +126,20 @@ export function GameLobby({ type: typeId }: { type: string }) {
         }}
       >
         <h2>Нова партія в {t.title.toLowerCase()}</h2>
+        {t.minSeats && (
+          <label className="field">
+            <span>Гравців</span>
+            <select value={n} onChange={(e) => setCount(Number(e.target.value))} disabled={busy}>
+              {Array.from({ length: t.seats.length - t.minSeats + 1 }, (_, k) => t.minSeats! + k).map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="form-grid">
-          {t.seats.map((s, i) => (
+          {tableSeats.map((s, i) => (
             <label key={s.id} className="field">
               <span>
                 {s.name[0].toUpperCase() + s.name.slice(1)}
@@ -128,7 +147,7 @@ export function GameLobby({ type: typeId }: { type: string }) {
               </span>
               <select
                 value={picked[i]}
-                onChange={(e) => setSeats(t.seats.map((_, k) => (k === i ? e.target.value : picked[k])))}
+                onChange={(e) => setSeats(tableSeats.map((_, k) => (k === i ? e.target.value : picked[k])))}
                 disabled={busy}
                 aria-label={s.name}
               >
