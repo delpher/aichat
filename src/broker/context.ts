@@ -3,7 +3,7 @@
 // An agent reads and changes only its own notes; people read anyone's; other agents read none.
 import { MAX_INTRO_LENGTH, MAX_NOTE_TITLE, MAX_NOTE_TOPIC, SYSTEM_SENDER, type AgentNote, type WorldIntro } from "../protocol.js";
 import { DRAFT_INTRO } from "./intro-draft.js";
-import type { NoteFields, Store } from "./store.js";
+import { fromOneText, type NoteFields, type Store } from "./store.js";
 
 /** The draft has no author or save time of its own. */
 const DRAFT_TS = "1970-01-01T00:00:00.000Z";
@@ -70,8 +70,15 @@ export class Context {
     return this.host.store.noteStats(agent);
   }
 
-  /** A new note: a title and a description, and optionally a text and a topic. */
+  /**
+   * A new note: a title and a description, and optionally a text and a topic. A note with only a text comes
+   * from an adapter older than titles (0.6): it is split as old notes were when the broker moved to titles.
+   */
   remember(agent: string, body: Record<string, unknown>): AgentNote {
+    if (body.title === undefined && body.description === undefined && typeof body.text === "string" && body.text.trim()) {
+      const { maxNoteDescription } = this.host.limits();
+      body = { ...body, ...fromOneText(this.text(body.text), maxNoteDescription) };
+    }
     const fields: NoteFields = {
       title: this.title(body.title),
       description: this.description(body.description),

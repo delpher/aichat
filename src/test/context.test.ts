@@ -117,6 +117,13 @@ test("notebook: remember, recall, change and forget keep only the current state"
     assert.equal(me.data.notes.count, 1);
     assert.equal(me.data.notes.last_ts, c.data.note.ts);
 
+    // an adapter older than titles sends only a text: it is split like the old notes were
+    const legacy = await bot<{ note: AgentNote }>("POST", "/api/notes", { text: "Старий адаптер. Пише лише текст.", topic: "старе" });
+    assert.equal(legacy.status, 201);
+    assert.equal(legacy.data.note.title, "Старий адаптер");
+    assert.equal(legacy.data.note.description, "Старий адаптер. Пише лише текст.");
+    assert.equal((await bot("DELETE", `/api/notes/${legacy.data.note.id}`)).status, 200);
+
     // bad input
     const ok = { title: "t", description: "d" };
     assert.equal((await bot("POST", "/api/notes", { description: "no title" })).status, 400);

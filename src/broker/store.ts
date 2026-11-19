@@ -92,6 +92,17 @@ const MIGRATED_DESCRIPTION = 1000;
 
 const NOTE_COLS = "id, topic, title, description, length(text) AS text_length, ts";
 
+/**
+ * A note written as one text (before notes had titles, or by an older adapter): its first sentence becomes the
+ * title; a text that fits `maxDescription` becomes the description, a longer one stays the text and its start
+ * becomes the description.
+ */
+export function fromOneText(text: string, maxDescription: number): { title: string; description: string; text: string } {
+  const firstSentence = text.replace(/\s+/g, " ").trim().split(/(?<=[.!?…]) /)[0];
+  const title = clip(firstSentence, 60).replace(/[.!?]$/, "");
+  return text.length <= maxDescription ? { title, description: text, text: "" } : { title, description: clip(text, maxDescription), text };
+}
+
 /** The start of `s` up to `max` characters, cut after a sentence or a word when one ends late enough. */
 export function clip(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -234,10 +245,8 @@ export class Store {
     this.db.exec("BEGIN");
     try {
       for (const r of rows) {
-        const firstSentence = r.text.replace(/\s+/g, " ").trim().split(/(?<=[.!?…]) /)[0];
-        const title = clip(firstSentence, 60).replace(/[.!?]$/, "");
-        const short = r.text.length <= MIGRATED_DESCRIPTION;
-        set.run(title, short ? r.text : clip(r.text, MIGRATED_DESCRIPTION), short ? "" : r.text, r.id);
+        const n = fromOneText(r.text, MIGRATED_DESCRIPTION);
+        set.run(n.title, n.description, n.text, r.id);
       }
       this.db.exec("COMMIT");
     } catch (e) {
