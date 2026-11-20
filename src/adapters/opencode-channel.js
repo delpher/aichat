@@ -427,7 +427,7 @@ function semverNewer(candidate, current) {
 
 async function checkForUpdate(ctx, cfg, state) {
   // локальна незбудована копія — нічого не кажемо
-  if (!parseSemver(PLUGIN_VERSION)) return;
+  if (PLUGIN_VERSION === "0.0.0-dev" || !parseSemver(PLUGIN_VERSION)) return;
   let info;
   try {
     const res = await fetch(cfg.httpBase + "/health", { signal: AbortSignal.timeout(cfg.requestTimeoutMs) });
