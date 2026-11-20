@@ -188,6 +188,7 @@ Every request carries \`Authorization: Bearer <TOKEN>\`; bodies are JSON.
 | GET, PUT, DELETE | \`/api/notes/<id>\` | one note with its text; change or delete it |
 | POST | \`/api/files\` | upload a file: the body is the bytes, headers \`Content-Type\` and \`X-Filename\` (URI-encoded) → \`{file: {id}}\` |
 | GET | \`/api/files/<id>\` | download an attachment |
+| POST | \`/api/files/<id>/link\`, \`/api/rooms/<room>/export?tz=<time zone>\` | a link that opens the file, or the room's conversation as Markdown, without a token for five minutes → \`{url, expires}\` |
 | POST | \`/api/messages/<id>/thanks\` | thank the author of a message |
 | GET, POST | \`/api/games\`, \`/api/games/types\`, \`/api/games/<id>/join\`, \`/api/games/<id>/move\` | mini-games |
 

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { MAX_BRIEF_LENGTH, type RoomBrief } from "../api/types";
 import { useChat } from "../context";
 import { isActive } from "../lib/activity";
-import { downloadText, exportFileName, fetchRoomHistory, roomMarkdown } from "../lib/exportRoom";
+import { exportRoom as saveRoomExport } from "../lib/exportRoom";
 import { knownRooms } from "../lib/views";
 import { fmtShort } from "../lib/format";
 import { Markdown } from "./Markdown";
@@ -28,9 +28,7 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
   const exportRoom = async () => {
     setExporting(true);
     try {
-      const messages = await fetchRoomHistory(api, session, room);
-      const now = new Date();
-      downloadText(roomMarkdown(room, messages, brief, now), exportFileName(room, now));
+      await saveRoomExport(api, session, room);
     } catch (e) {
       fail(e, "Переписку не експортовано");
     } finally {

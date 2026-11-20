@@ -1,18 +1,14 @@
 /**
- * How long a file handed to the browser stays readable. The browser reads the blob only when the download finishes,
- * and that waits for the person when the browser asks where to save it; a blob freed before then leaves the download
- * hanging at 100% with nothing written (issue #61). Ten minutes covers a save dialog left open for a while.
+ * Saves a file from a short download link the broker made for it (/dl/...). The link carries its own proof, so the
+ * browser, or a download manager that takes the download over (Chrono, issue #61), fetches it as an ordinary file;
+ * a blob: made by the page was not theirs to read and hung at 100%.
  */
-export const KEEP_BLOB_MS = 10 * 60_000;
-
-/** Hands a blob to the browser as a file to save, and frees it only once the download can no longer need it. */
-export function saveBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
+export function saveLink(url: string, fileName?: string) {
   const a = document.createElement("a");
   a.href = url;
-  a.download = fileName;
+  if (fileName) a.download = fileName;
+  a.rel = "noopener";
   document.body.append(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), KEEP_BLOB_MS);
 }
