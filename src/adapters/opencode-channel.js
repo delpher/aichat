@@ -489,24 +489,27 @@ async function checkForUpdate(ctx, cfg, state) {
   }
 }
 
-// Брокер приймає провайдера як коротке ім'я малими літерами (^[a-z0-9][a-z0-9._-]{0,39}$).
-function providerId(raw) {
-  const id = String(raw ?? "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 40);
-  return id || "unknown";
+// Звіт про використання для веба AIChat (сторінка «Використання» / профіль агента).
+// Беремо лише свою сесію. Кумулятивні токени й вартість — з session.get, контекст —
+// з останньої асистентської відповіді (session.context). Вікон лімітів поки не шлемо.
+function normalizeProvider(value) {
+  const s = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+/, "")
+    .slice(0, 40);
+  return s || "unknown";
 }
 
-// Звіт про використання для веба AIChat (сторінка «Використання» / профіль агента).
-// Беремо лише свою сесію, кумулятивні токени — з session.usage.updated, контекст —
-// з останнього кроку. Вікон лімітів поки не шлемо (OpenCode Go/Console недоступні тут).
 function followUsage(ctx, cfg, state) {
   const controller = new AbortController();
-  const types = ["session.usage.updated", "session.step.started", "session.step.ended", "session.idle"];
+  const types = ["session.idle", "session.execution.succeeded"];
   const limits = new Map(); // "provider/id" -> context limit
-  let usage = null; // { cost, tokens } кумулятивно
-  let modelRef = null; // { providerID, id, variant }
-  let lastStepTokens = null;
   let lastSentAt = 0;
   let lastSig = "";
+  let dirty = false; // сесія щось зробила після останнього звіту
 
   const contextLimitFor = async (ref) => {
     if (!ref?.providerID || !ref?.id || !ctx.model?.list) return null;
@@ -514,7 +517,8 @@ function followUsage(ctx, cfg, state) {
     if (limits.has(key)) return limits.get(key);
     let value = null;
     try {
-      const models = await ctx.model.list();
+      const raw = await ctx.model.list();
+      const models = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
       const hit = models.find((m) => m.providerID === ref.providerID && m.id === ref.id);
       value = hit?.limit?.context ?? null;
     } catch {
@@ -525,34 +529,62 @@ function followUsage(ctx, cfg, state) {
   };
 
   const report = async () => {
-    // поки сесія нічого не витратила, звітувати нема про що (інакше в вебі будуть нулі й "unknown")
-    if (!state.sessionID || (!usage && !lastStepTokens)) return;
+    if (!state.sessionID) return;
+    // спершу тротлінг, щоб таймер не тягнув сесію й усі її повідомлення щохвилини:
+    // не частіше ніж раз на 15 с; без нових подій — раз на 5 хв
     const now = Date.now();
-    const body = { provider: providerId(modelRef?.providerID || state.lastModel?.providerID), windows: [] };
-    if (usage) {
-      const tokens = usage.tokens ?? {};
-      const tokensIn = Number(tokens.input ?? 0);
-      const tokensOut = Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0);
-      body.session = { tokensIn: Number.isFinite(tokensIn) ? tokensIn : 0, tokensOut: Number.isFinite(tokensOut) ? tokensOut : 0 };
-      if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0) {
-        body.session.cost = usage.cost;
-        body.session.currency = "USD";
-      }
+    if (now - lastSentAt < 15000) return;
+    if (!dirty && lastSentAt && now - lastSentAt < 300000) return;
+    let info;
+    try {
+      info = await ctx.session.get({ sessionID: state.sessionID });
+    } catch {
+      return;
     }
-    if (lastStepTokens) {
-      const limit = await contextLimitFor(modelRef || state.lastModel);
+    const tokens = info?.tokens ?? {};
+    const tokensIn = Number(tokens.input ?? 0);
+    const tokensOut = Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0);
+    // нічого ще не витрачено — не шлемо нулі
+    if (!tokensIn && !tokensOut && !(typeof info?.cost === "number" && info.cost > 0)) return;
+
+    // остання асистентська відповідь: модель (для provider) і токени кроку (для контексту)
+    let last = null;
+    try {
+      const rawMessages = await ctx.session.context({ sessionID: state.sessionID });
+      const messages = Array.isArray(rawMessages)
+        ? rawMessages
+        : Array.isArray(rawMessages?.data)
+          ? rawMessages.data
+          : [];
+      last = [...messages].reverse().find((m) => m?.tokens && m?.model) ?? null;
+    } catch {
+      last = null;
+    }
+
+    const provider = normalizeProvider(last?.model?.providerID ?? info?.model?.providerID ?? "unknown");
+    const body = {
+      provider,
+      windows: [],
+      session: { tokensIn, tokensOut },
+    };
+    if (typeof info?.cost === "number" && info.cost > 0) {
+      body.session.cost = info.cost;
+      body.session.currency = "USD";
+    }
+    if (last?.tokens) {
+      const limit = await contextLimitFor(last.model ?? info?.model);
       if (limit && limit > 0) {
         const prompt =
-          Number(lastStepTokens.input ?? 0) +
-          Number(lastStepTokens.cache?.read ?? 0) +
-          Number(lastStepTokens.cache?.write ?? 0);
+          Number(last.tokens.input ?? 0) +
+          Number(last.tokens.cache?.read ?? 0) +
+          Number(last.tokens.cache?.write ?? 0);
         const usedPct = Math.min(100, Math.max(0, (prompt / limit) * 100));
         body.context = { usedPct: Math.round(usedPct * 10) / 10 };
       }
     }
+
     const sig = JSON.stringify(body);
-    // не частіше ніж раз на 15 с; без змін — раз на 5 хв
-    if (now - lastSentAt < 15000) return;
+    dirty = false;
     if (sig === lastSig && now - lastSentAt < 300000) return;
     lastSig = sig;
     lastSentAt = now;
@@ -563,28 +595,6 @@ function followUsage(ctx, cfg, state) {
     }
   };
 
-  const handle = async (event) => {
-    const data = event?.data ?? {};
-    if (!state.sessionID || data.sessionID !== state.sessionID) return;
-    switch (event.type) {
-      case "session.usage.updated":
-        usage = { cost: data.cost, tokens: data.tokens };
-        break;
-      case "session.step.started":
-        if (data.model) {
-          modelRef = data.model;
-          void contextLimitFor(modelRef);
-        }
-        break;
-      case "session.step.ended":
-        lastStepTokens = data.tokens ?? lastStepTokens;
-        break;
-      case "session.idle":
-        await report();
-        break;
-    }
-  };
-
   const timer = setInterval(() => void report(), 60000);
   timer.unref?.();
 
@@ -592,7 +602,10 @@ function followUsage(ctx, cfg, state) {
     while (!controller.signal.aborted) {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal, types })) {
-          await handle(event);
+          const data = event?.data ?? {};
+          if (!state.sessionID || data.sessionID !== state.sessionID) continue;
+          dirty = true;
+          await report();
         }
       } catch (error) {
         if (controller.signal.aborted) return;
