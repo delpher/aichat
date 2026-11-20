@@ -89,7 +89,12 @@ export class Hooks {
       c.busyCounted = false;
     } else {
       c.idleSince = undefined;
-      c.busySince ??= now;
+      if (state === "busy") c.busySince ??= now;
+      else {
+        // waiting for a person's decision is not work: only busy without a break counts (decision 7; codex-alexey, 2266)
+        c.busySince = undefined;
+        c.busyCounted = false;
+      }
     }
   }
 

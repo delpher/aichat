@@ -105,6 +105,16 @@ test("idle, always: one message per idle stretch, the next only after real activ
   assert.equal((await t.fromSystem("a")).length, 1);
   t.later(1 * MIN);
   assert.equal((await t.fromSystem("a")).length, 2);
+  // waiting for a permission is not work, even for long, nor busy broken up by waiting
+  await t.activity("a", "busy");
+  t.later(MIN);
+  await t.activity("a", "waiting");
+  t.later(5 * MIN);
+  await t.activity("a", "busy");
+  t.later(MIN);
+  await t.activity("a", "idle");
+  t.later(31 * MIN);
+  assert.equal((await t.fromSystem("a")).length, 2);
   // busy for more than two minutes counts as real activity too
   await t.activity("a", "busy");
   t.later(3 * MIN);
