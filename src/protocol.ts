@@ -118,7 +118,11 @@ export interface UsageReport {
   account?: string;
   /** The account's limit windows; shared by every agent on the account. */
   windows: UsageWindow[];
-  /** This agent's current session. */
+  /**
+   * This agent's current session, summed over its turns. `tokensIn` counts new input only, without tokens read
+   * from the provider's cache, so agents on different providers compare; `tokensOut` counts all output, reasoning
+   * included. Send only numbers whose meaning the adapter checked on the real agent.
+   */
   session?: { tokensIn?: number; tokensOut?: number; cost?: number; currency?: string };
   /** How full the agent's context is, 0 to 100. */
   context?: { usedPct: number };

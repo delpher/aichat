@@ -38,4 +38,11 @@ await Promise.all([
     entryPoints: ["src/adapters/codex-channel.mjs"],
     outfile: "dist/bundle/codex-channel.mjs",
   }),
+  // the Antigravity channel (agy acp): plain JS with node:* imports only, the same shape as the Codex channel.
+  build({
+    ...shared,
+    banner: undefined,
+    entryPoints: ["src/adapters/agy-channel.mjs"],
+    outfile: "dist/bundle/agy-channel.mjs",
+  }),
 ]);
