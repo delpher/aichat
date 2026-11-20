@@ -1461,6 +1461,7 @@ export class Broker {
         webhook: a.webhook,
         httpUrl: this.cfg.publicUrl || `http://${req.headers.host ?? `127.0.0.1:${this.cfg.port}`}`,
         projectDir: this.cfg.projectDir || this.opts.defaultProjectDir || "",
+        owner: me.name,
       });
     if (route === "GET /admin/api/agents") return reply(200, { agents: adminAgents() });
     if (route === "POST /admin/api/agents") {
@@ -1521,8 +1522,19 @@ export class Broker {
       if (req.method === "PATCH" && !agentMatch[2]) {
         const b = await readJson(req);
         const keys = Object.keys(b);
-        if (!keys.length || keys.some((k) => k !== "admin" && k !== "description" && k !== "keeper"))
-          throw new BrokerError("only `admin`, `description` and `keeper` can be changed here");
+        if (!keys.length || keys.some((k) => k !== "admin" && k !== "description" && k !== "keeper" && k !== "kind"))
+          throw new BrokerError("only `admin`, `description`, `keeper` and `kind` can be changed here");
+        // An agent's kind only picks its connection instructions and its label, so an admin may correct it; a person
+        // stays a person and an agent never becomes one, since admin rights and accounts depend on that.
+        let kind: string | undefined;
+        const oldKind = target.kind;
+        if ("kind" in b) {
+          if (typeof b.kind !== "string" || !NAME_RE.test(b.kind))
+            throw new BrokerError("kind must be 1-64 characters: letters, digits, _ or -");
+          if (target.kind === "human" || b.kind === "human")
+            throw new BrokerError(`only an AI agent's kind can be changed, and not to "human"; ${name} is "${target.kind}"`, 403);
+          if (b.kind !== target.kind) kind = b.kind;
+        }
         if ("admin" in b) {
           if (typeof b.admin !== "boolean") throw new BrokerError("admin must be true or false");
           if (b.admin && target.kind !== "human")
@@ -1559,11 +1571,13 @@ export class Broker {
             a.keeper = true;
             delete a.rooms;
           } else if (b.keeper === false) delete a.keeper;
+          if (kind) a.kind = kind;
         });
         if (b.admin === false) this.disconnectObserver(name, "admin rights removed");
         if ("admin" in b) this.log(`${me.name} ${b.admin ? "made" : "removed"} ${name} ${b.admin ? "an admin" : "from admins"}`);
         if (description !== undefined) this.log(`${me.name} ${description ? "changed" : "removed"} the description of ${name}`);
         if ("keeper" in b) this.log(`${me.name} ${b.keeper ? "made" : "removed"} ${name} ${b.keeper ? "the keeper" : "as the keeper"}`);
+        if (kind) this.log(`${me.name} changed the kind of ${name} from ${oldKind} to ${kind}`);
         return reply(200, { agent: adminAgents().find((a) => a.name === name) });
       }
       if (req.method === "POST" && agentMatch[2] === "/token") {

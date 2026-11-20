@@ -393,9 +393,22 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.equal(oc.setup.steps.filter((s) => s.code?.includes(oc.token)).length, 1); // the token is only in the token file
   assert.equal(oc.setup.steps.at(-1)!.code, "opencode reload"); // the first start is paused, the last step connects
 
+  // Codex: install the channel adapter with a profile apart from the agent's folder; the admin is its owner
+  r = await post("/admin/api/agents", { name: "cx", kind: "codex" });
+  assert.equal(r.status, 201);
+  const cx = (await r.json()) as SetupRes;
+  assert.equal(cx.setup.kind, "codex");
+  const cxCode = cx.setup.steps.map((s) => s.code ?? "").join("\n");
+  assert.ok(cxCode.includes('Invoke-WebRequest http://aichat.lan:8787/client/codex-channel.mjs -OutFile "$env:TEMP\\codex-channel.mjs"'));
+  assert.ok(cxCode.includes('install --dir "$HOME\\aichat-agents\\cx" --home "$HOME\\.codex-aichat-cx" --token-file "$HOME\\.secrets\\aichat-cx-token"'));
+  assert.ok(cxCode.includes("--url 'http://aichat.lan:8787' --owners 'boss'"));
+  assert.ok(cxCode.includes('$env:CODEX_HOME = "$HOME\\.codex-aichat-cx"; codex login'));
+  assert.equal(cx.setup.steps.filter((s) => s.code?.includes(cx.token)).length, 1); // the token is only in the token file
+  assert.ok(cx.setup.steps.at(-1)!.code!.endsWith(".\\start.ps1"));
+
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);
-  const h = (await r.json()) as SetupRes & { agent: { webhook: boolean } };
+  const h =(await r.json()) as SetupRes & { agent: { webhook: boolean } };
   assert.equal(h.agent.webhook, true);
   assert.equal(cfg().agents.find((a) => a.name === "hook")?.webhook, "http://127.0.0.1:9/hook");
 
@@ -530,7 +543,17 @@ test("a human can be made an admin: own token opens the admin API and the observ
   assert.equal(cfg().agents.find((a) => a.name === "olena")?.admin, true);
   assert.equal((await patch("bot", { admin: true })).status, 403);
   assert.equal((await patch("olena", { admin: "yes" })).status, 400);
-  assert.equal((await patch("olena", { kind: "x" })).status, 400);
+  // an AI agent's kind can be corrected; a person stays a person and no agent becomes one
+  assert.equal((await patch("olena", { kind: "codex" })).status, 403);
+  assert.equal((await patch("bot", { kind: "human" })).status, 403);
+  assert.equal((await patch("bot", { kind: "no spaces" })).status, 400);
+  r = await patch("bot", { kind: "codex" });
+  assert.equal(r.status, 200);
+  assert.equal(((await r.json()) as { agent: { kind: string } }).agent.kind, "codex");
+  assert.equal(cfg().agents.find((a) => a.name === "bot")?.kind, "codex");
+  r = await fetch(`${http}/admin/api/agents/bot/setup`, { headers: as(ADMIN) });
+  assert.equal(((await r.json()) as { setup: { kind: string } }).setup.kind, "codex");
+  assert.equal((await patch("bot", { kind: "claude" })).status, 200);
 
   r = await fetch(`${http}/admin/api/overview`, { headers: as(olenaTok) });
   assert.equal(r.status, 200);

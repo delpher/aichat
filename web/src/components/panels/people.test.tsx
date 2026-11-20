@@ -77,6 +77,28 @@ describe("participant page", () => {
     expect(api.send).toHaveBeenCalledWith("PATCH", "/admin/api/agents/helper", { keeper: true });
   });
 
+  it("changes an AI agent's kind, such as to Codex", async () => {
+    const api = adminApi();
+    renderWithChat(<PersonPage name="helper" onSelfDemoted={() => {}} />, asAdmin(api));
+    const kind = await screen.findByRole("combobox", { name: /^Тип/ });
+    expect(kind).toHaveValue("claude");
+    await userEvent.selectOptions(kind, "codex");
+    await userEvent.click(screen.getByRole("button", { name: /^Зберегти$/ }));
+    expect(api.send).toHaveBeenCalledWith("PATCH", "/admin/api/agents/helper", { kind: "codex" });
+  });
+
+  it("keeps an agent's own kind among the choices", async () => {
+    const agents = AGENTS.map((a) => (a.name === "helper" ? { ...a, kind: "service" } : a));
+    renderWithChat(<PersonPage name="helper" onSelfDemoted={() => {}} />, asAdmin(adminApi(agents)));
+    expect(await screen.findByRole("combobox", { name: /^Тип/ })).toHaveValue("service");
+  });
+
+  it("shows no kind for a person", async () => {
+    renderWithChat(<PersonPage name="olena" onSelfDemoted={() => {}} />, asAdmin());
+    await screen.findByRole("checkbox", { name: "Адміністратор" });
+    expect(screen.queryByRole("combobox", { name: /^Тип/ })).toBeNull();
+  });
+
   it("does not offer the keeper role to an agent in rooms or when there is a keeper already", async () => {
     renderWithChat(<PersonPage name="claude" onSelfDemoted={() => {}} />, asAdmin());
     expect(await screen.findByRole("checkbox", { name: "Keeper" })).toBeDisabled();
