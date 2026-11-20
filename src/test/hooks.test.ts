@@ -75,6 +75,9 @@ test("admins create, change, switch off and remove hooks; bad rules are refused"
   assert.deepEqual(((await r.json()) as { hook: HookRule }).hook.trigger, { type: "online" });
   r = await t.call("PATCH", `/admin/api/hooks/${h.id}`, { enabled: false });
   assert.equal(((await r.json()) as { hook: HookRule }).hook.enabled, false);
+  // editing a switched-off hook without saying "enabled" leaves it off
+  r = await t.call("PUT", `/admin/api/hooks/${h.id}`, idle(20));
+  assert.equal(((await r.json()) as { hook: HookRule }).hook.enabled, false);
   assert.equal((await t.call("PUT", "/admin/api/hooks/nope", idle())).status, 404);
   assert.equal((await t.call("DELETE", `/admin/api/hooks/${h.id}`)).status, 200);
   assert.deepEqual(((await (await t.call("GET", "/admin/api/hooks")).json()) as { hooks: HookRule[] }).hooks, []);
@@ -204,7 +207,8 @@ test("online and offline fire once the change has held 30 s, never in the first 
   const on = await t.addHook({ trigger: { type: "online" }, repeat: "always", action: { type: "system_message", recipient: "others", text: TEXT } });
   const off = await t.addHook({ trigger: { type: "offline" }, repeat: "always", action: { type: "system_message", recipient: "agents", text: TEXT } });
   const b = await connect(t.url, "b");
-  // everyone reconnects after a broker restart: not an event
+  // everyone reconnects after a broker restart: not an event; and whoever was online before the restart and does
+  // not come back gets no "offline" either (decision 14: the broker never saw it leave)
   let a = await connect(t.url, "a");
   t.later(STARTUP_GRACE_MS + PRESENCE_SETTLE_MS);
   assert.equal((await t.fromSystem("b")).length, 0);

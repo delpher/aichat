@@ -163,8 +163,12 @@ export class Hooks {
   }
 
   replace(id: string, raw: unknown, by: string): HookRule {
-    if (!this.host.store.hook(id)) throw new HookError(`unknown hook: ${id}`, 404);
-    return this.host.store.saveHook(id, this.check(raw), by);
+    const cur = this.host.store.hook(id);
+    if (!cur) throw new HookError(`unknown hook: ${id}`, 404);
+    const fields = this.check(raw);
+    // an edit that does not say whether the hook is on keeps it as it was (opencode-alexey, 2269)
+    if ((raw as { enabled?: unknown }).enabled === undefined) fields.enabled = cur.enabled;
+    return this.host.store.saveHook(id, fields, by);
   }
 
   setEnabled(id: string, raw: unknown): HookRule {
