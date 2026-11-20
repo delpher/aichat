@@ -2,7 +2,16 @@ import { useEffect, useState } from "react";
 import type { UsageReport, UsageWindow } from "../../api/types";
 import { fmtShort, fmtTime } from "../../lib/format";
 
-const WINDOW_LABEL: Record<string, string> = { five_hour: "5 годин", seven_day: "7 днів", spend_limit: "Ліміт витрат" };
+const WINDOW_LABEL: Record<string, string> = {
+  five_hour: "5 годин",
+  seven_day: "7 днів",
+  spend_limit: "Ліміт витрат",
+  // OpenCode Go and OpenCode Console budgets (opencode-channel)
+  rolling: "Ковзне вікно",
+  weekly: "Тиждень",
+  monthly: "Місяць",
+  budget: "Бюджет",
+};
 export const windowLabel = (name: string) => WINDOW_LABEL[name] ?? name;
 
 /** From this much a window is shown as nearly used up, and from FULL as used up. */
@@ -96,29 +105,32 @@ export function UsageList({ reports, label }: { reports: UsageReport[]; label: (
     <div className="usage-list">
       {keys.map((account, i) => {
         const rs = groups.get(account)!.sort((a, b) => a.agent.localeCompare(b.agent));
-        const windows = freshestWindows(rs);
+        // Without an account nothing says two agents share limits, so each agent shows its own (below).
+        const windows = account ? freshestWindows(rs) : [];
         return (
           <section key={account || "unknown"} className="card usage-account">
             <h3>{account ? label(account, i) : "Акаунт невідомий"}</h3>
             {windows.length ? (
               <Windows windows={windows} now={now} />
-            ) : (
+            ) : account || !rs.some((r) => r.windows.length) ? (
               <p className="muted small">
                 {account
                   ? "Лімітів не видно: їх дає лише підписка claude.ai, і лише після першої відповіді моделі в сесії."
-                  : "Агент не повідомив, на якому акаунті працює (наприклад, увійшов ключем API), тож видно лише його сесію."}
+                  : "Агент не повідомив, на якому акаунті працює (наприклад, увійшов ключем API чи працює через іншого провайдера), тож його ліміти, якщо вони є, показані окремо при ньому."}
               </p>
-            )}
+            ) : null}
             <ul className="usage-agents">
               {rs.map((r) => (
                 <li key={r.agent}>
                   <strong>{r.agent}</strong>
+                  {r.provider !== "anthropic" && <span className="muted">{r.provider}</span>}
                   {sessionText(r).map((t) => (
                     <span key={t}>{t}</span>
                   ))}
                   <span className="muted" title={`Дані від ${fmtShort(r.at, now)} ${fmtTime(r.at)}`}>
                     {agoText(r.at, now)}
                   </span>
+                  {!account && r.windows.length > 0 && <Windows windows={r.windows} now={now} />}
                 </li>
               ))}
             </ul>
