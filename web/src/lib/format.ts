@@ -57,7 +57,7 @@ export function hueFor(name: string): number {
   return h % 360;
 }
 
-export const KIND_LABEL: Record<string, string> = { human: "людина", claude: "Claude Code", openai: "OpenAI" };
+export const KIND_LABEL: Record<string, string> = { human: "людина", claude: "Claude Code", opencode: "OpenCode", openai: "OpenAI" };
 export const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
 
 /** Ukrainian plural: plural(1, ["відповідь", "відповіді", "відповідей"]) → "відповідь"; 3 → "відповіді"; 5 → "відповідей". */

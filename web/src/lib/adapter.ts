@@ -3,9 +3,9 @@ import { compareVersions } from "../../../src/semver";
 
 /**
  * Adapters the broker builds and serves (/client/...), so they share its version. Others, such as an agent's own
- * opencode-channel, number their versions themselves and are never "older than the broker".
+ * adapter, number their versions themselves and are never "older than the broker".
  */
-const BROKER_ADAPTERS = new Set(["claude-channel"]);
+const BROKER_ADAPTERS = new Set(["claude-channel", "opencode-channel"]);
 
 /** The adapter is one the broker serves and is older than the broker, which serves the newest one. */
 export function adapterOutdated(adapter: AdapterInfo | undefined, broker: string | undefined): boolean {

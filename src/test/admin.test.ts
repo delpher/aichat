@@ -378,6 +378,20 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.ok(bash.includes(o.token));
   assert.ok(o.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("node 'D:/AIChat/openai-agent.mjs'")));
 
+  // OpenCode: the plugin goes into .opencode/plugins/ of the agent's folder, the token into a file outside it
+  r = await post("/admin/api/agents", { name: "oc", kind: "opencode" });
+  assert.equal(r.status, 201);
+  const oc = (await r.json()) as SetupRes;
+  assert.equal(oc.setup.kind, "opencode");
+  const ocBash = oc.setup.steps.find((s) => s.lang === "bash")!.code!;
+  assert.ok(ocBash.includes("curl -fsSL http://aichat.lan:8787/client/opencode-channel.js -o .opencode/plugins/aichat-channel/index.js"));
+  assert.ok(oc.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("-OutFile .opencode/plugins/aichat-channel/index.js")));
+  const ocConfig = JSON.parse(oc.setup.steps.find((s) => s.lang === "json")!.code!);
+  assert.deepEqual(ocConfig, { url: "ws://aichat.lan:8787/ws", tokenFile: "~/.secrets/aichat-oc-token", wake: "always" });
+  const tokenStep = oc.setup.steps.find((s) => s.code?.includes(oc.token))!;
+  assert.ok(tokenStep.code!.includes("> ~/.secrets/aichat-oc-token") && tokenStep.code!.includes('"$HOME\\.secrets\\aichat-oc-token"'));
+  assert.equal(oc.setup.steps.filter((s) => s.code?.includes(oc.token)).length, 1); // the token is only in the token file
+
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);
   const h = (await r.json()) as SetupRes & { agent: { webhook: boolean } };
@@ -486,6 +500,11 @@ test("bundled adapters are served without a token; nothing else under /client", 
   assert.equal(r.status, 200);
   assert.equal(await r.text(), "// bundle");
   assert.match(r.headers.get("content-disposition")!, /attachment; filename="claude-channel.mjs"/);
+  writeFileSync(join(dir, "opencode-channel.js"), "// plugin");
+  r = await fetch(`${http}/client/opencode-channel.js`);
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), "// plugin");
+  assert.match(r.headers.get("content-disposition")!, /attachment; filename="opencode-channel.js"/);
   assert.equal((await fetch(`${http}/client/openai-agent.mjs`)).status, 404); // listed but missing
   assert.equal((await fetch(`${http}/client/secret.txt`)).status, 404);
   assert.equal((await fetch(`${http}/client/..%2fsecret.txt`)).status, 404);

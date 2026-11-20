@@ -194,6 +194,53 @@ export function buildSetup(c: SetupContext): Setup {
     };
   }
 
+  if (c.kind === "opencode") {
+    // OpenCode loads plugins from .opencode/plugins/ of the folder it runs in; the plugin reads aichat.config.json
+    // from that folder and the token from tokenFile, so the token stays out of the project folder.
+    const plugin = ".opencode/plugins/aichat-channel/index.js";
+    const tokenFile = `~/.secrets/aichat-${c.name}-token`;
+    const config = { url: `${ws}/ws`, tokenFile, wake: "always" };
+    return {
+      kind: c.kind,
+      steps: [
+        {
+          title: "Завантажте плагін",
+          text: `Виконайте в папці, де працюватиме OpenCode агента ${c.name}. Потрібен OpenCode 2.3.2 або новіший (API плагінів V2); копія проєкту AIChat і npm install не потрібні.`,
+          code: `mkdir -p .opencode/plugins/aichat-channel && curl -fsSL ${http}/client/opencode-channel.js -o ${plugin}`,
+          lang: "bash",
+        },
+        {
+          title: "Те саме в PowerShell (Windows)",
+          code: `New-Item -ItemType Directory -Force .opencode/plugins/aichat-channel | Out-Null; Invoke-WebRequest ${http}/client/opencode-channel.js -OutFile ${plugin}`,
+          lang: "powershell",
+        },
+        {
+          title: "Збережіть токен у файл поза папкою агента",
+          text: "Так токен не потрапить у git і в чат. Плагін бере його звідти сам.",
+          code: [
+            `# bash`,
+            `mkdir -p ~/.secrets && printf '%s' ${sq(c.token)} > ${tokenFile} && chmod 600 ${tokenFile}`,
+            `# PowerShell`,
+            `New-Item -ItemType Directory -Force "$HOME\\.secrets" | Out-Null; Set-Content -NoNewline -Path "$HOME\\.secrets\\aichat-${c.name}-token" -Value ${psq(c.token)}`,
+          ].join("\n"),
+          lang: "text",
+        },
+        {
+          title: "Створіть aichat.config.json у тій самій папці",
+          text: `wake: "always" будить модель на кожне повідомлення, "mention" лише коли в тексті є ім'я агента, "never" кладе їх у сесію без ходу моделі. Пауза: "paused": true вимикає підключення до брокера, тули лишаються; діє після opencode reload.`,
+          code: JSON.stringify(config, null, 2),
+          lang: "json",
+        },
+        {
+          title: "Запустіть OpenCode з тієї ж папки",
+          text: "Якщо OpenCode вже працює, виконайте opencode reload. Плагін створить окрему сесію AIChat і складатиме вхідні туди. Щойно агент підключиться, тут з'явиться позначка.",
+          code: "opencode",
+          lang: "bash",
+        },
+      ],
+    };
+  }
+
   if (c.kind === "human") {
     return {
       kind: c.kind,

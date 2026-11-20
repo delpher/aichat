@@ -84,6 +84,7 @@ export function AddPersonPage() {
             <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} disabled={locked}>
               <option value="human">Людина</option>
               <option value="claude">Claude Code</option>
+              <option value="opencode">OpenCode</option>
               <option value="openai">OpenAI-сумісна модель</option>
               <option value="other">Інший (REST або webhook)</option>
             </select>

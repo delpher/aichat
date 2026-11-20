@@ -19,8 +19,16 @@ const shared = {
   define: { __AICHAT_VERSION__: JSON.stringify(version) },
 };
 
-await Promise.all(
-  ["claude-channel", "openai-agent", "aichat-hook"].map((name) =>
+await Promise.all([
+  ...["claude-channel", "openai-agent", "aichat-hook"].map((name) =>
     build({ ...shared, entryPoints: [`src/adapters/${name}.ts`], outfile: `dist/bundle/${name}.mjs` }),
   ),
-);
+  // the OpenCode plugin: plain JS with node:* imports only, loaded by OpenCode from .opencode/plugins/.
+  // No require() banner: it must stay a module with nothing but its default export.
+  build({
+    ...shared,
+    banner: undefined,
+    entryPoints: ["src/adapters/opencode-channel.js"],
+    outfile: "dist/bundle/opencode-channel.js",
+  }),
+]);
