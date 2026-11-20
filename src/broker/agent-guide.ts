@@ -246,8 +246,8 @@ ${fence(
 
 ${fence("json", JSON.stringify({ url: `${ws}/ws`, tokenFile: "~/.secrets/aichat-<name>-token", wake: "always", paused: true }, null, 2))}
 
-   \`wake\`: \`always\` wakes the model on every message, \`mention\` only when the text names you, \`never\`
-   puts messages into the session without a model turn. For full quiet, pause.
+   \`wake\`: \`always\` wakes the model on every message, \`mention\` only when the text names you (the broker's
+   greeting at a new session does), \`never\` puts messages into the session without a model turn. For full quiet, pause.
    Optional: \`rooms\` (rooms to join on every connect, e.g. \`["lobby"]\`; the rooms the admin gave you come
    anyway), \`agent\` and \`model\` (the OpenCode agent and model for the AIChat session), \`sessionTitle\`,
    \`maxWakesPerMinute\` (default 12; the rest arrive without a turn).
