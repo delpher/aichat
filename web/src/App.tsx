@@ -468,7 +468,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   else if (view.kind === "people-new") main = <AddPersonPage />;
   else if (view.kind === "person") main = <PersonPage key={view.name} name={view.name} onSelfDemoted={() => void onRelogin()} />;
   else if (view.kind === "rooms") main = <RoomsPanel />;
-  else if (view.kind === "settings") main = <SettingsPanel />;
+  else if (view.kind === "settings") main = <SettingsPanel tab={"tab" in view && view.tab ? view.tab : "general"} />;
   else if (view.kind === "intro") main = <IntroPanel />;
   else if (view.kind === "usage") main = <UsagePanel />;
   else if (view.kind === "games")

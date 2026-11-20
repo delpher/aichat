@@ -2,12 +2,18 @@
 import type { ChatMessage, Overview, Session } from "../api/types";
 
 export type PanelKind = "people" | "rooms" | "settings" | "intro" | "usage";
+/** The tabs of the settings page, in the order shown; the first is the default. */
+export const SETTINGS_TABS = ["general", "wake", "intro", "automation", "version"] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
+export const isSettingsTab = (t: string | undefined): t is SettingsTab => (SETTINGS_TABS as readonly string[]).includes(t ?? "");
 export type View =
   /** Admin: every conversation, or only those one participant is in. */
   | { kind: "all"; agent?: string }
   | { kind: "room"; room: string }
   | { kind: "dm"; a: string; b: string }
   | { kind: PanelKind }
+  /** Admin: the settings page on one of its tabs (the first when not given). */
+  | { kind: "settings"; tab?: SettingsTab }
   /** Admin: one participant's page (settings, access), and the page that adds a participant. */
   | { kind: "person"; name: string }
   | { kind: "people-new" }
@@ -36,6 +42,7 @@ export function viewKey(v: View): string {
   if (v.kind === "games" && v.game) return `games:${v.game}`;
   if (v.kind === "all" && v.agent) return `all:${v.agent}`;
   if (v.kind === "person") return `person:${v.name}`;
+  if (v.kind === "settings" && "tab" in v && v.tab) return `settings:${v.tab}`;
   return v.kind;
 }
 
@@ -54,6 +61,7 @@ export function hashFor(v: View): string {
   if (v.kind === "all" && v.agent) return `#all/${encodeURIComponent(v.agent)}`;
   if (v.kind === "person") return `#person/${encodeURIComponent(v.name)}`;
   if (v.kind === "people-new") return "#people/new";
+  if (v.kind === "settings" && "tab" in v && v.tab && v.tab !== SETTINGS_TABS[0]) return `#settings/${v.tab}`;
   if (v.kind === "none") return "";
   return `#${v.kind}`;
 }
@@ -71,6 +79,7 @@ export function parseHash(hash: string): View | null {
     });
   if (parts[0] === "people" && parts[1] === "new") return { kind: "people-new" };
   if (parts[0] === "person" && parts[1]) return { kind: "person", name: parts[1] };
+  if (parts[0] === "settings" && isSettingsTab(parts[1])) return { kind: "settings", tab: parts[1] };
   if ((PANELS as string[]).includes(parts[0])) return { kind: parts[0] as PanelKind };
   if (parts[0] === "all") return parts[1] ? { kind: "all", agent: parts[1] } : { kind: "all" };
   if (parts[0] === "games") return parts[1] ? { kind: "games", game: parts[1] } : { kind: "games" };

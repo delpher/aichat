@@ -7,6 +7,7 @@ import { ListSkeleton } from "../Skeleton";
 import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
 import { IntroSettings } from "./IntroPanel";
+import { SETTINGS_TABS, type SettingsTab } from "../../lib/views";
 
 type Limits = Partial<Record<keyof Settings, { min: number; max: number }>>;
 
@@ -16,20 +17,44 @@ const NUMBER_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
     label: "Довжина ланцюжка відповідей",
     help: "Після стількох відповідей поспіль брокер зупиняє ланцюжок, щоб агенти не відповідали один одному вічно.",
   },
-  { name: "ratePerMinute", label: "Повідомлень на хвилину", help: "Від одного учасника. Решту брокер відхиляє." },
-  { name: "maxTextLength", label: "Довжина повідомлення, символів", help: "Довші повідомлення брокер відхиляє." },
-  { name: "maxFileSizeMB", label: "Розмір файлу, МБ", help: "Більші файли брокер відхиляє." },
-  { name: "maxNotes", label: "Записів у нотатнику агента", help: "Понад це агент нових записів не додасть." },
+  {
+    name: "ratePerMinute",
+    label: "Повідомлень на хвилину",
+    help: "Від одного учасника. Решту брокер відхиляє.",
+  },
+  {
+    name: "maxTextLength",
+    label: "Довжина повідомлення, символів",
+    help: "Довші повідомлення брокер відхиляє.",
+  },
+  {
+    name: "maxFileSizeMB",
+    label: "Розмір файлу, МБ",
+    help: "Більші файли брокер відхиляє.",
+  },
+  {
+    name: "maxNotes",
+    label: "Записів у нотатнику агента",
+    help: "Понад це агент нових записів не додасть.",
+  },
   {
     name: "maxNoteDescription",
     label: "Опис запису в нотатнику, символів",
     help: "Опис агент бачить на старті кожної сесії, тож він має бути коротким. Довші брокер відхиляє.",
   },
-  { name: "maxNoteText", label: "Текст запису в нотатнику, символів", help: "Подробиці, які агент читає за потреби. Довші брокер відхиляє." },
+  {
+    name: "maxNoteText",
+    label: "Текст запису в нотатнику, символів",
+    help: "Подробиці, які агент читає за потреби. Довші брокер відхиляє.",
+  },
 ];
 
 const WAKE_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
-  { name: "wakeAfterMinutes", label: "Пробудження: відсутність, хвилин", help: "Агент, якого не було стільки, прокидається." },
+  {
+    name: "wakeAfterMinutes",
+    label: "Пробудження: відсутність, хвилин",
+    help: "Агент, якого не було стільки, прокидається.",
+  },
   {
     name: "wakeAfterMessages",
     label: "Пробудження: пропущено повідомлень",
@@ -37,7 +62,12 @@ const WAKE_FIELDS: { name: keyof Settings; label: string; help: string }[] = [
   },
 ];
 
-const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placeholder: string }[] = [
+const TEXT_FIELDS: {
+  name: keyof Settings;
+  label: string;
+  help: string;
+  placeholder: string;
+}[] = [
   {
     name: "publicUrl",
     label: "Публічна адреса брокера",
@@ -51,9 +81,59 @@ const TEXT_FIELDS: { name: keyof Settings; label: string; help: string; placehol
     placeholder: "C:/aichat",
   },
 ];
-const ALL = [...NUMBER_FIELDS, ...WAKE_FIELDS, ...TEXT_FIELDS].map((f) => f.name).concat("wakeMode");
+const ALL = [...NUMBER_FIELDS, ...WAKE_FIELDS, ...TEXT_FIELDS]
+  .map((f) => f.name)
+  .concat("wakeMode");
 
-export function SettingsPanel() {
+const TAB_LABEL: Record<SettingsTab, string> = {
+  general: "Загальні",
+  wake: "Пробудження",
+  intro: "Вводна",
+  automation: "Автоматизація",
+  version: "Версія",
+};
+
+/** The settings page, split into tabs (alexey, 2238): each tab has its own address, #settings/<tab>. */
+export function SettingsPanel({ tab = "general" }: { tab?: SettingsTab }) {
+  const { go } = useChat();
+  return (
+    <div className="panel">
+      <div
+        className="seg settings-tabs"
+        role="tablist"
+        aria-label="Розділи налаштувань"
+      >
+        {SETTINGS_TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            className={tab === t ? "on" : ""}
+            onClick={() => go({ kind: "settings", tab: t })}
+          >
+            {TAB_LABEL[t]}
+          </button>
+        ))}
+      </div>
+      {(tab === "general" || tab === "wake") && <BrokerSettings tab={tab} />}
+      {tab === "intro" && <IntroSettings />}
+      {tab === "automation" && (
+        <section className="section">
+          <h2>Автоматизація</h2>
+          <p className="muted">
+            Тут з'являться глобальні хуки: правила, що надсилають системні
+            повідомлення, коли агент приходить, іде чи довго нічого не робить.
+          </p>
+        </section>
+      )}
+      {tab === "version" && <UpdateBox />}
+    </div>
+  );
+}
+
+/** The broker's own settings from agents.json: limits and addresses (general), or waking agents (wake). */
+function BrokerSettings({ tab }: { tab: "general" | "wake" }) {
   const { api, fail } = useChat();
   const [saved, setSaved] = useState<Settings | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
@@ -70,16 +150,26 @@ export function SettingsPanel() {
   useEffect(() => {
     let live = true;
     api
-      .get<{ settings: Settings; limits: Limits; editable: boolean }>("/admin/api/settings")
+      .get<{ settings: Settings; limits: Limits; editable: boolean }>(
+        "/admin/api/settings",
+      )
       .then((d) => {
         if (!live) return;
         setLimits(d.limits ?? {});
         setEditable(d.editable !== false);
         fill(d.settings);
-        if (d.editable === false) setStatus({ text: "Брокер запущено без файлу конфігурації, тому налаштування лише для читання." });
+        if (d.editable === false)
+          setStatus({
+            text: "Брокер запущено без файлу конфігурації, тому налаштування лише для читання.",
+          });
       })
       .catch((err) =>
-        err instanceof AuthError ? fail(err, "") : setStatus({ text: `Не вдалося завантажити: ${err.message}`, error: true }),
+        err instanceof AuthError
+          ? fail(err, "")
+          : setStatus({
+              text: `Не вдалося завантажити: ${err.message}`,
+              error: true,
+            }),
       )
       .finally(() => live && setBusy(false));
     return () => {
@@ -87,17 +177,24 @@ export function SettingsPanel() {
     };
   }, [api, fail]);
 
-  const check = (name: keyof Settings): { value?: string | number; error?: string } => {
+  const check = (
+    name: keyof Settings,
+  ): { value?: string | number; error?: string } => {
     const raw = (form[name] ?? "").trim();
-    if (name === "wakeMode") return raw === "on" || raw === "off" || raw === "brief" ? { value: raw } : { error: "off, brief або on" };
+    if (name === "wakeMode")
+      return raw === "on" || raw === "off" || raw === "brief"
+        ? { value: raw }
+        : { error: "off, brief або on" };
     if (name === "publicUrl" || name === "projectDir") {
-      if (name === "publicUrl" && raw && !/^https?:\/\/[^\s/]+/.test(raw)) return { error: "адреса має починатися з http:// або https://" };
+      if (name === "publicUrl" && raw && !/^https?:\/\/[^\s/]+/.test(raw))
+        return { error: "адреса має починатися з http:// або https://" };
       return { value: raw };
     }
     if (!/^-?\d+$/.test(raw)) return { error: "потрібне ціле число" };
     const n = Number(raw);
     const lim = limits[name];
-    if (lim && (n < lim.min || n > lim.max)) return { error: `від ${lim.min} до ${lim.max}` };
+    if (lim && (n < lim.min || n > lim.max))
+      return { error: `від ${lim.min} до ${lim.max}` };
     return { value: n };
   };
 
@@ -118,12 +215,19 @@ export function SettingsPanel() {
     }
     setBusy(true);
     try {
-      const d = await api.send<{ settings: Settings }>("PATCH", "/admin/api/settings", patch);
+      const d = await api.send<{ settings: Settings }>(
+        "PATCH",
+        "/admin/api/settings",
+        patch,
+      );
       fill(d.settings);
       setStatus({ text: "Збережено. Зміни вже діють.", ok: true });
     } catch (err) {
       if (err instanceof AuthError) return fail(err, "");
-      setStatus({ text: `Не збережено: ${(err as Error).message}`, error: true });
+      setStatus({
+        text: `Не збережено: ${(err as Error).message}`,
+        error: true,
+      });
     } finally {
       setBusy(false);
     }
@@ -131,19 +235,24 @@ export function SettingsPanel() {
 
   const field = (name: keyof Settings) => {
     const r = check(name);
-    const changed = saved && (form[name] ?? "").trim() !== String(saved[name] ?? "");
-    return { bad: !!r.error && (form[name] ?? "") !== "", error: r.error, changed };
+    const changed =
+      saved && (form[name] ?? "").trim() !== String(saved[name] ?? "");
+    return {
+      bad: !!r.error && (form[name] ?? "") !== "",
+      error: r.error,
+      changed,
+    };
   };
 
   if (!saved && busy)
     return (
-      <div className="panel">
-        <ListSkeleton rows={4} avatar={false} label="Завантаження налаштувань" />
-      </div>
+      <ListSkeleton rows={4} avatar={false} label="Завантаження налаштувань" />
     );
-  const dirty = !!saved && ALL.some((k) => (form[k] ?? "").trim() !== String(saved[k] ?? ""));
+  const dirty =
+    !!saved &&
+    ALL.some((k) => (form[k] ?? "").trim() !== String(saved[k] ?? ""));
   return (
-    <div className="panel">
+    <>
       <form
         className="section settings"
         noValidate
@@ -152,116 +261,181 @@ export function SettingsPanel() {
           void save();
         }}
       >
-        <h2>Ліміти</h2>
-        <div className="settings-grid">
-          {NUMBER_FIELDS.map(({ name, label, help }) => {
-            const f = field(name);
-            const lim = limits[name];
-            return (
-              <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
-                <span>{label}</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  aria-label={label}
-                  value={form[name] ?? ""}
-                  min={lim?.min}
-                  max={lim?.max}
-                  readOnly={!editable || busy}
-                  onChange={(e) => setForm({ ...form, [name]: e.target.value })}
-                />
-                <small>
-                  {f.bad ? <span className="field-error">{f.error}</span> : help}
-                  {lim && !f.bad ? (
-                    <span className="num">
-                      {" "}
-                      Від {lim.min} до {lim.max}.
-                    </span>
-                  ) : (
-                    ""
-                  )}
-                </small>
-              </label>
-            );
-          })}
-        </div>
-        <h2>Пробудження агентів</h2>
-        <label className={`field${field("wakeMode").changed ? " changed" : ""}`} title="wakeMode в agents.json">
-          <span>Режим пробудження</span>
-          <select
-            aria-label="Режим пробудження"
-            value={form.wakeMode ?? "off"}
-            disabled={!editable || busy}
-            onChange={(e) => setForm({ ...form, wakeMode: e.target.value })}
-          >
-            <option value="off">Вимкнено: агент отримує всі пропущені повідомлення</option>
-            <option value="brief">Бриф і потік: агент отримує бриф пробудження і всі пропущені повідомлення</option>
-            <option value="on">Бриф замість потоку: пропущене в кімнатах не надсилається, лише бриф</option>
-          </select>
-          <small>Особисті повідомлення й ходи в партіях доходять завжди. Людей це не стосується.</small>
-        </label>
-        <div className="settings-grid">
-          {WAKE_FIELDS.map(({ name, label, help }) => {
-            const f = field(name);
-            const lim = limits[name];
-            return (
-              <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
-                <span>{label}</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  aria-label={label}
-                  value={form[name] ?? ""}
-                  min={lim?.min}
-                  max={lim?.max}
-                  readOnly={!editable || busy}
-                  onChange={(e) => setForm({ ...form, [name]: e.target.value })}
-                />
-                <small>
-                  {f.bad ? <span className="field-error">{f.error}</span> : help}
-                  {lim && !f.bad ? (
-                    <span className="num">
-                      {" "}
-                      Від {lim.min} до {lim.max}.
-                    </span>
-                  ) : (
-                    ""
-                  )}
-                </small>
-              </label>
-            );
-          })}
-        </div>
-        <h2>Адреси</h2>
-        {TEXT_FIELDS.map(({ name, label, help, placeholder }) => {
-          const f = field(name);
-          return (
-            <label key={name} className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`} title={`${name} в agents.json`}>
-              <span>{label}</span>
-              <input
-                value={form[name] ?? ""}
-                placeholder={placeholder}
-                readOnly={!editable || busy}
-                onChange={(e) => setForm({ ...form, [name]: e.target.value })}
-              />
-              <small>{f.bad ? <span className="field-error">{f.error}</span> : help}</small>
+        {tab === "general" && (
+          <>
+            <h2>Ліміти</h2>
+            <div className="settings-grid">
+              {NUMBER_FIELDS.map(({ name, label, help }) => {
+                const f = field(name);
+                const lim = limits[name];
+                return (
+                  <label
+                    key={name}
+                    className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`}
+                    title={`${name} в agents.json`}
+                  >
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      aria-label={label}
+                      value={form[name] ?? ""}
+                      min={lim?.min}
+                      max={lim?.max}
+                      readOnly={!editable || busy}
+                      onChange={(e) =>
+                        setForm({ ...form, [name]: e.target.value })
+                      }
+                    />
+                    <small>
+                      {f.bad ? (
+                        <span className="field-error">{f.error}</span>
+                      ) : (
+                        help
+                      )}
+                      {lim && !f.bad ? (
+                        <span className="num">
+                          {" "}
+                          Від {lim.min} до {lim.max}.
+                        </span>
+                      ) : (
+                        ""
+                      )}
+                    </small>
+                  </label>
+                );
+              })}
+            </div>
+          </>
+        )}
+        {tab === "wake" && (
+          <>
+            <h2>Пробудження агентів</h2>
+            <label
+              className={`field${field("wakeMode").changed ? " changed" : ""}`}
+              title="wakeMode в agents.json"
+            >
+              <span>Режим пробудження</span>
+              <select
+                aria-label="Режим пробудження"
+                value={form.wakeMode ?? "off"}
+                disabled={!editable || busy}
+                onChange={(e) => setForm({ ...form, wakeMode: e.target.value })}
+              >
+                <option value="off">
+                  Вимкнено: агент отримує всі пропущені повідомлення
+                </option>
+                <option value="brief">
+                  Бриф і потік: агент отримує бриф пробудження і всі пропущені
+                  повідомлення
+                </option>
+                <option value="on">
+                  Бриф замість потоку: пропущене в кімнатах не надсилається,
+                  лише бриф
+                </option>
+              </select>
+              <small>
+                Особисті повідомлення й ходи в партіях доходять завжди. Людей це
+                не стосується.
+              </small>
             </label>
-          );
-        })}
+            <div className="settings-grid">
+              {WAKE_FIELDS.map(({ name, label, help }) => {
+                const f = field(name);
+                const lim = limits[name];
+                return (
+                  <label
+                    key={name}
+                    className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`}
+                    title={`${name} в agents.json`}
+                  >
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      aria-label={label}
+                      value={form[name] ?? ""}
+                      min={lim?.min}
+                      max={lim?.max}
+                      readOnly={!editable || busy}
+                      onChange={(e) =>
+                        setForm({ ...form, [name]: e.target.value })
+                      }
+                    />
+                    <small>
+                      {f.bad ? (
+                        <span className="field-error">{f.error}</span>
+                      ) : (
+                        help
+                      )}
+                      {lim && !f.bad ? (
+                        <span className="num">
+                          {" "}
+                          Від {lim.min} до {lim.max}.
+                        </span>
+                      ) : (
+                        ""
+                      )}
+                    </small>
+                  </label>
+                );
+              })}
+            </div>
+          </>
+        )}
+        {tab === "general" && (
+          <>
+            <h2>Адреси</h2>
+            {TEXT_FIELDS.map(({ name, label, help, placeholder }) => {
+              const f = field(name);
+              return (
+                <label
+                  key={name}
+                  className={`field${f.changed ? " changed" : ""}${f.bad ? " bad" : ""}`}
+                  title={`${name} в agents.json`}
+                >
+                  <span>{label}</span>
+                  <input
+                    value={form[name] ?? ""}
+                    placeholder={placeholder}
+                    readOnly={!editable || busy}
+                    onChange={(e) =>
+                      setForm({ ...form, [name]: e.target.value })
+                    }
+                  />
+                  <small>
+                    {f.bad ? (
+                      <span className="field-error">{f.error}</span>
+                    ) : (
+                      help
+                    )}
+                  </small>
+                </label>
+              );
+            })}
+          </>
+        )}
         <div className="actions">
-          <button type="submit" className="btn primary" disabled={!editable || busy || !dirty}>
+          <button
+            type="submit"
+            className="btn primary"
+            disabled={!editable || busy || !dirty}
+          >
             {busy && <LoaderCircle className="spin" size={16} />} Зберегти
           </button>
           {dirty && (
-            <button type="button" className="btn quiet" disabled={!editable || busy} onClick={() => saved && fill(saved)}>
+            <button
+              type="button"
+              className="btn quiet"
+              disabled={!editable || busy}
+              onClick={() => saved && fill(saved)}
+            >
               Скасувати зміни
             </button>
           )}
           <Status value={status} />
         </div>
       </form>
-      <IntroSettings />
-      <UpdateBox />
-    </div>
+    </>
   );
 }
