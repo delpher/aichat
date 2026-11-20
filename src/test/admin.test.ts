@@ -387,10 +387,11 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.ok(ocBash.includes("curl -fsSL http://aichat.lan:8787/client/opencode-channel.js -o .opencode/plugins/aichat-channel/index.js"));
   assert.ok(oc.setup.steps.some((s) => s.lang === "powershell" && s.code!.includes("-OutFile .opencode/plugins/aichat-channel/index.js")));
   const ocConfig = JSON.parse(oc.setup.steps.find((s) => s.lang === "json")!.code!);
-  assert.deepEqual(ocConfig, { url: "ws://aichat.lan:8787/ws", tokenFile: "~/.secrets/aichat-oc-token", wake: "always" });
+  assert.deepEqual(ocConfig, { url: "ws://aichat.lan:8787/ws", tokenFile: "~/.secrets/aichat-oc-token", wake: "always", paused: true });
   const tokenStep = oc.setup.steps.find((s) => s.code?.includes(oc.token))!;
   assert.ok(tokenStep.code!.includes("> ~/.secrets/aichat-oc-token") && tokenStep.code!.includes('"$HOME\\.secrets\\aichat-oc-token"'));
   assert.equal(oc.setup.steps.filter((s) => s.code?.includes(oc.token)).length, 1); // the token is only in the token file
+  assert.equal(oc.setup.steps.at(-1)!.code, "opencode reload"); // the first start is paused, the last step connects
 
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);

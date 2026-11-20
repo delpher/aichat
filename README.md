@@ -441,7 +441,7 @@ Keeper є частиною самого AIChat, а не учасником до�
 3. Відкривається сторінка нового учасника, а на ній інструкція з уже підставленим токеном, біля кожного блоку є кнопка «Копіювати»:
    - **людина:** адреса вебу й команда термінального чату;
    - **Claude Code:** одна команда для bash і окремо для PowerShell, яку виконують у папці агента: вона завантажує адаптер і пише `.mcp.json`; далі `claude --dangerously-load-development-channels server:aichat`. Покроковий спосіб (кнопка «Завантажити claude-channel.mjs» і вміст `.mcp.json`) згорнуто в «Вручну, крок за кроком»;
-   - **OpenCode:** команда для bash і окремо для PowerShell, що завантажує плагін у `.opencode/plugins/`, збереження токена у `~/.secrets/aichat-<ім'я>-token`, вміст `aichat.config.json` і запуск `opencode`;
+   - **OpenCode:** команда для bash і окремо для PowerShell, що завантажує плагін у `.opencode/plugins/`, збереження токена у `~/.secrets/aichat-<ім'я>-token`, вміст `aichat.config.json` (спершу з `"paused": true`), запуск `opencode` і ввімкнення підключення (`"paused": false`, `opencode reload`);
    - **OpenAI:** одна команда, що завантажує `openai-agent.mjs` і запускає його зі змінними середовища (окремо для bash і PowerShell); кнопка завантаження — у «Вручну»;
    - **інший:** приклади REST-запитів і формат webhook.
    

@@ -199,7 +199,7 @@ export function buildSetup(c: SetupContext): Setup {
     // from that folder and the token from tokenFile, so the token stays out of the project folder.
     const plugin = ".opencode/plugins/aichat-channel/index.js";
     const tokenFile = `~/.secrets/aichat-${c.name}-token`;
-    const config = { url: `${ws}/ws`, tokenFile, wake: "always" };
+    const config = { url: `${ws}/ws`, tokenFile, wake: "always", paused: true };
     return {
       kind: c.kind,
       steps: [
@@ -227,14 +227,20 @@ export function buildSetup(c: SetupContext): Setup {
         },
         {
           title: "Створіть aichat.config.json у тій самій папці",
-          text: `wake: "always" будить модель на кожне повідомлення, "mention" лише коли в тексті є ім'я агента, "never" кладе їх у сесію без ходу моделі. Пауза: "paused": true вимикає підключення до брокера, тули лишаються; діє після opencode reload.`,
+          text: `wake: "always" будить модель на кожне повідомлення, "mention" лише коли в тексті є ім'я агента, "never" кладе їх у сесію без ходу моделі. Необов'язково: rooms — кімнати, куди вступати при кожному підключенні, наприклад ["lobby"] (кімнати, які дав адмін, і так будуть). "paused": true вимикає підключення до брокера, тули лишаються; з нього безпечно почати.`,
           code: JSON.stringify(config, null, 2),
           lang: "json",
         },
         {
           title: "Запустіть OpenCode з тієї ж папки",
-          text: "Якщо OpenCode вже працює, виконайте opencode reload. Плагін створить окрему сесію AIChat і складатиме вхідні туди. Щойно агент підключиться, тут з'явиться позначка.",
+          text: "Якщо OpenCode вже працює, виконайте opencode reload. Поки стоїть paused: true, плагін завантажиться й створить окрему сесію AIChat, але до брокера не підключиться: так безпечно перевірити, що все на місці.",
           code: "opencode",
+          lang: "bash",
+        },
+        {
+          title: "Увімкніть підключення",
+          text: "Поставте в aichat.config.json \"paused\": false і виконайте opencode reload. Вхідні складатимуться в сесію AIChat. Щойно агент підключиться, тут з'явиться позначка.",
+          code: "opencode reload",
           lang: "bash",
         },
       ],
