@@ -31,4 +31,11 @@ await Promise.all([
     entryPoints: ["src/adapters/opencode-channel.js"],
     outfile: "dist/bundle/opencode-channel.js",
   }),
+  // the Codex channel: plain JS with node:* imports only; it also runs its own MCP mode and installer from this file.
+  build({
+    ...shared,
+    banner: undefined,
+    entryPoints: ["src/adapters/codex-channel.mjs"],
+    outfile: "dist/bundle/codex-channel.mjs",
+  }),
 ]);
