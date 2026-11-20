@@ -266,16 +266,41 @@ async function agentModel(ctx, cfg) {
 
 
 
+function normalizeDir(dir) {
+  return String(dir ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function sessionDirOf(info) {
+  const loc = info?.location;
+  if (typeof loc === "string") return loc;
+  return loc?.directory ?? info?.directory;
+}
+
 async function ensureSession(ctx, cfg, state) {
   if (state.sessionID) return state.sessionID;
-  const stored = await ctx.storage.get(SESSION_KEY).catch(() => undefined);
+  const where = normalizeDir(ctx.location?.directory);
+  const sessionKey = `${SESSION_KEY}:${where}`;
+  // міграція: старий ключ без теки — беремо лише якщо тека сесії збігається
+  const stored = await ctx.storage.get(sessionKey).catch(() => undefined);
+  const legacy = await ctx.storage.get(SESSION_KEY).catch(() => undefined);
   const model = await routedModel(ctx, cfg, state);
   const sameModel = (a, b) =>
     Boolean(a && b) && a.providerID === b.providerID && a.id === b.id && (a.variant ?? "") === (b.variant ?? "");
-  for (const candidate of [cfg.sessionID, stored?.id]) {
-    if (!candidate) continue;
+  const matchesWhere = (info) => {
+    const dir = sessionDirOf(info);
+    // не можемо звірити теку — не перевикористовуємо чужу сесію
+    return Boolean(dir) && normalizeDir(dir) === where;
+  };
+  const candidates = [
+    { id: cfg.sessionID, explicit: true }, // явний вибір людини
+    { id: stored?.id, explicit: false },
+    { id: legacy?.id, explicit: false },
+  ];
+  for (const { id, explicit } of candidates) {
+    if (!id) continue;
     try {
-      const info = await ctx.session.get({ sessionID: candidate });
+      const info = await ctx.session.get({ sessionID: id });
+      if (!explicit && !matchesWhere(info)) continue; // інша тека — не наша сесія
       state.sessionID = info.id;
       state.lastModel = info.model;
       // сесію могли створити з іншою моделлю — повертаємо профільну
@@ -287,6 +312,8 @@ async function ensureSession(ctx, cfg, state) {
           console.warn(`[aichat] не вдалось змінити модель сесії: ${error.message}`);
         }
       }
+      // фіксуємо під ключем теки (і міграція зі старого ключа теж сюди)
+      await ctx.storage.set(sessionKey, { id: info.id, title: info.title ?? cfg.sessionTitle }).catch(() => {});
       return state.sessionID;
     } catch {
       // сесії більше немає — створимо нову
@@ -299,7 +326,7 @@ async function ensureSession(ctx, cfg, state) {
   });
   state.sessionID = created.id;
   state.lastModel = created.model ?? model;
-  await ctx.storage.set(SESSION_KEY, { id: created.id, title: created.title ?? cfg.sessionTitle });
+  await ctx.storage.set(sessionKey, { id: created.id, title: created.title ?? cfg.sessionTitle });
   return state.sessionID;
 }
 
