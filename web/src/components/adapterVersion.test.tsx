@@ -37,6 +37,12 @@ describe("adapter versions", () => {
     expect(adapterOutdated(oc, "0.9.0")).toBe(false);
   });
 
+  it("compares the Codex channel with the broker, since the broker serves it too", () => {
+    const codex = { name: "codex-channel", version: "0.11.1" };
+    expect(adapterOutdated(codex, "0.12.0")).toBe(true);
+    expect(adapterOutdated(codex, "0.11.1")).toBe(false);
+  });
+
   it("marks an online agent on an older adapter in the sidebar and names the version in its tooltip", () => {
     renderWithChat(<Sidebar {...props} />, {
       overview: {
