@@ -39,6 +39,24 @@ describe("RoomBar", () => {
     expect(screen.getByRole("button", { name: /Бриф/ }).querySelector(".brief-line")).toHaveTextContent(/^Мета: валідатор$/);
   });
 
+  it("exports the room's conversation as a Markdown file", async () => {
+    const get = vi.fn(async () => ({ messages: [{ id: 7, from: "olena", room: "lobby", text: "Привіт", ts: "2026-11-20T10:00:00Z", hops: 0 }] }));
+    const created: Blob[] = [];
+    URL.createObjectURL = vi.fn((b: Blob) => (created.push(b), "blob:x"));
+    URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderWithChat(bar(brief), { api: fakeApi({ get }) });
+    await userEvent.click(screen.getByRole("button", { name: "Експортувати переписку #lobby у Markdown" }));
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(get).toHaveBeenCalledWith("/api/history?limit=500&room=lobby");
+    const text = await created[0].text();
+    expect(text).toContain("# #lobby");
+    expect(text).toContain("Мета: валідатор налаштувань.");
+    expect(text).toContain("**olena**");
+    expect(text).toContain("Привіт");
+    click.mockRestore();
+  });
+
   it("offers to add a brief and opens the work panel", () => {
     renderWithChat(bar(null));
     expect(screen.getByRole("button", { name: "Додати бриф кімнати" })).toBeInTheDocument();

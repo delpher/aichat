@@ -1144,6 +1144,9 @@ span.msg-where {
   margin-left: auto;
   flex: none;
 }
+.export-toggle {
+  flex: none;
+}
 .work-toggle.on {
   border-color: var(--accent);
   color: var(--accent-soft-fg);
