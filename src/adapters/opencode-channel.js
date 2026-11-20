@@ -33,6 +33,7 @@ const DEFAULTS = {
   sessionTitle: "AIChat",
   rooms: [],
   maxWakesPerMinute: 12,
+  delivery: "steer", // steer | queue — як віддавати вхідні, поки модель працює (брокерові завжди queue)
   requestTimeoutMs: 15000,
   // сокет: брокер шле власні WS-ping, але вбудований WebSocket відповідає на них
   // сам і нам їх не показує, тож про «напівмертве» з'єднання ми не дізнаємось.
@@ -76,6 +77,7 @@ function loadSettings(ctx) {
   cfg.token = String(cfg.token || readTextSafe(cfg.tokenFile) || process.env.AICHAT_TOKEN || "").trim();
   cfg.wake = ["always", "mention", "never"].includes(cfg.wake) ? cfg.wake : DEFAULTS.wake;
   cfg.paused = cfg.paused === true;
+  cfg.delivery = cfg.delivery === "queue" ? "queue" : "steer";
   cfg.rooms = Array.isArray(cfg.rooms) ? cfg.rooms.map((r) => String(r).replace(/^#/, "")).filter(Boolean) : [];
   // ws://host/ws → http://host
   cfg.httpBase = cfg.url.replace(/^ws(s?):\/\//, "http$1://").replace(/\/ws\/?$/, "");
@@ -382,7 +384,10 @@ async function deliver(ctx, cfg, state, msg) {
   }
 
   const wake = shouldWake(cfg, state, msg);
-  const promptOnce = () => ctx.session.prompt({ sessionID, text, delivery: "queue", metadata });
+  // steer: модель бачить повідомлення на наступній межі кроку, а не після всього ходу.
+  // Вітання й звіти брокера не мають збивати роботу, тому їм queue.
+  const delivery = msg.from === "aichat" ? "queue" : cfg.delivery;
+  const promptOnce = () => ctx.session.prompt({ sessionID, text, delivery, metadata });
   const syntheticOnce = (note) =>
     ctx.session.synthetic({
       sessionID,
