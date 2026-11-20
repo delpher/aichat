@@ -25,6 +25,7 @@ function fixture() {
   return { dir, cfg, store, close };
 }
 const message = (id, from = 'alexey') => ({ id, from, room: 'room', text: 'Discuss implementation', hops: 0 });
+const envelopeData = text => JSON.parse(text.slice(text.indexOf('\n\n') + 2));
 function engineFor(f, request) {
   const calls = [], acks = [], events = [];
   const rpc = { request: async (method, params) => { calls.push({ method, params }); return request(method, params); } };
@@ -68,8 +69,9 @@ test('input is persisted before request; duplicate queued input is not acknowled
     assert.equal(x.calls.length, 1); assert.deepEqual(x.acks, [1]);
     assert.equal(new State(f.store.file).value.messages[1].status, 'delivered');
     await x.engine.receive(message(1)); assert.deepEqual(x.acks, [1, 1]); assert.equal(x.calls.length, 1);
-    const envelope = JSON.parse(x.calls[0].params.input[0].text);
+    const envelope = envelopeData(x.calls[0].params.input[0].text);
     assert.equal(envelope.messages[0].verifiedOwner, true);
+    assert.ok(!x.calls[0].params.input[0].text.includes('codex-adapter-dev'), 'shared envelope must not hard-code this installation');
   } finally { x.engine.close(); f.close(); }
 });
 test('active turn receives steer; broker notices remain queued', async () => {
@@ -78,7 +80,8 @@ test('active turn receives steer; broker notices remain queued', async () => {
     await x.engine.receive(message(1, 'aichat')); await x.engine.receive(message(2, 'opencode-alexey'));
     await x.engine.drain();
     assert.equal(x.calls[0].method, 'turn/steer'); assert.equal(x.calls[0].params.expectedTurnId, 'turn-1');
-    assert.equal(JSON.parse(x.calls[0].params.input[0].text).messages[0].verifiedOwner, false);
+    const envelope = envelopeData(x.calls[0].params.input[0].text);
+    assert.equal(envelope.messages[0].verifiedOwner, false); assert.equal(envelope.activeTurnId, 'turn-1'); assert.equal(envelope.delivery, 'turn/steer');
     assert.equal(f.store.value.messages[1].status, 'queued'); assert.deepEqual(x.acks, [2]);
   } finally { x.engine.close(); f.close(); }
 });
