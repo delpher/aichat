@@ -67,6 +67,27 @@ describe("usage page", () => {
     expect(within(others).getByText(/не повідомив, на якому акаунті/)).toBeInTheDocument();
   });
 
+  it("shows an OpenCode agent's provider and its own limits when it has no account", async () => {
+    const go: UsageReport = {
+      agent: "opencode-go",
+      at: now.toISOString(),
+      provider: "opencode",
+      windows: [{ name: "rolling", usedPct: 30 }, { name: "weekly", usedPct: 10 }],
+      context: { usedPct: 20 },
+    };
+    const litellm: UsageReport = { agent: "opencode-lite", at: now.toISOString(), provider: "litellm", windows: [], session: { tokensIn: 100, tokensOut: 50 } };
+    renderWithChat(<UsagePanel />, { session: adminSession, sender: "alexey", api: usageApi([go, litellm], []) });
+    const unknown = (await screen.findByRole("heading", { name: "Акаунт невідомий" })).closest("section")!;
+    const goRow = within(unknown).getByText("opencode-go").closest("li")!;
+    expect(within(goRow).getByText("opencode")).toBeInTheDocument();
+    expect(within(goRow).getByRole("meter", { name: "Ковзне вікно" })).toBeInTheDocument();
+    expect(within(goRow).getByRole("meter", { name: "Тиждень" })).toBeInTheDocument();
+    const liteRow = within(unknown).getByText("opencode-lite").closest("li")!;
+    expect(within(liteRow).getByText("litellm")).toBeInTheDocument();
+    expect(within(liteRow).queryByRole("meter")).toBeNull();
+    expect(within(unknown).queryByText(/не повідомив, на якому акаунті/)).toBeNull();
+  });
+
   it("follows the live reports", async () => {
     let push: (u: UsageReport) => void = () => {};
     renderWithChat(<UsagePanel />, {

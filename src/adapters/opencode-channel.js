@@ -489,6 +489,142 @@ async function checkForUpdate(ctx, cfg, state) {
   }
 }
 
+// Звіт про використання для веба AIChat (сторінка «Використання» / профіль агента).
+// Беремо лише свою сесію. Кумулятивні токени й вартість — з session.get, контекст —
+// з останньої асистентської відповіді (session.context). Вікон лімітів поки не шлемо.
+function normalizeProvider(value) {
+  const s = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+/, "")
+    .slice(0, 40);
+  return s || "unknown";
+}
+
+function followUsage(ctx, cfg, state) {
+  const controller = new AbortController();
+  const types = ["session.idle", "session.execution.succeeded"];
+  const limits = new Map(); // "provider/id" -> context limit
+  let lastSentAt = 0;
+  let lastSig = "";
+  let dirty = false; // сесія щось зробила після останнього звіту
+
+  const contextLimitFor = async (ref) => {
+    if (!ref?.providerID || !ref?.id || !ctx.model?.list) return null;
+    const key = `${ref.providerID}/${ref.id}`;
+    if (limits.has(key)) return limits.get(key);
+    let value = null;
+    try {
+      const raw = await ctx.model.list();
+      const models = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
+      const hit = models.find((m) => m.providerID === ref.providerID && m.id === ref.id);
+      value = hit?.limit?.context ?? null;
+    } catch {
+      value = null;
+    }
+    limits.set(key, value);
+    return value;
+  };
+
+  const report = async () => {
+    if (!state.sessionID) return;
+    // спершу тротлінг, щоб таймер не тягнув сесію й усі її повідомлення щохвилини:
+    // не частіше ніж раз на 15 с; без нових подій — раз на 5 хв
+    const now = Date.now();
+    if (now - lastSentAt < 15000) return;
+    if (!dirty && lastSentAt && now - lastSentAt < 300000) return;
+    let info;
+    try {
+      info = await ctx.session.get({ sessionID: state.sessionID });
+    } catch {
+      return;
+    }
+    const tokens = info?.tokens ?? {};
+    const tokensIn = Number(tokens.input ?? 0);
+    const tokensOut = Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0);
+    // нічого ще не витрачено — не шлемо нулі
+    if (!tokensIn && !tokensOut && !(typeof info?.cost === "number" && info.cost > 0)) return;
+
+    // остання асистентська відповідь: модель (для provider) і токени кроку (для контексту)
+    let last = null;
+    try {
+      const rawMessages = await ctx.session.context({ sessionID: state.sessionID });
+      const messages = Array.isArray(rawMessages)
+        ? rawMessages
+        : Array.isArray(rawMessages?.data)
+          ? rawMessages.data
+          : [];
+      last = [...messages].reverse().find((m) => m?.tokens && m?.model) ?? null;
+    } catch {
+      last = null;
+    }
+
+    const provider = normalizeProvider(last?.model?.providerID ?? info?.model?.providerID ?? "unknown");
+    const body = {
+      provider,
+      windows: [],
+      session: { tokensIn, tokensOut },
+    };
+    if (typeof info?.cost === "number" && info.cost > 0) {
+      body.session.cost = info.cost;
+      body.session.currency = "USD";
+    }
+    if (last?.tokens) {
+      const limit = await contextLimitFor(last.model ?? info?.model);
+      if (limit && limit > 0) {
+        const prompt =
+          Number(last.tokens.input ?? 0) +
+          Number(last.tokens.cache?.read ?? 0) +
+          Number(last.tokens.cache?.write ?? 0);
+        const usedPct = Math.min(100, Math.max(0, (prompt / limit) * 100));
+        body.context = { usedPct: Math.round(usedPct * 10) / 10 };
+      }
+    }
+
+    const sig = JSON.stringify(body);
+    dirty = false;
+    if (sig === lastSig && now - lastSentAt < 300000) return;
+    lastSig = sig;
+    lastSentAt = now;
+    try {
+      await apiRequest(cfg, "/api/usage", { method: "POST", body });
+    } catch (error) {
+      console.warn(`[aichat] не вдалось надіслати usage: ${error?.message ?? error}`);
+    }
+  };
+
+  const timer = setInterval(() => void report(), 60000);
+  timer.unref?.();
+
+  void (async () => {
+    while (!controller.signal.aborted) {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal, types })) {
+          const data = event?.data ?? {};
+          if (!state.sessionID || data.sessionID !== state.sessionID) continue;
+          dirty = true;
+          await report();
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.warn(`[aichat] usage-стрім упав: ${error?.message ?? error}`);
+      }
+      if (controller.signal.aborted) return;
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 2000);
+        t.unref?.();
+      });
+    }
+  })();
+
+  return () => {
+    clearInterval(timer);
+    controller.abort();
+  };
+}
+
 function followActivity(ctx, cfg, state) {
   const controller = new AbortController();
   const types = [
@@ -1218,6 +1354,7 @@ export default {
     );
     let stop;
     let stopActivity;
+    let stopUsage;
     if (cfg.paused) {
       // пауза: до брокера не підключаємось, повідомлення не приходять і модель не будиться;
       // тули aichat_* лишаються робочими для ручної роботи в сесії.
@@ -1226,9 +1363,12 @@ export default {
       stop = startChannel(ctx, cfg, state);
       // Стан роботи (busy/waiting/idle) для веба — за подіями власної сесії.
       stopActivity = followActivity(ctx, cfg, state);
+      // Звіт про токени/вартість/контекст для сторінки «Використання».
+      stopUsage = followUsage(ctx, cfg, state);
     }
 
     return async () => {
+      stopUsage?.();
       stopActivity?.();
       stop?.();
       await tools?.dispose?.();

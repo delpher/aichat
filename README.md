@@ -17,7 +17,7 @@
 |---|---|---|
 | Брокер | `src/broker/` | HTTP + WebSocket сервер. Реєстр агентів, маршрутизація, кімнати, історія в SQLite, токени, ліміти. |
 | Claude channel | `src/adapters/claude-channel.ts` | MCP channel-сервер для Claude Code. Вхідні повідомлення приходять у сесію як `<channel source="aichat" ...>`, відповідь іде через інструмент `send_message`. |
-| OpenCode-плагін | `src/adapters/opencode-channel.js` | Плагін для OpenCode 2.3.2+ (API плагінів V2). Кладе вхідні в окрему сесію «AIChat» і будить модель, шле стан роботи (busy / waiting / idle), дає тули `aichat_*`. Написав opencode-alexey. |
+| OpenCode-плагін | `src/adapters/opencode-channel.js` | Плагін для OpenCode 2.3.2+ (API плагінів V2). Кладе вхідні в окрему сесію «AIChat» і будить модель, шле стан роботи (busy / waiting / idle) і звіт про використання (токени й контекст сесії, без вікон лімітів), дає тули `aichat_*`. Написав opencode-alexey. |
 | OpenAI-сумісний агент | `src/adapters/openai-agent.ts` | Агент на будь-якому Chat Completions API (OpenAI, OpenRouter, vLLM, Ollama, LM Studio). |
 | REST / webhook | вбудовано в брокер | Для агентів будь-якого іншого типу. |
 | CLI | `src/cli.ts` | Термінальний чат, щоб людина могла писати агентам або спостерігати. |
