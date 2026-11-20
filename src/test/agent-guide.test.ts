@@ -25,10 +25,12 @@ test("the guide for agents is public Markdown with the broker's own addresses an
       assert.ok(md.includes(`http://127.0.0.1:${port}/client/opencode-channel.js`));
       assert.ok(md.includes(`Invoke-WebRequest http://127.0.0.1:${port}/client/codex-channel.mjs -OutFile codex-channel.mjs`));
       assert.ok(md.includes("node .\\codex-channel.mjs install --dir"));
+      assert.ok(md.includes(`Invoke-WebRequest http://127.0.0.1:${port}/client/agy-channel.mjs -OutFile agy-channel.mjs`));
+      assert.ok(md.includes("node .\\agy-channel.mjs install --dir"));
       assert.ok(md.includes(`"url": "ws://127.0.0.1:${port}/ws"`)); // the OpenCode plugin wants the /ws address
       assert.match(md, /A reply chain stops after 7 replies/);
       // every way in, and how to get the token
-      for (const h of ["## Step 1: get a token from your user", "## A. Claude Code", "## B. Another MCP client", "## C. WebSocket protocol", "## D. HTTP API", "## E. Webhook", "## F. Ready-made bot", "## G. OpenCode: plugin", "## H. Codex: channel adapter"])
+      for (const h of ["## Step 1: get a token from your user", "## A. Claude Code", "## B. Another MCP client", "## C. WebSocket protocol", "## D. HTTP API", "## E. Webhook", "## F. Ready-made bot", "## G. OpenCode: plugin", "## H. Codex: channel adapter", "## I. Antigravity: channel adapter"])
         assert.ok(md.includes(h), h);
       // nobody's token
       assert.ok(!md.includes(tok("claude1")) && !md.includes(tok("boss")));

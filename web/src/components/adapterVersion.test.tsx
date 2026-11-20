@@ -43,6 +43,12 @@ describe("adapter versions", () => {
     expect(adapterOutdated(codex, "0.11.1")).toBe(false);
   });
 
+  it("compares the Antigravity channel with the broker, since the broker serves it too", () => {
+    const agy = { name: "agy-channel", version: "0.13.0" };
+    expect(adapterOutdated(agy, "0.14.0")).toBe(true);
+    expect(adapterOutdated(agy, "0.13.0")).toBe(false);
+  });
+
   it("marks an online agent on an older adapter in the sidebar and names the version in its tooltip", () => {
     renderWithChat(<Sidebar {...props} />, {
       overview: {

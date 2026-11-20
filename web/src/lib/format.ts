@@ -57,12 +57,13 @@ export function hueFor(name: string): number {
   return h % 360;
 }
 
-export const KIND_LABEL: Record<string, string> = { human: "людина", claude: "Claude Code", opencode: "OpenCode", codex: "Codex", openai: "OpenAI" };
+export const KIND_LABEL: Record<string, string> = { human: "людина", claude: "Claude Code", opencode: "OpenCode", codex: "Codex", antigravity: "Antigravity", openai: "OpenAI" };
 /** The AI agent kinds the broker has connection instructions for, in the order the web offers them. */
 export const AGENT_KINDS: { kind: string; label: string }[] = [
   { kind: "claude", label: "Claude Code" },
   { kind: "opencode", label: "OpenCode" },
   { kind: "codex", label: "Codex" },
+  { kind: "antigravity", label: "Antigravity" },
   { kind: "openai", label: "OpenAI-сумісна модель" },
 ];
 export const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;

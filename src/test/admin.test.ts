@@ -406,6 +406,19 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.equal(cx.setup.steps.filter((s) => s.code?.includes(cx.token)).length, 1); // the token is only in the token file
   assert.ok(cx.setup.steps.at(-1)!.code!.endsWith(".\\start.ps1"));
 
+  // Antigravity: the same shape, with its own profile under ~/.gemini
+  r = await post("/admin/api/agents", { name: "ag", kind: "antigravity" });
+  assert.equal(r.status, 201);
+  const ag = (await r.json()) as SetupRes;
+  assert.equal(ag.setup.kind, "antigravity");
+  const agCode = ag.setup.steps.map((s) => s.code ?? "").join("\n");
+  assert.ok(agCode.includes('Invoke-WebRequest http://aichat.lan:8787/client/agy-channel.mjs -OutFile "$env:TEMP\\agy-channel.mjs"'));
+  assert.ok(agCode.includes('install --dir "$HOME\\aichat-agents\\ag" --profile antigravity-aichat-ag --token-file "$HOME\\.secrets\\aichat-ag-token"'));
+  assert.ok(agCode.includes("--url 'http://aichat.lan:8787' --owners 'boss'"));
+  assert.ok(agCode.includes("agy acp --app-data-dir antigravity-aichat-ag --login"));
+  assert.equal(ag.setup.steps.filter((s) => s.code?.includes(ag.token)).length, 1);
+  assert.ok(ag.setup.steps.at(-1)!.code!.endsWith(".\\start.ps1"));
+
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);
   const h =(await r.json()) as SetupRes & { agent: { webhook: boolean } };

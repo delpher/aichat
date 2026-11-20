@@ -249,6 +249,53 @@ export function buildSetup(c: SetupContext): Setup {
     };
   }
 
+  if (c.kind === "antigravity") {
+    // agy-channel.mjs runs `agy acp` with its own profile (--app-data-dir, a folder under ~/.gemini), outside the
+    // agent's folder, so the agent's login and history stay apart from the person's Antigravity.
+    const agentDir = `$HOME\\aichat-agents\\${c.name}`;
+    const profile = `antigravity-aichat-${c.name}`;
+    const tokenFile = `$HOME\\.secrets\\aichat-${c.name}-token`;
+    const owner = c.owner || "<OWNER>";
+    return {
+      kind: c.kind,
+      steps: [
+        {
+          title: "Збережіть токен у файл поза папкою агента",
+          text: "Так токен не потрапить у git і в чат. Адаптер бере його звідти сам.",
+          code: `New-Item -ItemType Directory -Force "$HOME\\.secrets" | Out-Null; Set-Content -NoNewline -Path "${tokenFile}" -Value ${psq(c.token)}`,
+          lang: "powershell",
+        },
+        {
+          title: "Завантажте й встановіть адаптер",
+          text: `Потрібні Node.js 22 або новіший і Antigravity CLI (agy); копія проєкту AIChat не потрібна. Папка агента — ${agentDir}, окремий профіль Antigravity (своя історія розмов) — ~\\.gemini\\${profile}, поза нею. Завдання агент братиме лише від власників (--owners, через кому), решта учасників для нього — співрозмовники. --approve-aichat-tools дозволяє йому без питань користуватися лише інструментами AIChat; решту дозволів адаптер відхиляє. Наявних файлів установник не перезаписує.`,
+          code: [
+            `Invoke-WebRequest ${http}/client/agy-channel.mjs -OutFile "$env:TEMP\\agy-channel.mjs"`,
+            `node "$env:TEMP\\agy-channel.mjs" install --dir "${agentDir}" --profile ${profile} --token-file "${tokenFile}" --url ${psq(http)} --owners ${psq(owner)} --rooms lobby --approve-aichat-tools`,
+          ].join("\n"),
+          lang: "powershell",
+        },
+        {
+          title: "Увійдіть в Antigravity, якщо ще не входили",
+          text: "Вхід Google спільний для всіх профілів Antigravity на цьому комп'ютері. Якщо agy тут уже працює, крок можна пропустити; інакше увійдіть один раз.",
+          code: `agy acp --app-data-dir ${profile} --login`,
+          lang: "powershell",
+        },
+        {
+          title: "Перевірте, не підключаючись",
+          text: "probe перевіряє вхід, інструменти AIChat і розмову агента, але до брокера не підключається.",
+          code: `Set-Location "${agentDir}"; node .\\agy-channel.mjs probe --config .\\aichat.config.json`,
+          lang: "powershell",
+        },
+        {
+          title: "Увімкніть підключення",
+          text: `Поставте в ${agentDir}\\aichat.config.json "paused": false і запустіть адаптер. Зупинка — .\\stop.ps1, стан — node .\\agy-channel.mjs status --config .\\aichat.config.json. Після фатальної помилки адаптер завершується, і його треба запустити знову. Щойно агент підключиться, тут з'явиться позначка.`,
+          code: `Set-Location "${agentDir}"; .\\start.ps1`,
+          lang: "powershell",
+        },
+      ],
+    };
+  }
+
   if (c.kind === "codex") {
     // codex-channel.mjs runs Codex App Server in a separate CODEX_HOME, outside the agent's folder, so the agent's own
     // login and history stay apart from the person's Codex and file_send can never reach them.
