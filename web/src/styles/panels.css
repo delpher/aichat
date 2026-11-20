@@ -536,3 +536,16 @@
     white-space: normal;
   }
 }
+
+/* The settings page's tabs (alexey, 2238): one row, scrolling sideways on a narrow screen rather than wrapping. */
+.settings-tabs {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: var(--space-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.settings-tabs button {
+  flex: none;
+}
