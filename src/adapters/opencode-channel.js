@@ -489,6 +489,129 @@ async function checkForUpdate(ctx, cfg, state) {
   }
 }
 
+// Брокер приймає провайдера як коротке ім'я малими літерами (^[a-z0-9][a-z0-9._-]{0,39}$).
+function providerId(raw) {
+  const id = String(raw ?? "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 40);
+  return id || "unknown";
+}
+
+// Звіт про використання для веба AIChat (сторінка «Використання» / профіль агента).
+// Беремо лише свою сесію, кумулятивні токени — з session.usage.updated, контекст —
+// з останнього кроку. Вікон лімітів поки не шлемо (OpenCode Go/Console недоступні тут).
+function followUsage(ctx, cfg, state) {
+  const controller = new AbortController();
+  const types = ["session.usage.updated", "session.step.started", "session.step.ended", "session.idle"];
+  const limits = new Map(); // "provider/id" -> context limit
+  let usage = null; // { cost, tokens } кумулятивно
+  let modelRef = null; // { providerID, id, variant }
+  let lastStepTokens = null;
+  let lastSentAt = 0;
+  let lastSig = "";
+
+  const contextLimitFor = async (ref) => {
+    if (!ref?.providerID || !ref?.id || !ctx.model?.list) return null;
+    const key = `${ref.providerID}/${ref.id}`;
+    if (limits.has(key)) return limits.get(key);
+    let value = null;
+    try {
+      const models = await ctx.model.list();
+      const hit = models.find((m) => m.providerID === ref.providerID && m.id === ref.id);
+      value = hit?.limit?.context ?? null;
+    } catch {
+      value = null;
+    }
+    limits.set(key, value);
+    return value;
+  };
+
+  const report = async () => {
+    // поки сесія нічого не витратила, звітувати нема про що (інакше в вебі будуть нулі й "unknown")
+    if (!state.sessionID || (!usage && !lastStepTokens)) return;
+    const now = Date.now();
+    const body = { provider: providerId(modelRef?.providerID || state.lastModel?.providerID), windows: [] };
+    if (usage) {
+      const tokens = usage.tokens ?? {};
+      const tokensIn = Number(tokens.input ?? 0);
+      const tokensOut = Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0);
+      body.session = { tokensIn: Number.isFinite(tokensIn) ? tokensIn : 0, tokensOut: Number.isFinite(tokensOut) ? tokensOut : 0 };
+      if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0) {
+        body.session.cost = usage.cost;
+        body.session.currency = "USD";
+      }
+    }
+    if (lastStepTokens) {
+      const limit = await contextLimitFor(modelRef || state.lastModel);
+      if (limit && limit > 0) {
+        const prompt =
+          Number(lastStepTokens.input ?? 0) +
+          Number(lastStepTokens.cache?.read ?? 0) +
+          Number(lastStepTokens.cache?.write ?? 0);
+        const usedPct = Math.min(100, Math.max(0, (prompt / limit) * 100));
+        body.context = { usedPct: Math.round(usedPct * 10) / 10 };
+      }
+    }
+    const sig = JSON.stringify(body);
+    // не частіше ніж раз на 15 с; без змін — раз на 5 хв
+    if (now - lastSentAt < 15000) return;
+    if (sig === lastSig && now - lastSentAt < 300000) return;
+    lastSig = sig;
+    lastSentAt = now;
+    try {
+      await apiRequest(cfg, "/api/usage", { method: "POST", body });
+    } catch (error) {
+      console.warn(`[aichat] не вдалось надіслати usage: ${error?.message ?? error}`);
+    }
+  };
+
+  const handle = async (event) => {
+    const data = event?.data ?? {};
+    if (!state.sessionID || data.sessionID !== state.sessionID) return;
+    switch (event.type) {
+      case "session.usage.updated":
+        usage = { cost: data.cost, tokens: data.tokens };
+        break;
+      case "session.step.started":
+        if (data.model) {
+          modelRef = data.model;
+          void contextLimitFor(modelRef);
+        }
+        break;
+      case "session.step.ended":
+        lastStepTokens = data.tokens ?? lastStepTokens;
+        break;
+      case "session.idle":
+        await report();
+        break;
+    }
+  };
+
+  const timer = setInterval(() => void report(), 60000);
+  timer.unref?.();
+
+  void (async () => {
+    while (!controller.signal.aborted) {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal, types })) {
+          await handle(event);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.warn(`[aichat] usage-стрім упав: ${error?.message ?? error}`);
+      }
+      if (controller.signal.aborted) return;
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 2000);
+        t.unref?.();
+      });
+    }
+  })();
+
+  return () => {
+    clearInterval(timer);
+    controller.abort();
+  };
+}
+
 function followActivity(ctx, cfg, state) {
   const controller = new AbortController();
   const types = [
@@ -1218,6 +1341,7 @@ export default {
     );
     let stop;
     let stopActivity;
+    let stopUsage;
     if (cfg.paused) {
       // пауза: до брокера не підключаємось, повідомлення не приходять і модель не будиться;
       // тули aichat_* лишаються робочими для ручної роботи в сесії.
@@ -1226,9 +1350,12 @@ export default {
       stop = startChannel(ctx, cfg, state);
       // Стан роботи (busy/waiting/idle) для веба — за подіями власної сесії.
       stopActivity = followActivity(ctx, cfg, state);
+      // Звіт про токени/вартість/контекст для сторінки «Використання».
+      stopUsage = followUsage(ctx, cfg, state);
     }
 
     return async () => {
+      stopUsage?.();
       stopActivity?.();
       stop?.();
       await tools?.dispose?.();
