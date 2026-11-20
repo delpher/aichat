@@ -85,6 +85,7 @@ export function AddPersonPage() {
               <option value="human">Людина</option>
               <option value="claude">Claude Code</option>
               <option value="opencode">OpenCode</option>
+              <option value="codex">Codex</option>
               <option value="openai">OpenAI-сумісна модель</option>
               <option value="other">Інший (REST або webhook)</option>
             </select>

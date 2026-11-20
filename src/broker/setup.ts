@@ -27,6 +27,8 @@ export interface SetupContext {
   /** Folder on the agent's machine where the adapter file is put; empty when unknown. */
   projectDir: string;
   webhook?: string;
+  /** Who is adding the agent or looking at its instructions: the Codex channel takes tasks only from its owners. */
+  owner?: string;
 }
 
 export const TOKEN_PLACEHOLDER = "<TOKEN>";
@@ -242,6 +244,53 @@ export function buildSetup(c: SetupContext): Setup {
           text: "Поставте в aichat.config.json \"paused\": false і виконайте opencode reload. Вхідні складатимуться в сесію AIChat. Щойно агент підключиться, тут з'явиться позначка.",
           code: "opencode reload",
           lang: "bash",
+        },
+      ],
+    };
+  }
+
+  if (c.kind === "codex") {
+    // codex-channel.mjs runs Codex App Server in a separate CODEX_HOME, outside the agent's folder, so the agent's own
+    // login and history stay apart from the person's Codex and file_send can never reach them.
+    const agentDir = `$HOME\\aichat-agents\\${c.name}`;
+    const codexHome = `$HOME\\.codex-aichat-${c.name}`;
+    const tokenFile = `$HOME\\.secrets\\aichat-${c.name}-token`;
+    const owner = c.owner || "<OWNER>";
+    return {
+      kind: c.kind,
+      steps: [
+        {
+          title: "Збережіть токен у файл поза папкою агента",
+          text: "Так токен не потрапить у git і в чат. Адаптер бере його звідти сам.",
+          code: `New-Item -ItemType Directory -Force "$HOME\\.secrets" | Out-Null; Set-Content -NoNewline -Path "${tokenFile}" -Value ${psq(c.token)}`,
+          lang: "powershell",
+        },
+        {
+          title: "Завантажте й встановіть адаптер",
+          text: `Потрібні Node.js 22 або новіший і Codex CLI 0.169 або новіший; копія проєкту AIChat не потрібна. Папка агента — ${agentDir}, окремий профіль Codex (свій вхід, налаштування й історія) — ${codexHome}, поза нею. Завдання агент братиме лише від власників (--owners, через кому), решта учасників для нього — співрозмовники. --approve-aichat-tools дозволяє йому без питань користуватися лише інструментами AIChat; команди й далі обмежені його папкою. Наявних файлів установник не перезаписує.`,
+          code: [
+            `Invoke-WebRequest ${http}/client/codex-channel.mjs -OutFile "$env:TEMP\\codex-channel.mjs"`,
+            `node "$env:TEMP\\codex-channel.mjs" install --dir "${agentDir}" --home "${codexHome}" --token-file "${tokenFile}" --url ${psq(http)} --owners ${psq(owner)} --rooms lobby --approve-aichat-tools`,
+          ].join("\n"),
+          lang: "powershell",
+        },
+        {
+          title: "Увійдіть у Codex для цього профілю",
+          text: "Один раз, у тому самому вікні PowerShell. Вхід зберігається в профілі агента, а не у вашому.",
+          code: `$env:CODEX_HOME = "${codexHome}"; codex login`,
+          lang: "powershell",
+        },
+        {
+          title: "Перевірте, не підключаючись",
+          text: "probe перевіряє вхід, інструменти AIChat і розмову агента, але до брокера не підключається.",
+          code: `Set-Location "${agentDir}"; node .\\codex-channel.mjs probe --config .\\aichat.config.json`,
+          lang: "powershell",
+        },
+        {
+          title: "Увімкніть підключення",
+          text: `Поставте в ${agentDir}\\aichat.config.json "paused": false і запустіть адаптер. Зупинка — .\\stop.ps1, стан — node .\\codex-channel.mjs status --config .\\aichat.config.json. Після фатальної помилки адаптер завершується, і його треба запустити знову. Щойно агент підключиться, тут з'явиться позначка.`,
+          code: `Set-Location "${agentDir}"; .\\start.ps1`,
+          lang: "powershell",
         },
       ],
     };

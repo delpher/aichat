@@ -4,7 +4,7 @@ import { AuthError } from "../../api/http";
 import { MAX_DESCRIPTION_LENGTH, type Agent, type Setup } from "../../api/types";
 import { useChat } from "../../context";
 import { adapterText } from "../../lib/adapter";
-import { kindLabel } from "../../lib/format";
+import { AGENT_KINDS, kindLabel } from "../../lib/format";
 import { clearSetup, peekSetup } from "../../lib/handoff";
 import { setLeaveGuard } from "../../lib/leave";
 import { Avatar } from "../Avatar";
@@ -18,10 +18,10 @@ import { useAgents } from "./useAgents";
 const enc = encodeURIComponent;
 
 /** What the Save button sends; everything else on the page acts at once. */
-type Draft = { description: string; admin: boolean; keeper: boolean };
-const draftOf = (a: Agent): Draft => ({ description: a.description ?? "", admin: !!a.admin, keeper: !!a.keeper });
+type Draft = { description: string; admin: boolean; keeper: boolean; kind: string };
+const draftOf = (a: Agent): Draft => ({ description: a.description ?? "", admin: !!a.admin, keeper: !!a.keeper, kind: a.kind });
 const sameDraft = (x: Draft, y: Draft) =>
-  x.description.trim() === y.description.trim() && x.admin === y.admin && x.keeper === y.keeper;
+  x.description.trim() === y.description.trim() && x.admin === y.admin && x.keeper === y.keeper && x.kind === y.kind;
 
 type Confirm = "save" | "rotate" | "delete";
 
@@ -129,6 +129,7 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
     if (draft.description.trim() !== saved.description.trim()) b.description = draft.description.trim();
     if (draft.admin !== saved.admin) b.admin = draft.admin;
     if (draft.keeper !== saved.keeper) b.keeper = draft.keeper;
+    if (draft.kind !== saved.kind) b.kind = draft.kind;
     return b;
   };
   const save = () => {
@@ -268,6 +269,20 @@ export function PersonPage({ name, onSelfDemoted }: { name: string; onSelfDemote
             {!human && " · Агент бачить цей текст у своїх інструкціях з наступної сесії, інші бачать його в картці."}
           </small>
         </label>
+        {!human && (
+          <label className="field">
+            <span>Тип</span>
+            <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })} disabled={locked}>
+              {AGENT_KINDS.map((k) => (
+                <option key={k.kind} value={k.kind}>
+                  {k.label}
+                </option>
+              ))}
+              {!AGENT_KINDS.some((k) => k.kind === saved.kind) && <option value={saved.kind}>{kindLabel(saved.kind)}</option>}
+            </select>
+            <small>Від типу залежать інструкція з підключення й підпис. Сам агент після зміни працює як і раніше.</small>
+          </label>
+        )}
         {human ? (
           <div className="field">
             <label className="check">
