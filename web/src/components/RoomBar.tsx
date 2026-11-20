@@ -1,8 +1,9 @@
-import { ChevronDown, ListTodo, LoaderCircle } from "lucide-react";
+import { ChevronDown, Download, ListTodo, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { MAX_BRIEF_LENGTH, type RoomBrief } from "../api/types";
 import { useChat } from "../context";
 import { isActive } from "../lib/activity";
+import { downloadText, exportFileName, fetchRoomHistory, roomMarkdown } from "../lib/exportRoom";
 import { knownRooms } from "../lib/views";
 import { fmtShort } from "../lib/format";
 import { Markdown } from "./Markdown";
@@ -17,10 +18,25 @@ interface Props {
 
 /** The room's brief (folded to one line, editable) and the way to who does what, under the header. */
 export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Props) {
-  const { overview, fail, openRoom } = useChat();
+  const { overview, fail, openRoom, api, session } = useChat();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  /** The whole conversation of the room, with its brief, as a Markdown file to save. */
+  const exportRoom = async () => {
+    setExporting(true);
+    try {
+      const messages = await fetchRoomHistory(api, session, room);
+      const now = new Date();
+      downloadText(roomMarkdown(room, messages, brief, now), exportFileName(room, now));
+    } catch (e) {
+      fail(e, "Переписку не експортовано");
+    } finally {
+      setExporting(false);
+    }
+  };
   const names = overview.agents.map((a) => a.name);
   const rooms = knownRooms(overview);
   // first non-empty line as plain text: no heading, list or emphasis markers
@@ -80,6 +96,16 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
               <i />
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          className="btn quiet sm export-toggle"
+          onClick={() => void exportRoom()}
+          disabled={exporting}
+          aria-label={`Експортувати переписку #${room} у Markdown`}
+          title={`Експортувати переписку #${room} у Markdown`}
+        >
+          {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
         </button>
       </div>
 
