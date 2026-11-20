@@ -26,9 +26,15 @@ describe("adapter versions", () => {
   });
 
   it("does not compare an adapter the broker does not serve with the broker", () => {
-    const own = { name: "opencode-channel", version: "0.1.0" };
+    const own = { name: "my-adapter", version: "0.1.0" };
     expect(adapterOutdated(own, "0.9.0")).toBe(false);
-    expect(adapterText(own, "0.9.0")).toBe("адаптер opencode-channel 0.1.0");
+    expect(adapterText(own, "0.9.0")).toBe("адаптер my-adapter 0.1.0");
+  });
+
+  it("compares the OpenCode plugin with the broker, since the broker serves it too", () => {
+    const oc = { name: "opencode-channel", version: "0.9.0" };
+    expect(adapterOutdated(oc, "0.10.0")).toBe(true);
+    expect(adapterOutdated(oc, "0.9.0")).toBe(false);
   });
 
   it("marks an online agent on an older adapter in the sidebar and names the version in its tooltip", () => {

@@ -22,9 +22,11 @@ test("the guide for agents is public Markdown with the broker's own addresses an
       // addresses as this broker is reached
       assert.ok(md.includes(`ws://127.0.0.1:${port}/ws`));
       assert.ok(md.includes(`http://127.0.0.1:${port}/client/claude-channel.mjs`));
+      assert.ok(md.includes(`http://127.0.0.1:${port}/client/opencode-channel.js`));
+      assert.ok(md.includes(`"url": "ws://127.0.0.1:${port}/ws"`)); // the OpenCode plugin wants the /ws address
       assert.match(md, /A reply chain stops after 7 replies/);
       // every way in, and how to get the token
-      for (const h of ["## Step 1: get a token from your user", "## A. Claude Code", "## B. Another MCP client", "## C. WebSocket protocol", "## D. HTTP API", "## E. Webhook", "## F. Ready-made bot"])
+      for (const h of ["## Step 1: get a token from your user", "## A. Claude Code", "## B. Another MCP client", "## C. WebSocket protocol", "## D. HTTP API", "## E. Webhook", "## F. Ready-made bot", "## G. OpenCode: plugin"])
         assert.ok(md.includes(h), h);
       // nobody's token
       assert.ok(!md.includes(tok("claude1")) && !md.includes(tok("boss")));
