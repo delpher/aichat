@@ -25,6 +25,7 @@ import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games
 import { greeting, groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
+import { HookError, Hooks, TICK_MS } from "./hooks.js";
 import { Context, ContextError } from "./context.js";
 import { UsageError, accountHashes, checkUsage } from "./usage.js";
 import {
@@ -165,6 +166,7 @@ export class Broker {
   readonly updater: Updater;
   readonly games: Games;
   readonly board: Board;
+  readonly hooks: Hooks;
   readonly context: Context;
   private sockets = new Map<string, Set<WebSocket>>();
   /** The adapter each participant socket named in its `auth` frame. Not stored: it lives with the connection. */
@@ -187,6 +189,7 @@ export class Broker {
   /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
   private hooked = new Set<string>();
   private activityTimer?: NodeJS.Timeout;
+  private hooksTimer?: NodeJS.Timeout;
   private sent = new Map<string, number[]>();
   private webhookChains = new Map<string, Promise<void>>();
   private retryTimer?: NodeJS.Timeout;
@@ -237,6 +240,17 @@ export class Broker {
       isAgent: (n) => this.cfg.agents.some((a) => a.name === n),
     });
     this.log = opts.log ?? ((m) => console.error(`[broker] ${m}`));
+    this.hooks = new Hooks({
+      store: this.store,
+      now: () => this.now(),
+      // hooks fire for AI agents and write to them; people and the keeper are neither (decisions 3 and 5)
+      agents: () => this.cfg.agents.filter((a) => a.kind !== "human" && !a.keeper).map((a) => a.name),
+      isOnline: (agent) => this.isOnline(agent),
+      reportsActivity: (agent) => this.hooked.has(agent),
+      notify: (to, text) => void this.notify(to, text),
+      maxTextLength: () => this.cfg.maxTextLength,
+      log: (line) => this.log(line),
+    });
     this.syncConfiguredRooms();
   }
 
@@ -339,6 +353,7 @@ export class Broker {
     this.log(`#${msg.id} ${from} -> ${msg.to ?? "#" + msg.room} (hops ${hops}${files})`);
     this.deliver(msg);
     if (msg.room && GAME_ROOM_RE.test(msg.room)) this.games.onRoomMessage(from, msg.room, text);
+    this.hooks.realActivity(from);
     return msg;
   }
 
@@ -651,6 +666,7 @@ export class Broker {
     const adapter = this.adapterOf(name);
     if (before !== after || adapterBefore?.name !== adapter?.name || adapterBefore?.version !== adapter?.version)
       this.broadcastPresence(name, after, adapter);
+    if (before !== after) this.hooks.presence(name, after);
     // an agent that went away is not working on anything we can see, and its session's topic ended with it
     if (!after) {
       this.focus.delete(name);
@@ -722,6 +738,7 @@ export class Broker {
 
   /** Records what an agent is doing (from its hooks or adapter) and tells every client when that changed. */
   setActivity(agent: string, state: AgentActivity["state"], detail?: string, target?: string) {
+    this.hooks.activity(agent, state);
     const cur = this.work.get(agent);
     if (state === "idle" && (!cur || cur.state === "idle") && !this.focus.has(agent)) return;
     this.activityTouched.set(agent, Date.now());
@@ -765,6 +782,7 @@ export class Broker {
     const peer = typeof b.with === "string" && b.with ? b.with.replace(/^@/, "") : undefined;
     if (room && !this.store.isMember(agent, room)) throw new BrokerError(`you are not in room ${room}`, 403);
     if (peer && !this.cfg.agents.some((a) => a.name === peer)) throw new BrokerError(`unknown agent: ${peer}`, 404);
+    if (topic) this.hooks.realActivity(agent);
     if (!topic) this.focus.delete(agent);
     else this.focus.set(agent, { topic, ...(room ? { room } : peer ? { with: peer } : {}), since: new Date().toISOString() });
     this.activityTouched.set(agent, Date.now());
@@ -1314,16 +1332,25 @@ export class Broker {
         const notes = this.context.notes(me, { q: url.searchParams.get("q"), topic: url.searchParams.get("topic") });
         return reply(200, { notes, ...this.context.stats(me), max: this.cfg.maxNotes });
       }
-      if (req.method === "POST") return reply(201, { note: this.context.remember(me, await readJson(req)) });
+      if (req.method === "POST") {
+        const note = this.context.remember(me, await readJson(req));
+        this.hooks.realActivity(me);
+        return reply(201, { note });
+      }
       return reply(405, { error: "use GET or POST" });
     }
     const m = url.pathname.match(/^\/api\/notes\/(\d+)$/);
     if (!m) return reply(404, { error: "not found" });
     const id = Number(m[1]);
     if (req.method === "GET") return reply(200, { note: this.context.note(me, id) });
-    if (req.method === "PUT") return reply(200, { note: this.context.change(me, id, await readJson(req)) });
+    if (req.method === "PUT") {
+      const note = this.context.change(me, id, await readJson(req));
+      this.hooks.realActivity(me);
+      return reply(200, { note });
+    }
     if (req.method === "DELETE") {
       this.context.forget(me, id);
+      this.hooks.realActivity(me);
       return reply(200, { ok: true });
     }
     return reply(405, { error: "use GET, PUT or DELETE" });
@@ -1843,6 +1870,39 @@ export class Broker {
       if (!f) return reply(404, { error: "unknown file" });
       return await this.serveFile(f, res);
     }
+    // global hooks (the scheduler): admins only
+    if (url.pathname === "/admin/api/hooks" || url.pathname.startsWith("/admin/api/hooks/")) {
+      try {
+        if (route === "GET /admin/api/hooks") return reply(200, { hooks: this.hooks.list() });
+        if (route === "POST /admin/api/hooks") {
+          const hook = this.hooks.create(await readJson(req), me.name);
+          this.log(`${me.name} added hook ${hook.id} (${hook.trigger.type})`);
+          return reply(201, { hook });
+        }
+        const hookMatch = url.pathname.match(/^\/admin\/api\/hooks\/([^/]+)$/);
+        if (!hookMatch) return reply(404, { error: "not found" });
+        const id = decodeURIComponent(hookMatch[1]);
+        if (req.method === "PUT") {
+          const hook = this.hooks.replace(id, await readJson(req), me.name);
+          this.log(`${me.name} changed hook ${id}`);
+          return reply(200, { hook });
+        }
+        if (req.method === "PATCH") {
+          const hook = this.hooks.setEnabled(id, await readJson(req));
+          this.log(`${me.name} ${hook.enabled ? "enabled" : "disabled"} hook ${id}`);
+          return reply(200, { hook });
+        }
+        if (req.method === "DELETE") {
+          this.hooks.remove(id);
+          this.log(`${me.name} removed hook ${id}`);
+          return reply(200, { ok: true });
+        }
+        return reply(405, { error: "use GET, POST, PUT, PATCH or DELETE" });
+      } catch (e) {
+        if (e instanceof HookError) throw new BrokerError(e.message, e.status);
+        throw e;
+      }
+    }
     const fileLinkMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)\/link$/);
     if (req.method === "POST" && fileLinkMatch) {
       const f = this.visibleFile(me.name, decodeURIComponent(fileLinkMatch[1]), true);
@@ -1879,6 +1939,14 @@ export class Broker {
     this.cleanupTimer.unref();
     this.activityTimer = setInterval(() => this.expireActivity(), 60 * 1000);
     this.activityTimer.unref();
+    this.hooksTimer = setInterval(() => {
+      try {
+        this.hooks.tick();
+      } catch (e) {
+        this.log(`hooks failed: ${(e as Error).message}`);
+      }
+    }, TICK_MS);
+    this.hooksTimer.unref();
     void clean();
     return new Promise((resolve) => {
       this.http!.listen(port, host, () => {
@@ -1890,6 +1958,7 @@ export class Broker {
 
   async close() {
     clearInterval(this.activityTimer);
+    clearInterval(this.hooksTimer);
     clearInterval(this.retryTimer);
     clearInterval(this.cleanupTimer);
     clearInterval(this.configTimer);

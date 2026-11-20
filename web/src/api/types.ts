@@ -107,3 +107,5 @@ export interface UpdateStatus {
   updateAvailable: boolean;
   failed: { version: string; previous: string; at?: string; reason: string } | null;
 }
+export type { HookAction, HookFields, HookRecipient, HookRule, HookTrigger } from "../../../src/protocol";
+export { HOOK_IDLE_MAX_MINUTES, MAX_HOOKS } from "../../../src/protocol";

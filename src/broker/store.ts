@@ -1,7 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AgentNote, ChatMessage, FileInfo, RoomBrief, WorldIntro } from "../protocol.js";
+import type { AgentNote, ChatMessage, FileInfo, HookFields, HookRule, RoomBrief, WorldIntro } from "../protocol.js";
+
+interface HookRow {
+  id: string;
+  enabled: number;
+  rule: string;
+  author: string;
+  created_ts: string;
+  updated_ts: string;
+}
 import type { GameOutcome } from "../games/game.js";
 
 interface Row {
@@ -225,6 +234,22 @@ export class Store {
         ts TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_notes_agent ON notes(agent, id);
+      CREATE TABLE IF NOT EXISTS hooks (
+        id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL,
+        rule TEXT NOT NULL,
+        author TEXT NOT NULL,
+        created_ts TEXT NOT NULL,
+        updated_ts TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS hook_fires (
+        hook_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        fired INTEGER NOT NULL DEFAULT 0,
+        last_ts TEXT,
+        awaiting INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hook_id, agent)
+      );
     `);
     // Case-insensitive search for any script: SQLite's own lower()/LIKE fold only ASCII.
     this.db.function("fold", { deterministic: true }, (t) => (t == null ? null : String(t).toLocaleLowerCase()));
@@ -359,6 +384,83 @@ export class Store {
       .prepare("INSERT INTO briefs (room, text, author, ts) VALUES (?, ?, ?, ?) ON CONFLICT(room) DO UPDATE SET text = ?, author = ?, ts = ?")
       .run(room, text, by, ts, text, by, ts);
     return { room, text, by, ts };
+  }
+
+  // ---- global hooks ----
+
+  /** Every hook with its firing counts, oldest first. */
+  hooks(): HookRule[] {
+    const rows = this.db.prepare("SELECT * FROM hooks ORDER BY created_ts, id").all() as unknown as HookRow[];
+    return rows.map((r) => this.hookOf(r));
+  }
+
+  hook(id: string): HookRule | undefined {
+    const r = this.db.prepare("SELECT * FROM hooks WHERE id = ?").get(id) as unknown as HookRow | undefined;
+    return r ? this.hookOf(r) : undefined;
+  }
+
+  private hookOf(r: HookRow): HookRule {
+    const rule = JSON.parse(r.rule) as Omit<HookFields, "enabled">;
+    const s = this.db
+      .prepare("SELECT COALESCE(SUM(fired), 0) AS fired, COUNT(*) AS agents, MAX(last_ts) AS last FROM hook_fires WHERE hook_id = ? AND fired > 0")
+      .get(r.id) as { fired: number; agents: number; last: string | null };
+    return {
+      id: r.id,
+      enabled: !!r.enabled,
+      trigger: rule.trigger,
+      repeat: rule.repeat,
+      action: rule.action,
+      by: r.author,
+      createdAt: r.created_ts,
+      updatedAt: r.updated_ts,
+      stats: { fired: Number(s.fired), agents: Number(s.agents), ...(s.last ? { lastFiredAt: s.last } : {}) },
+    };
+  }
+
+  /** Creates a hook, or replaces one's rule (its firing history stays: alexey, 2238). */
+  saveHook(id: string, fields: Required<HookFields>, by: string): HookRule {
+    const ts = new Date().toISOString();
+    const rule = JSON.stringify({ trigger: fields.trigger, repeat: fields.repeat, action: fields.action });
+    this.db
+      .prepare(
+        `INSERT INTO hooks (id, enabled, rule, author, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, rule = excluded.rule, author = excluded.author, updated_ts = excluded.updated_ts`,
+      )
+      .run(id, fields.enabled ? 1 : 0, rule, by, ts, ts);
+    return this.hook(id)!;
+  }
+
+  setHookEnabled(id: string, enabled: boolean): HookRule | undefined {
+    this.db.prepare("UPDATE hooks SET enabled = ?, updated_ts = ? WHERE id = ?").run(enabled ? 1 : 0, new Date().toISOString(), id);
+    return this.hook(id);
+  }
+
+  deleteHook(id: string): boolean {
+    this.db.prepare("DELETE FROM hook_fires WHERE hook_id = ?").run(id);
+    return Number(this.db.prepare("DELETE FROM hooks WHERE id = ?").run(id).changes) > 0;
+  }
+
+  /** How a hook stands for one agent: how often it fired for it, and whether it waits for real activity first. */
+  hookFire(id: string, agent: string): { fired: number; awaiting: boolean } {
+    const r = this.db.prepare("SELECT fired, awaiting FROM hook_fires WHERE hook_id = ? AND agent = ?").get(id, agent) as
+      | { fired: number; awaiting: number }
+      | undefined;
+    return { fired: r?.fired ?? 0, awaiting: !!r?.awaiting };
+  }
+
+  /** Records that a hook fired for an agent; `awaiting`: it may fire for it again only after real activity. */
+  recordHookFire(id: string, agent: string, awaiting: boolean, ts = new Date().toISOString()) {
+    this.db
+      .prepare(
+        `INSERT INTO hook_fires (hook_id, agent, fired, last_ts, awaiting) VALUES (?, ?, 1, ?, ?)
+         ON CONFLICT(hook_id, agent) DO UPDATE SET fired = fired + 1, last_ts = excluded.last_ts, awaiting = excluded.awaiting`,
+      )
+      .run(id, agent, ts, awaiting ? 1 : 0);
+  }
+
+  /** The agent did something real: every hook waiting for that may fire for it again. */
+  clearHookAwaiting(agent: string) {
+    this.db.prepare("UPDATE hook_fires SET awaiting = 0 WHERE agent = ? AND awaiting = 1").run(agent);
   }
 
   // ---- world intro ----
