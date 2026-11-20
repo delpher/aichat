@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api } from "../api/http";
-import { saveBlob } from "../lib/saveFile";
+import { saveLink } from "../lib/saveFile";
 
 // Files need the bearer token, so they are fetched once and shown through blob: URLs.
 const cache = new Map<string, Promise<string>>();
@@ -34,8 +34,11 @@ export function useFileUrl(api: Api, path: string | null) {
   return state;
 }
 
-/** Saves an attachment to disk. The blob is re-typed so the browser never renders it as a page. */
+/**
+ * Saves an attachment to disk through a short download link from the broker (POST <file path>/link), which serves it
+ * as a file to save, never as a page.
+ */
 export async function downloadFile(api: Api, path: string, name: string) {
-  const blob = await api.blob(path);
-  saveBlob(new Blob([blob], { type: "application/octet-stream" }), name);
+  const { url } = await api.send<{ url: string }>("POST", `${path}/link`);
+  saveLink(url, name);
 }

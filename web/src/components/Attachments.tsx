@@ -51,7 +51,12 @@ function FileCard({ file }: { file: FileInfo }) {
   );
 }
 
-export function Lightbox({ url, name, onClose }: { url: string; name: string; onClose: () => void }) {
+export function Lightbox({ url, file, onClose }: { url: string; file: FileInfo; onClose: () => void }) {
+  const { api, session, fail } = useChat();
+  const name = file.name;
+  // saved through a download link, like other files: the blob: shown here is not one a download manager can read
+  const save = () =>
+    downloadFile(api, filePath(session.mode === "admin", file.id), name).catch((err) => fail(err, `Не вдалося завантажити ${name}`));
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", key);
@@ -62,9 +67,9 @@ export function Lightbox({ url, name, onClose }: { url: string; name: string; on
       <img src={url} alt={name} onClick={(e) => e.stopPropagation()} />
       <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
         <span>{name}</span>
-        <a className="icon-btn" href={url} download={name} title="Зберегти">
+        <button type="button" className="icon-btn" onClick={() => void save()} title="Зберегти" aria-label="Зберегти">
           <Download size={18} />
-        </a>
+        </button>
         <button type="button" className="icon-btn" onClick={onClose} title="Закрити" aria-label="Закрити">
           <X size={18} />
         </button>
@@ -74,7 +79,7 @@ export function Lightbox({ url, name, onClose }: { url: string; name: string; on
 }
 
 export function Attachments({ files }: { files: FileInfo[] }) {
-  const [open, setOpen] = useState<{ url: string; name: string } | null>(null);
+  const [open, setOpen] = useState<{ url: string; file: FileInfo } | null>(null);
   const images = files.filter(isImage);
   const others = files.filter((f) => !isImage(f));
   return (
@@ -82,14 +87,14 @@ export function Attachments({ files }: { files: FileInfo[] }) {
       {images.length > 0 && (
         <div className={`att-images n${Math.min(images.length, 3)}`}>
           {images.map((f) => (
-            <ImageTile key={f.id} file={f} onOpen={(url) => setOpen({ url, name: f.name })} />
+            <ImageTile key={f.id} file={f} onOpen={(url) => setOpen({ url, file: f })} />
           ))}
         </div>
       )}
       {others.map((f) => (
         <FileCard key={f.id} file={f} />
       ))}
-      {open && <Lightbox url={open.url} name={open.name} onClose={() => setOpen(null)} />}
+      {open && <Lightbox url={open.url} file={open.file} onClose={() => setOpen(null)} />}
     </div>
   );
 }

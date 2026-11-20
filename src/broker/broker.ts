@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store.js";
 import { VERSION } from "../version.js";
+import { exportFileName, roomMarkdown, validTimeZone } from "../room-export.js";
 import {
   SETTING_LIMITS,
   checkSettingsPatch,
@@ -92,6 +93,8 @@ const DEFAULT_WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "
 /** Uploads that were never attached to a message are removed after this long. */
 const UNATTACHED_FILE_TTL_MS = 24 * 60 * 60 * 1000;
 const FILE_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+/** How long a download link works: long enough for a download manager to start, short enough not to leak. */
+const DOWNLOAD_LINK_MS = 5 * 60 * 1000;
 const HERE = dirname(fileURLToPath(import.meta.url));
 // dist/broker → dist/bundle; under `npm run dev:broker` (tsx, src/broker) the adapters are still in dist/bundle.
 const DEFAULT_BUNDLE_DIR = [resolve(HERE, "..", "bundle"), resolve(HERE, "..", "..", "dist", "bundle")].find((d) => existsSync(d)) ?? resolve(HERE, "..", "bundle");
@@ -461,11 +464,87 @@ export class Broker {
     return m && (admin ? this.adminCanSee(agent, m) : this.canSee(agent, m)) ? f : undefined;
   }
 
-  private async serveFile(f: FileInfo, res: ServerResponse) {
+  // ---------------- download links ----------------
+  // A browser or a download manager (Chrono, issue #61) cannot send the bearer token, and a blob: made by the page is
+  // not theirs to read. So the web asks for a short link that carries its own proof: an HMAC over what it opens and
+  // when it expires, with a key that lives only in this process.
+
+  private readonly linkKey = randomBytes(32);
+
+  private signLink(subject: string, exp: number): string {
+    return createHmac("sha256", this.linkKey).update(`${subject}\n${exp}`).digest("base64url");
+  }
+
+  /** A path that opens `subject` without a token for DOWNLOAD_LINK_MS. */
+  private downloadLink(path: string, subject: string, params: Record<string, string> = {}): { url: string; expires: string } {
+    const exp = this.now() + DOWNLOAD_LINK_MS;
+    const q = new URLSearchParams({ ...params, exp: String(exp), sig: this.signLink(subject, exp) });
+    return { url: `${path}?${q}`, expires: new Date(exp).toISOString() };
+  }
+
+  /** Whether the link's signature covers `subject` and it has not expired. */
+  private linkValid(url: URL, subject: string): boolean {
+    const exp = Number(url.searchParams.get("exp"));
+    const sig = Buffer.from(url.searchParams.get("sig") ?? "");
+    if (!Number.isSafeInteger(exp) || exp < this.now()) return false;
+    const want = Buffer.from(this.signLink(subject, exp));
+    return sig.length === want.length && timingSafeEqual(sig, want);
+  }
+
+  private fileLink(f: FileInfo) {
+    return this.downloadLink(`/dl/files/${encodeURIComponent(f.id)}`, `file:${f.id}`);
+  }
+
+  private exportLink(room: string, tz: string | null) {
+    const zone = tz && validTimeZone(tz) ? tz : "UTC";
+    return this.downloadLink(`/dl/rooms/${encodeURIComponent(room)}`, `room:${room}:${zone}`, { tz: zone });
+  }
+
+  /** GET /dl/files/<id> and /dl/rooms/<room>: what a download link opens, always as a file to save. */
+  private async onDownload(url: URL, res: ServerResponse, reply: (status: number, body: unknown) => void) {
+    const file = url.pathname.match(/^\/dl\/files\/([^/]+)$/);
+    const room = url.pathname.match(/^\/dl\/rooms\/([^/]+)$/);
+    let name: string;
+    try {
+      name = decodeURIComponent((file ?? room)?.[1] ?? "");
+    } catch {
+      return reply(404, { error: "not found" });
+    }
+    if (file) {
+      if (!this.linkValid(url, `file:${name}`)) return reply(403, { error: "the download link is wrong or has expired" });
+      const f = FILE_ID_RE.test(name) ? this.store.file(name) : undefined;
+      if (!f) return reply(404, { error: "unknown file" });
+      return await this.serveFile(f, res, true);
+    }
+    if (room) {
+      const tz = url.searchParams.get("tz") ?? "";
+      if (!this.linkValid(url, `room:${name}:${tz}`)) return reply(403, { error: "the download link is wrong or has expired" });
+      if (!this.store.roomExists(name)) return reply(404, { error: `unknown room: ${name}` });
+      const messages: ChatMessage[] = [];
+      for (let before: number | undefined; ; ) {
+        const page = this.store.allMessages({ room: name, before, limit: 500 });
+        messages.unshift(...page);
+        if (page.length < 500) break;
+        before = page[0].id;
+      }
+      const now = new Date(this.now());
+      const text = roomMarkdown(name, messages, this.store.brief(name), now, tz);
+      res.writeHead(200, {
+        "content-type": "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(exportFileName(name, now, tz))}`,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      return res.end(text);
+    }
+    return reply(404, { error: "not found" });
+  }
+
+  private async serveFile(f: FileInfo, res: ServerResponse, download = false) {
     const path = join(this.filesDir, f.id);
     const st = await stat(path).catch(() => undefined);
     if (!st) throw new BrokerError("file not found", 404);
-    const inline = INLINE_IMAGE_TYPES.includes(f.mime);
+    const inline = !download && INLINE_IMAGE_TYPES.includes(f.mime);
     res.writeHead(200, {
       "content-type": inline ? f.mime : "application/octet-stream",
       "content-length": st.size,
@@ -1080,6 +1159,7 @@ export class Broker {
     try {
       if (url.pathname === "/health") return reply(200, { ok: true, version: VERSION });
       if (req.method === "GET" && url.pathname.startsWith("/client/")) return await this.serveClient(url.pathname, res);
+      if (req.method === "GET" && url.pathname.startsWith("/dl/")) return await this.onDownload(url, res, reply);
       // the public guide for AI agents: what AIChat is and how to connect, no secrets (alexey, 1706)
       if (req.method === "GET" && (url.pathname === "/agents.md" || url.pathname === "/llms.txt")) {
         res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" });
@@ -1139,6 +1219,19 @@ export class Broker {
         const f = this.visibleFile(me, decodeURIComponent(fileMatch[1]));
         if (!f) return reply(404, { error: "unknown file" });
         return await this.serveFile(f, res);
+      }
+      // short links a browser or download manager can fetch without the token (issue #61)
+      const fileLinkMatch = url.pathname.match(/^\/api\/files\/([^/]+)\/link$/);
+      if (req.method === "POST" && fileLinkMatch) {
+        const f = this.visibleFile(me, decodeURIComponent(fileLinkMatch[1]));
+        if (!f) return reply(404, { error: "unknown file" });
+        return reply(200, this.fileLink(f));
+      }
+      const exportMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/export$/);
+      if (req.method === "POST" && exportMatch) {
+        const room = decodeURIComponent(exportMatch[1]);
+        if (!this.store.isMember(me, room)) throw new BrokerError(`you are not in room ${room}`, 403);
+        return reply(200, this.exportLink(room, url.searchParams.get("tz")));
       }
       if (url.pathname === "/api/games" || url.pathname.startsWith("/api/games/")) return await this.onGameRequest(req, url, me, reply);
       const briefMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/brief$/);
@@ -1749,6 +1842,18 @@ export class Broker {
       const f = this.visibleFile(me.name, decodeURIComponent(fileMatch[1]), true);
       if (!f) return reply(404, { error: "unknown file" });
       return await this.serveFile(f, res);
+    }
+    const fileLinkMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)\/link$/);
+    if (req.method === "POST" && fileLinkMatch) {
+      const f = this.visibleFile(me.name, decodeURIComponent(fileLinkMatch[1]), true);
+      if (!f) return reply(404, { error: "unknown file" });
+      return reply(200, this.fileLink(f));
+    }
+    const exportMatch = url.pathname.match(/^\/admin\/api\/rooms\/([^/]+)\/export$/);
+    if (req.method === "POST" && exportMatch) {
+      const room = decodeURIComponent(exportMatch[1]);
+      if (!this.store.roomExists(room)) throw new BrokerError(`unknown room: ${room}`, 404);
+      return reply(200, this.exportLink(room, url.searchParams.get("tz")));
     }
     return reply(404, { error: "not found" });
   }

@@ -39,21 +39,17 @@ describe("RoomBar", () => {
     expect(screen.getByRole("button", { name: /Бриф/ }).querySelector(".brief-line")).toHaveTextContent(/^Мета: валідатор$/);
   });
 
-  it("exports the room's conversation as a Markdown file", async () => {
-    const get = vi.fn(async () => ({ messages: [{ id: 7, from: "olena", room: "lobby", text: "Привіт", ts: "2026-11-20T10:00:00Z", hops: 0 }] }));
-    const created: Blob[] = [];
-    URL.createObjectURL = vi.fn((b: Blob) => (created.push(b), "blob:x"));
-    URL.revokeObjectURL = vi.fn();
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    renderWithChat(bar(brief), { api: fakeApi({ get }) });
+  it("exports the room's conversation through a download link from the broker (issue #61)", async () => {
+    const send = vi.fn(async () => ({ url: "/dl/rooms/lobby?tz=UTC&exp=1&sig=s" }));
+    const hrefs: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      hrefs.push(this.getAttribute("href")!);
+    });
+    renderWithChat(bar(brief), { api: fakeApi({ send }) });
     await userEvent.click(screen.getByRole("button", { name: "Експортувати переписку #lobby у Markdown" }));
     await waitFor(() => expect(click).toHaveBeenCalled());
-    expect(get).toHaveBeenCalledWith("/api/history?limit=500&room=lobby");
-    const text = await created[0].text();
-    expect(text).toContain("# #lobby");
-    expect(text).toContain("Мета: валідатор налаштувань.");
-    expect(text).toContain("**olena**");
-    expect(text).toContain("Привіт");
+    expect(send).toHaveBeenCalledWith("POST", expect.stringMatching(/^\/api\/rooms\/lobby\/export\?tz=/));
+    expect(hrefs).toEqual(["/dl/rooms/lobby?tz=UTC&exp=1&sig=s"]); // a plain link, no blob:
     click.mockRestore();
   });
 
