@@ -825,12 +825,11 @@ export class Store {
   }
 
   /**
-   * Reactions by others to `agent`'s messages that the agent has not been told about (after its cursor, and after
-   * `after` if that is further), oldest first, at most `limit`; `seq` is the cursor to move to once these are told.
+   * Reactions by others to `agent`'s messages that the agent has not been told about (after its cursor), oldest
+   * first, at most `limit`; `seq` is the cursor to move to once these are told.
    */
-  unseenReactions(agent: string, limit: number, after = 0): { notes: (ReactionNote & { seq: number })[] } {
-    const saved = (this.db.prepare("SELECT seq FROM reaction_cursors WHERE agent = ?").get(agent) as { seq: number } | undefined)?.seq ?? 0;
-    const cursor = Math.max(saved, after);
+  unseenReactions(agent: string, limit: number): { notes: (ReactionNote & { seq: number })[] } {
+    const cursor = (this.db.prepare("SELECT seq FROM reaction_cursors WHERE agent = ?").get(agent) as { seq: number } | undefined)?.seq ?? 0;
     const rows = this.db
       .prepare(
         `SELECT r.seq, r.message_id AS id, r.emoji, r.by, r.ts, m.room, m.recipient

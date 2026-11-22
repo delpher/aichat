@@ -192,12 +192,12 @@ export class Broker {
   /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
   private hooked = new Set<string>();
   /**
-   * Reaction notes offered to an agent and not yet confirmed: message id → the reaction cursor its `delivered`
-   * moves to. `reactionsOffered` is the highest seq offered, so the next frame carries only newer ones; both are
-   * forgotten when the agent connects again, and whatever was not confirmed is offered anew.
+   * The reaction notes offered to an agent and not yet confirmed: the message that carries them and the reaction
+   * cursor its `delivered` moves to. One at a time: adapters may confirm out of order (a steered message before a
+   * queued one, codex-alexey in AIChat-dev-team), and a later batch confirmed first must not skip an earlier one.
+   * Forgotten when the agent connects again; whatever was not confirmed is offered anew.
    */
-  private reactionOffers = new Map<string, Map<number, number>>();
-  private reactionsOffered = new Map<string, number>();
+  private reactionOffer = new Map<string, { id: number; seq: number }>();
   private activityTimer?: NodeJS.Timeout;
   private hooksTimer?: NodeJS.Timeout;
   private sent = new Map<string, number[]>();
@@ -812,10 +812,10 @@ export class Broker {
     const m = this.store.get(id);
     if (!m) throw new BrokerError(`unknown message: ${id}`, 404);
     if (!this.recipients(m).includes(agent)) throw new BrokerError(`message ${id} was not sent to you`, 403);
-    const told = this.reactionOffers.get(agent)?.get(id);
-    if (told !== undefined) {
-      this.reactionOffers.get(agent)!.delete(id);
-      this.store.markReactionsSeen(agent, told);
+    const offer = this.reactionOffer.get(agent);
+    if (offer?.id === id) {
+      this.reactionOffer.delete(agent);
+      this.store.markReactionsSeen(agent, offer.seq);
     }
     if (!this.store.markDelivered(id, agent)) return;
     const f: ServerFrame = { type: "delivered", id, to: agent };
@@ -956,14 +956,10 @@ export class Broker {
    * (decided in AIChat-dev-team 2428/2430). They ride on a message the agent gets anyway and never wake it.
    */
   private messageFrame(name: string, m: ChatMessage): ServerFrame {
-    const offered = this.reactionsOffered.get(name) ?? 0;
-    const { notes } = this.store.unseenReactions(name, MAX_REACTION_NOTES, offered);
+    if (this.reactionOffer.has(name)) return { type: "message", message: m };
+    const { notes } = this.store.unseenReactions(name, MAX_REACTION_NOTES);
     if (!notes.length) return { type: "message", message: m };
-    const seq = notes[notes.length - 1].seq;
-    this.reactionsOffered.set(name, seq);
-    let offers = this.reactionOffers.get(name);
-    if (!offers) this.reactionOffers.set(name, (offers = new Map()));
-    offers.set(m.id, seq);
+    this.reactionOffer.set(name, { id: m.id, seq: notes[notes.length - 1].seq });
     return { type: "message", message: m, reactions_since: notes.map(({ seq: _seq, ...n }) => n) };
   }
 
@@ -1077,10 +1073,7 @@ export class Broker {
         // a new adapter session is greeted, a dropped connection of the same session is not (alexey, 1703)
         const fresh = this.newSession(agent, f.session);
         // a new connection: reactions offered before and never confirmed are offered again
-        if (!this.sockets.get(name)?.size) {
-          this.reactionOffers.delete(name);
-          this.reactionsOffered.delete(name);
-        }
+        if (!this.sockets.get(name)?.size) this.reactionOffer.delete(name);
         for (const m of wake ? pending.filter((p) => !wake.skipped.has(p.id)) : pending) this.sendFrame(ws, this.messageFrame(name, m));
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
         const client = adapterInfo(f.client);

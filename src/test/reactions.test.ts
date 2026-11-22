@@ -147,3 +147,37 @@ test("reactions reach the author with its next message, and count as told only o
   bot2.close();
   await broker.close();
 });
+
+test("reactions: one unconfirmed batch at a time, so confirming out of order loses nothing", async () => {
+  const { broker, url, http } = await startBroker(agents);
+  const call = api(http);
+  const bot1 = await connect(url, "bot1");
+  const bot2 = await connect(url, "bot2");
+  const got: { m: ChatMessage; notes: ReactionNote[] }[] = [];
+  bot1.on("message", (m: ChatMessage, notes: ReactionNote[]) => got.push({ m, notes }));
+
+  const id = await bot1.send({ room: "lab", text: "plan" });
+  await call("bot2", "POST", `/api/messages/${id}/reactions`, { emoji: "👍" });
+  await bot2.send({ to: "bot1", text: "first (waits in the adapter's queue)" });
+  await call("bot2", "POST", `/api/messages/${id}/reactions`, { emoji: "🎉" });
+  await bot2.send({ to: "bot1", text: "second (steered in right away)" });
+  await settle();
+  assert.deepEqual(got[0].notes.map((n) => n.emoji), ["👍"]);
+  assert.deepEqual(got[1].notes, [], "no second batch while the first is unconfirmed");
+
+  // the second is confirmed first: nothing is told yet, and the first batch is not skipped
+  await bot1.delivered(got[1].m.id);
+  await settle();
+  bot1.close();
+  await settle();
+  const again = await connect(url, "bot1");
+  const later: ReactionNote[][] = [];
+  again.on("message", (_m: ChatMessage, notes: ReactionNote[]) => later.push(notes));
+  await bot2.send({ to: "bot1", text: "third" });
+  await settle();
+  assert.deepEqual(later[0].map((n) => n.emoji), ["👍", "🎉"]);
+
+  again.close();
+  bot2.close();
+  await broker.close();
+});
