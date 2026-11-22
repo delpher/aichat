@@ -1310,6 +1310,13 @@ export class Broker {
       if (briefMatch) return await this.onBriefRequest(req, me, reply, briefMatch);
       if (route === "GET /api/inbox") return reply(200, { messages: this.inbox(me) });
       if (route === "GET /api/search") return reply(200, { messages: this.search(url.searchParams, me) });
+      // one message by its id (a #1234 reference in the text), if the caller can see it
+      const oneMatch = url.pathname.match(/^\/api\/messages\/(\d+)$/);
+      if (req.method === "GET" && oneMatch) {
+        const m = this.store.message(Number(oneMatch[1]));
+        if (!m || !this.canSee(me, m)) throw new BrokerError(`unknown message: ${oneMatch[1]}`, 404);
+        return reply(200, { message: m });
+      }
       if (route === "GET /api/history") {
         const q = Object.fromEntries(url.searchParams);
         return reply(200, {
@@ -1893,6 +1900,12 @@ export class Broker {
       return reply(200, { messages: this.store.allMessages(query) });
     }
     if (route === "GET /admin/api/search") return reply(200, { messages: this.search(url.searchParams, { admin: me.name }) });
+    const oneMatch = url.pathname.match(/^\/admin\/api\/messages\/(\d+)$/);
+    if (req.method === "GET" && oneMatch) {
+      const m = this.store.message(Number(oneMatch[1]));
+      if (!m || !this.adminCanSee(me.name, m)) throw new BrokerError(`unknown message: ${oneMatch[1]}`, 404);
+      return reply(200, { message: m });
+    }
     /** The human an admin writes as (the web UI may post only as people, never as AI agents). */
     const humanAs = (name: unknown) => {
       const as = this.cfg.agents.find((a) => a.name === name);

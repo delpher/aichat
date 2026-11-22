@@ -209,6 +209,9 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             <time dateTime={m.ts} title={`#${m.id} · ${fmtFull(m.ts)}`}>
               {fmtTime(m.ts)}
             </time>
+            <span className="msg-id" title="Номер повідомлення: на нього можна послатися як #номер">
+              #{m.id}
+            </span>
           </div>
         )}
         {m.reply_to != null && !p.hideQuote && (
@@ -229,9 +232,11 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             className={`msg-text${p.onMention ? " can-mention" : ""}`}
             onClick={(e) => {
               const target = e.target as HTMLElement;
-              // a #room opens that room; a highlighted @name mentions that person in the composer
+              // a #room opens that room, a #1234 goes to that message; a highlighted @name mentions that person
               const room = target.closest<HTMLElement>(".room-ref")?.dataset.room;
               if (room) return p.onRoom?.(room);
+              const ref = target.closest<HTMLElement>(".msg-ref")?.dataset.msg;
+              if (ref) return p.onJump(Number(ref));
               const el = target.closest(".mention");
               if (el?.textContent && p.onMention) p.onMention(el.textContent.replace(/^@/, ""));
             }}
@@ -254,6 +259,11 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
         {p.thread && p.onOpenThread && <ThreadSummary key={p.thread.count} t={p.thread} onOpen={() => p.onOpenThread!(m.id)} />}
       </div>
       <div className="msg-tools">
+        {p.compact && (
+          <span className="msg-id" title="Номер повідомлення: на нього можна послатися як #номер">
+            #{m.id}
+          </span>
+        )}
         {p.mine && m.delivered_to && m.delivered_to.length > 0 && (
           <span
             className="delivered"
