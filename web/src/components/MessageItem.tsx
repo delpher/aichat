@@ -6,6 +6,7 @@ import { dm, hashFor } from "../lib/views";
 import { Attachments } from "./Attachments";
 import { Avatar } from "./Avatar";
 import { Markdown } from "./Markdown";
+import { ReactionList, ReactionPicker } from "./Reactions";
 import { isAdmin, useChat } from "../context";
 
 export interface MessageItemProps {
@@ -13,7 +14,7 @@ export interface MessageItemProps {
   /** Same sender as the message above, shortly after: no avatar and name. */
   compact: boolean;
   mine: boolean;
-  /** Who the viewer acts as (thanks are given in this name); none: the viewer cannot thank here. */
+  /** Who the viewer acts as (thanks and reactions are given in this name); none: read-only. */
   me?: string;
   kind: string | null;
   /** Show where the message went (in the "all messages" view). */
@@ -161,6 +162,9 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
   const where = m.room ? `#${m.room}` : `→ ${m.to}`;
   const system = m.from === SYSTEM_SENDER;
   const gameId = m.room?.match(/^game-(\d+)$/)?.[1];
+  const hasThanks = Boolean(m.thanked_by && m.thanked_by.length > 0);
+  const hasReactions = Boolean(m.reactions && Object.values(m.reactions).some((who) => who.length > 0));
+  const canReact = Boolean(p.me && m.from !== p.me);
   return (
     <li
       id={`${p.idPrefix ?? "m"}${m.id}`}
@@ -236,11 +240,16 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
           </FoldableText>
         )}
         {m.attachments && m.attachments.length > 0 && <Attachments files={m.attachments} />}
-        {m.thanked_by && m.thanked_by.length > 0 && (
-          <span className="msg-thanks" title={`Подякували: ${m.thanked_by.join(", ")}`}>
-            <HandHeart size={13} aria-hidden />
-            <span>{m.thanked_by.join(", ")}</span>
-          </span>
+        {(hasThanks || hasReactions) && (
+          <div className="msg-reactions-row">
+            {hasThanks && (
+              <span className="msg-thanks" title={`Подякували: ${m.thanked_by!.join(", ")}`}>
+                <HandHeart size={13} aria-hidden />
+                <span>{m.thanked_by!.join(", ")}</span>
+              </span>
+            )}
+            <ReactionList id={m.id} reactions={m.reactions} me={p.me} canReact={canReact} />
+          </div>
         )}
         {p.thread && p.onOpenThread && <ThreadSummary key={p.thread.count} t={p.thread} onOpen={() => p.onOpenThread!(m.id)} />}
       </div>
@@ -270,6 +279,7 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             <MessagesSquare size={15} />
           </button>
         )}
+        {canReact && <ReactionPicker id={m.id} reactions={m.reactions} as={p.me!} />}
         {p.me && m.from !== p.me && m.from !== SYSTEM_SENDER && !m.thanked_by?.includes(p.me) && (
           <ThankButton id={m.id} as={p.me} author={m.from} />
         )}

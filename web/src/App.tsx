@@ -316,6 +316,11 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     thanksSubscribers.current.add(fn);
     return () => void thanksSubscribers.current.delete(fn);
   }, []);
+  const reactionSubscribers = useRef(new Set<(id: number, reactions: Record<string, string[]>) => void>());
+  const subscribeReactions = useCallback((fn: (id: number, reactions: Record<string, string[]>) => void) => {
+    reactionSubscribers.current.add(fn);
+    return () => void reactionSubscribers.current.delete(fn);
+  }, []);
   const boardSubscribers = useRef(new Set<(e: BoardEvent) => void>());
   const subscribeBoard = useCallback((fn: (e: BoardEvent) => void) => {
     boardSubscribers.current.add(fn);
@@ -400,6 +405,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
         agents: o.agents.map((a) => (a.name === author ? { ...a, thanks: (a.thanks ?? 0) + 1 } : a)),
       }));
     },
+    onReaction: (id, reactions) => {
+      for (const fn of reactionSubscribers.current) fn(id, reactions);
+    },
     onGameDeleted: (id) => {
       for (const fn of gameDeletedSubscribers.current) fn(id);
       // The game's room went with it: drop its unread count.
@@ -445,6 +453,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     subscribeRatings,
     subscribeDelivered,
     subscribeThanks,
+    subscribeReactions,
     subscribeBoard,
     subscribeUsage,
     addLive,

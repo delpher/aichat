@@ -9,7 +9,7 @@ export const PAGE = 100;
 /** Messages of one view: the latest page, older pages on demand, and live ones as they arrive. */
 export function useMessages(view: View) {
   const chat = useChat();
-  const { api, session, subscribe, subscribeDelivered, subscribeThanks } = chat;
+  const { api, session, subscribe, subscribeDelivered, subscribeThanks, subscribeReactions } = chat;
   // callbacks that change with every overview update; read through a ref so the history isn't refetched
   const cb = useRef(chat);
   cb.current = chat;
@@ -77,14 +77,18 @@ export function useMessages(view: View) {
     const offThanks = subscribeThanks((id, thankedBy) =>
       setMessages((cur) => (cur.some((m) => m.id === id) ? cur.map((m) => (m.id === id ? { ...m, thanked_by: thankedBy } : m)) : cur)),
     );
+    const offReactions = subscribeReactions((id, reactions) =>
+      setMessages((cur) => (cur.some((m) => m.id === id) ? cur.map((m) => (m.id === id ? { ...m, reactions } : m)) : cur)),
+    );
     return () => {
       offMsg();
       offDelivered();
       offThanks();
+      offReactions();
     };
     // `key` identifies the view; the object itself changes identity on every navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, load, subscribe, subscribeDelivered, subscribeThanks]);
+  }, [key, load, subscribe, subscribeDelivered, subscribeThanks, subscribeReactions]);
 
   const loadOlder = useCallback(() => {
     if (!loading && messages.length) void load(messages[0].id);

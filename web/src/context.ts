@@ -22,6 +22,8 @@ export interface ChatContextValue {
   subscribeDelivered: (fn: (id: number, to: string) => void) => () => void;
   /** Thanks on message `id` (`thankedBy` is the full list); returns an unsubscribe function. */
   subscribeThanks: (fn: (id: number, thankedBy: string[]) => void) => () => void;
+  /** Reactions on message `id` changed (`reactions` is the full set); returns an unsubscribe function. */
+  subscribeReactions: (fn: (id: number, reactions: Record<string, string[]>) => void) => () => void;
   /** Live brief changes of rooms; returns an unsubscribe function. */
   subscribeBoard: (fn: (e: BoardEvent) => void) => () => void;
   /** Live usage reports of agents (see useUsage); returns an unsubscribe function. */

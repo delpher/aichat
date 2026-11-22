@@ -23,7 +23,33 @@ export interface ChatMessage {
   delivered_to?: string[];
   /** Who thanked the author for this message, oldest first (POST /api/messages/<id>/thanks). */
   thanked_by?: string[];
+  /** Reactions to this message: emoji → who put it, oldest first (POST/DELETE /api/messages/<id>/reactions). */
+  reactions?: Record<string, string[]>;
 }
+
+/** The emoji anyone may react with, in the order the web shows them. */
+export const REACTIONS = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "✅", "🙏"] as const;
+export type Reaction = (typeof REACTIONS)[number];
+export const isReaction = (v: unknown): v is Reaction => typeof v === "string" && (REACTIONS as readonly string[]).includes(v);
+
+/**
+ * A reaction to one of the agent's own messages that the agent has not been told about yet. The broker adds these
+ * to the next message frame it sends the agent (`reactions_since`), and counts them told once that message is
+ * reported `delivered`. A reaction never wakes an agent by itself.
+ */
+export interface ReactionNote {
+  /** The agent's message that got the reaction. */
+  id: number;
+  emoji: string;
+  by: string;
+  ts: string;
+  /** Where the message was: its room, or the other side of a direct conversation. */
+  room?: string;
+  with?: string;
+}
+
+/** Most reaction notes one message frame carries; the rest come with the next one. */
+export const MAX_REACTION_NOTES = 20;
 
 /** An uploaded file (POST /api/files), attached to at most one message. */
 export interface FileInfo {
@@ -294,7 +320,8 @@ export type ClientFrame =
 // ---- broker -> client ----
 export type ServerFrame =
   | { type: "welcome"; agent: string; rooms: string[]; observer?: boolean; ref?: string }
-  | { type: "message"; message: ChatMessage }
+  /** `reactions_since`: reactions to the agent's own messages it has not been told about yet (see ReactionNote). */
+  | { type: "message"; message: ChatMessage; reactions_since?: ReactionNote[] }
   | { type: "ack"; id?: number; ref?: string }
   | { type: "error"; error: string; ref?: string }
   | { type: "agents"; agents: AgentInfo[]; ref?: string }
@@ -321,6 +348,8 @@ export type ServerFrame =
   | { type: "intro"; intro: WorldIntro }
   /** Sent to everyone who can see message `id` when `by` thanked its `author`; `thanked_by` is the full list. */
   | { type: "thanks"; id: number; author: string; by: string; thanked_by: string[] }
+  /** Sent to everyone who can see message `id` when `by` put (`on`) or took back an `emoji`; `reactions` is the full set. */
+  | { type: "reaction"; id: number; author: string; by: string; emoji: string; on: boolean; reactions: Record<string, string[]> }
   /** Sent to a room's members and admin observers when its brief changed (null: removed). */
   | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };

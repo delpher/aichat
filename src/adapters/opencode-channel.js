@@ -11,9 +11,9 @@
 //     перепідключається з backoff; close 4003 (токен відкинуто) не повторює;
 //   * вхідні `message` кладе в ОКРЕМУ сесію (id тримає в ctx.storage, назва з
 //     конфігу), після успішної ін'єкції відповідає {"type":"delivered","id":...};
-//   * додає тули aichat_send / aichat_read / aichat_agents / aichat_join /
-//     aichat_status / aichat_note. Відправка й читання — звичайним HTTP API
-//     брокера: WS потрібен лише для push.
+//   * додає тули aichat_send / aichat_read / aichat_react / aichat_agents /
+//     aichat_join / aichat_status / aichat_note. Відправка, реакції й читання —
+//     звичайним HTTP API брокера: WS потрібен лише для push.
 //
 // Налаштування (перше знайдене переважає): options плагіна → aichat.config.json у
 // теці профілю → типові значення. Токен — з ~/.secrets/aichat-token або AICHAT_TOKEN
@@ -47,6 +47,8 @@ const DEFAULTS = {
 const PLUGIN_NAME = "opencode-channel";
 const PLUGIN_VERSION = typeof __AICHAT_VERSION__ === "string" ? __AICHAT_VERSION__ : "0.0.0-dev";
 const SESSION_KEY = "aichat/session";
+// Той самий набір, що REACTIONS у брокері (src/protocol.ts) — інше брокер відхилить.
+const REACTIONS = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "✅", "🙏"];
 
 const expandHome = (p) => (p.startsWith("~") ? path.join(homedir(), p.slice(1)) : p);
 
@@ -177,7 +179,18 @@ function safeFileName(name, fallback) {
   return base && base !== "." && base !== ".." ? base : fallback;
 }
 
-function formatIncoming(msg, me) {
+// Реакції на власні повідомлення, які брокер доклеює до наступного вхідного кадру.
+// Сама реакція агента не будить: це лише довідка в контексті вже наявного ходу.
+function formatReactionNotes(notes) {
+  if (!Array.isArray(notes) || !notes.length) return "";
+  const items = notes.slice(0, 20).map((n) => {
+    const where = n.room ? ` у #${n.room}` : n.with ? ` (DM з ${n.with})` : "";
+    return `#${n.id} ${n.emoji} ${n.by}${where}`;
+  });
+  return `Реакції на твої повідомлення відтоді: ${items.join("; ")}`;
+}
+
+function formatIncoming(msg, me, reactionNotes) {
   const lines = [];
   const where = msg.room ? `#${msg.room}` : `особисте → ${me}`;
   const meta = [`id ${msg.id}`];
@@ -192,6 +205,11 @@ function formatIncoming(msg, me) {
       "Вкладення: " +
         msg.attachments.map((a) => `${a.name} (id ${a.id}, ${a.mime}, ${a.size})`).join(", "),
     );
+  }
+  const note = formatReactionNotes(reactionNotes);
+  if (note) {
+    lines.push("");
+    lines.push(note);
   }
   lines.push("");
   lines.push(
@@ -345,7 +363,7 @@ function ackDelivery(state, id) {
   else state.undelivered?.add(id);
 }
 
-async function deliver(ctx, cfg, state, msg) {
+async function deliver(ctx, cfg, state, msg, reactionNotes) {
   if (!msg || typeof msg !== "object" || !msg.id) return;
   if (msg.from && msg.from === state.me) return; // свої ж повідомлення не ін'єктуємо
   if (state.injected?.has(msg.id)) {
@@ -353,7 +371,7 @@ async function deliver(ctx, cfg, state, msg) {
     ackDelivery(state, msg.id);
     return;
   }
-  const text = formatIncoming(msg, state.me || "тобі");
+  const text = formatIncoming(msg, state.me || "тобі", reactionNotes);
   const metadata = {
     aichat: {
       id: msg.id,
@@ -894,7 +912,7 @@ function startChannel(ctx, cfg, state) {
         }
         break;
       case "message":
-        enqueue(() => deliver(ctx, cfg, state, frame.message));
+        enqueue(() => deliver(ctx, cfg, state, frame.message, frame.reactions_since));
         break;
       case "error":
         console.warn(`[aichat] брокер: ${frame.error}`);
@@ -932,7 +950,7 @@ function registerTools(ctx, cfg, state) {
   return ctx.tool.transform((editor) => {
     editor.namespace({
       name: "aichat",
-      description: "AIChat: кімнати, особисті повідомлення, учасники, статус, нотатник",
+      description: "AIChat: кімнати, особисті повідомлення, реакції, учасники, статус, нотатник",
     });
 
     editor.add({
@@ -1007,9 +1025,59 @@ function registerTools(ctx, cfg, state) {
                   .map((a) => `${a.name ?? "файл"} (id ${a.id}, ${a.mime ?? "?"}, ${a.size ?? "?"})`)
                   .join(", ")}]`
               : "";
-          return `[${m.id}] ${m.ts ?? ""} ${where} ${m.from}${reply}: ${m.text}${files}`;
+          const reactions =
+            m.reactions && typeof m.reactions === "object"
+              ? Object.entries(m.reactions)
+                  .filter(([, who]) => Array.isArray(who) && who.length)
+                  .map(([emoji, who]) => `${emoji} ${who.join(", ")}`)
+                  .join("; ")
+              : "";
+          return `[${m.id}] ${m.ts ?? ""} ${where} ${m.from}${reply}: ${m.text}${files}${
+            reactions ? ` [реакції: ${reactions}]` : ""
+          }`;
         });
         return { content: out.join("\n") };
+      },
+    });
+
+    editor.add({
+      name: "react",
+      description:
+        "Поставити або зняти реакцію на повідомлення AIChat (не на своє). Реакція не будить інших агентів — це лише позначка.",
+      input: {
+        type: "object",
+        properties: {
+          id: { type: "number", description: "id повідомлення" },
+          emoji: { type: "string", enum: REACTIONS, description: `Одне з: ${REACTIONS.join(" ")}` },
+          remove: { type: "boolean", description: "true — зняти свою реакцію" },
+        },
+        required: ["id", "emoji"],
+        additionalProperties: false,
+      },
+      options: { namespace: "aichat", codemode: true },
+      execute: async (input, context) => {
+        const c = requireToken();
+        const id = Number(input.id);
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error("id має бути додатним цілим");
+        const emoji = String(input.emoji);
+        if (!REACTIONS.includes(emoji)) throw new Error(`emoji має бути одним із: ${REACTIONS.join(" ")}`);
+        const remove = input.remove === true;
+        const res = await apiRequest(c, `/api/messages/${id}/reactions`, {
+          method: remove ? "DELETE" : "POST",
+          body: { emoji },
+          signal: context?.signal,
+        });
+        const reactions = res?.reactions && typeof res.reactions === "object" ? res.reactions : {};
+        const summary = Object.entries(reactions)
+          .filter(([, who]) => Array.isArray(who) && who.length)
+          .map(([e, who]) => `${e} ${who.join(", ")}`)
+          .join("; ");
+        return {
+          content:
+            `${remove ? "знято" : "поставлено"} ${emoji} на #${id}` +
+            (summary ? `: ${summary}` : "") +
+            pauseNote,
+        };
       },
     });
 
