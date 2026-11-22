@@ -132,6 +132,7 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     requestTimeoutMs: raw.requestTimeoutMs ?? 20000,
     permissionDeclineTimeoutMs: raw.permissionDeclineTimeoutMs ?? 20000,
     permissionCancelGraceMs: raw.permissionCancelGraceMs ?? 5000,
+    permissionPromptTimeoutMs: raw.permissionPromptTimeoutMs ?? 30000,
     agy: raw.agy || process.env.AGY_CLI_PATH || (process.platform === "win32" ? "agy.exe" : "agy"),
   };
 
@@ -164,6 +165,7 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     "requestTimeoutMs",
     "permissionDeclineTimeoutMs",
     "permissionCancelGraceMs",
+    "permissionPromptTimeoutMs",
   ]) {
     if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) throw new Error(`Invalid ${key}`);
   }
@@ -893,6 +895,475 @@ function isExplicitRejection(error) {
   return error instanceof RpcError && [-32600, -32601, -32602, -32001, -32002].includes(error.code);
 }
 
+/** Strip ANSI CSI, OSC (including OSC 52 clipboard / OSC 8 hyperlinks), DCS/APC and control chars, keeping only \n and \t. */
+function sanitizeTerminal(value) {
+  return String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
+    .replace(/\x1b[PX^_][\s\S]*?(?:\x1b\\|\x07|$)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\x1b/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
+function compactText(value, maxLen = 200) {
+  const cleaned = sanitizeTerminal(value).replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return cleaned.slice(0, Math.max(1, maxLen - 1)) + "…";
+}
+
+function summarizeToolCall(toolCall, redact = (v) => String(v)) {
+  const name = compactText(redact(toolCall?.name || toolCall?.title || "tool"), 80) || "tool";
+  let input = toolCall?.rawInput ?? toolCall?.arguments ?? toolCall?.input;
+  if (typeof input === "string") {
+    try {
+      input = JSON.parse(input);
+    } catch {
+      const snippet = compactText(redact(input), 120);
+      return snippet ? `${name}(${snippet})` : name;
+    }
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return name;
+  }
+  if (/aichat_send$/i.test(name)) {
+    const dest = input.room ? `#${String(input.room).replace(/^#/, "")}` : input.to ? `@${input.to}` : "";
+    const text = input.text ? compactText(redact(input.text), 100) : "";
+    return `${name} ${compactText(redact(dest), 60)}${text ? `: "${text}"` : ""}`.trim();
+  }
+  if (/aichat_file_send$/i.test(name)) {
+    const file = input.path ? path.basename(String(input.path)) : "";
+    const dest = input.room ? `#${String(input.room).replace(/^#/, "")}` : input.to ? `@${input.to}` : "";
+    return `${name} ${compactText(redact(file), 60)} → ${compactText(redact(dest), 60)}`.trim();
+  }
+  if (/^(write_file|edit_file|read_file|replace_file_content|multi_replace_file_content)$/i.test(name)) {
+    const target = input.Path || input.path || input.TargetFile || input.file || "";
+    const body = input.Content ?? input.content ?? input.Replacement ?? input.ReplacementContent;
+    const size = typeof body === "string" ? ` (${body.length} chars)` : "";
+    return `${name} ${compactText(redact(target), 120)}${size}`.trim();
+  }
+  if (/^(run_command|bash|shell)$/i.test(name)) {
+    const cmd = input.CommandLine || input.command || "";
+    return `${name} ${compactText(redact(cmd), 120)}`.trim();
+  }
+  const parts = [];
+  for (const [key, val] of Object.entries(input)) {
+    if (parts.length >= 3) break;
+    if (val === undefined || val === null) continue;
+    if (/^(content|body|bytes|replacement|target|text)$/i.test(key) && typeof val === "string" && val.length > 80) {
+      parts.push(`${key}=<${val.length} chars>`);
+    } else if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+      parts.push(`${key}=${compactText(redact(val), 60)}`);
+    }
+  }
+  return parts.length ? `${name}(${parts.join(", ")})` : name;
+}
+
+function parseConsoleCommand(rawLine) {
+  const line = String(rawLine ?? "").trim();
+  if (!line.startsWith("/")) return null;
+  const match = line.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+  if (!match) return { kind: "unknown", raw: line };
+  const cmd = match[1].toLowerCase();
+  const arg = (match[2] || "").trim();
+  if (cmd === "status") return { kind: "status" };
+  if (cmd === "pause") return { kind: "pause" };
+  if (cmd === "resume") return { kind: "resume" };
+  if (cmd === "cancel") return { kind: "cancel" };
+  if (cmd === "help") return { kind: "help" };
+  if (cmd === "thoughts") {
+    if (!arg) return { kind: "thoughts", value: null };
+    if (arg.toLowerCase() === "on") return { kind: "thoughts", value: true };
+    if (arg.toLowerCase() === "off") return { kind: "thoughts", value: false };
+    return { kind: "invalid", usage: "/thoughts on|off" };
+  }
+  if (cmd === "steer") {
+    if (!arg) return { kind: "invalid", usage: "/steer <текст>" };
+    return { kind: "steer", text: arg };
+  }
+  return { kind: "unknown", raw: line };
+}
+
+class ConsoleUI {
+  constructor({
+    input = process.stdin,
+    output = process.stdout,
+    redact = (v) => String(v),
+    showThoughts = true,
+    promptPermissions = true,
+    permissionTimeoutMs = 30000,
+    isTTY,
+    onCommand = () => {},
+    onLocalPrompt = () => {},
+    onCancel = () => {},
+    onSigint = () => {},
+  } = {}) {
+    this.input = input;
+    this.output = output;
+    this.redact = (v) => String(redact(v)).replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
+    this.showThoughts = showThoughts !== false;
+    this.permissionTimeoutMs = permissionTimeoutMs;
+    this.isTTY = typeof isTTY === "boolean" ? isTTY : Boolean(input?.isTTY && output?.isTTY);
+    this.useColor = Boolean(this.isTTY && !process.env.NO_COLOR);
+    this.interactive = this.isTTY;
+    this.promptPermissionsEnabled = Boolean(this.interactive && promptPermissions !== false);
+    this.onCommand = onCommand;
+    this.onLocalPrompt = onLocalPrompt;
+    this.onCancel = onCancel;
+    this.onSigint = onSigint;
+
+    this.rl = null;
+    this.closed = false;
+    this.streamMode = null;
+    this.atLineStart = true;
+    this.toolNames = new Map();
+    this.permissionQueue = [];
+    this.activePermission = null;
+    this.permissionSeq = 0;
+  }
+
+  style(code, text) {
+    return this.useColor ? `\x1b[${code}m${text}\x1b[0m` : text;
+  }
+  dim(text) {
+    return this.style("2", text);
+  }
+  cyan(text) {
+    return this.style("36", text);
+  }
+  green(text) {
+    return this.style("32", text);
+  }
+  yellow(text) {
+    return this.style("33", text);
+  }
+  red(text) {
+    return this.style("31", text);
+  }
+  magenta(text) {
+    return this.style("35", text);
+  }
+  bold(text) {
+    return this.style("1", text);
+  }
+
+  safe(value) {
+    return sanitizeTerminal(this.redact(value));
+  }
+
+  timestamp() {
+    return new Date().toTimeString().slice(0, 8);
+  }
+
+  prepareBlock() {
+    if (this.closed) return;
+    if (!this.atLineStart) {
+      this.output.write("\n");
+      this.atLineStart = true;
+      this.streamMode = null;
+    } else if (this.rl && this.interactive) {
+      this.output.write("\r\x1b[2K");
+    }
+  }
+
+  redrawPrompt() {
+    if (this.rl && this.interactive && !this.closed) {
+      this.rl.prompt(true);
+    }
+  }
+
+  writeLine(rendered) {
+    if (this.closed) return;
+    this.prepareBlock();
+    this.output.write(rendered + "\n");
+    this.atLineStart = true;
+    this.streamMode = null;
+    this.redrawPrompt();
+  }
+
+  writeChunk(mode, rawText) {
+    if (this.closed) return;
+    if (mode === "thought" && !this.showThoughts) return;
+    const text = this.safe(rawText);
+    if (!text) return;
+    if (this.streamMode !== mode) {
+      this.prepareBlock();
+      const header = mode === "thought" ? this.dim("· thinking") : this.cyan("▸ assistant");
+      this.output.write(header + "\n");
+      this.streamMode = mode;
+      this.atLineStart = true;
+    }
+    this.output.write(mode === "thought" ? this.dim(text) : text);
+    this.atLineStart = text.endsWith("\n");
+  }
+
+  showInfo(text) {
+    this.writeLine(`${this.dim(`[${this.timestamp()}]`)} ${this.cyan("ℹ")} ${this.safe(text)}`);
+  }
+
+  showWarn(text) {
+    this.writeLine(`${this.dim(`[${this.timestamp()}]`)} ${this.yellow("!")} ${this.yellow(this.safe(text))}`);
+  }
+
+  showError(text) {
+    this.writeLine(`${this.dim(`[${this.timestamp()}]`)} ${this.red("✖")} ${this.red(this.safe(text))}`);
+  }
+
+  showBrokerMessage(message, verifiedOwner = false) {
+    const dest = message.room ? `#${this.safe(message.room)}` : `DM:${this.safe(message.from)}`;
+    const ownerBadge = verifiedOwner ? ` ${this.green("[owner]")}` : "";
+    const preview = compactText(this.redact(message.text), 240);
+    this.writeLine(
+      `${this.dim(`[${this.timestamp()}]`)} ${this.magenta(dest)} ${this.dim(`#${message.id}`)} ${this.bold(
+        this.safe(message.from)
+      )}${ownerBadge}: ${preview}`
+    );
+  }
+
+  showToolCall(update) {
+    const id = update?.toolCallId ? String(update.toolCallId) : null;
+    if (update?.name && id) {
+      if (this.toolNames.size >= 200) {
+        const oldest = this.toolNames.keys().next().value;
+        this.toolNames.delete(oldest);
+      }
+      this.toolNames.set(id, String(update.name));
+    }
+    const status = update?.status ? String(update.status) : "";
+    if (update?.sessionUpdate === "tool_call") {
+      const summary = summarizeToolCall(update, this.redact);
+      this.writeLine(`${this.dim(`[${this.timestamp()}]`)} ${this.yellow("⚙")} ${summary}`);
+      return;
+    }
+    if (update?.sessionUpdate === "tool_call_update" && ["completed", "failed", "cancelled"].includes(status)) {
+      const name = compactText(this.redact(update.name || (id && this.toolNames.get(id)) || "tool"), 80);
+      const badge =
+        status === "completed" ? this.green("ok") : status === "failed" ? this.red("failed") : this.yellow("cancelled");
+      this.writeLine(`${this.dim(`[${this.timestamp()}]`)}   ${this.dim("↳")} ${name}: ${badge}`);
+    }
+  }
+
+  showTurnSummary({ stopReason = "end_turn", usage = null, sessionUsage = null, contextPct = null, activity = "idle", local = false } = {}) {
+    const parts = [`turn${local ? " local" : ""}: ${this.safe(stopReason)}`];
+    if (usage && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)) {
+      parts.push(`+${usage.inputTokens}/${usage.outputTokens} tok`);
+    }
+    if (sessionUsage && (sessionUsage.tokensIn || sessionUsage.tokensOut)) {
+      parts.push(`session ${sessionUsage.tokensIn}/${sessionUsage.tokensOut}`);
+    }
+    if (contextPct !== null && contextPct !== undefined) {
+      parts.push(`ctx ${contextPct}%`);
+    }
+    parts.push(`activity: ${this.safe(activity)}`);
+    this.writeLine(this.dim(`[${this.timestamp()}] ── ${parts.join(" · ")}`));
+  }
+
+  showStatus(snap) {
+    const counts = Object.entries(snap.counts || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join(", ");
+    this.writeLine(
+      [
+        this.bold("── agy-channel status ──"),
+        `agent: ${this.safe(snap.agent || "-")} · connected: ${snap.connected ? "yes" : "no"} · paused: ${snap.paused ? "yes" : "no"}`,
+        `mode: ${this.safe(snap.mode || "default")} · sandbox: ${snap.sandbox ? "on" : "off"} · thoughts: ${this.showThoughts ? "on" : "off"}`,
+        `activeTurn: ${this.safe(snap.activeTurnId || "idle")} · localQueue: ${snap.localQueue || 0} · pendingPerm: ${snap.pendingPermissions || 0}`,
+        `messages: ${counts || "none"} · rooms: ${(snap.rooms || []).map((r) => `#${this.safe(r)}`).join(" ") || "-"}`,
+        `usage: ${snap.sessionUsage?.tokensIn || 0}/${snap.sessionUsage?.tokensOut || 0} tok` +
+          (snap.contextPct !== null && snap.contextPct !== undefined ? ` · ctx ${snap.contextPct}%` : ""),
+      ].join("\n")
+    );
+  }
+
+  showHelp() {
+    this.writeLine(
+      [
+        this.bold("Команди консолі:"),
+        "  /status           — стан адаптера, черга, токени й активний хід",
+        "  /pause            — призупинити обробку повідомлень брокера (WS лишається онлайн)",
+        "  /resume           — відновити обробку черги брокера",
+        "  /cancel           — скасувати поточний хід ACP і відкриті [y/n] запити",
+        "  /steer <текст>    — негайно втрутитися в поточний хід (блокується під час [y/n])",
+        "  /thoughts on|off  — увімкнути або вимкнути показ думок моделі",
+        "  /help             — ця підказка",
+        "  <текст>           — локальний промпт від власника (ставиться в чергу, якщо хід зайнятий)",
+        this.dim("Примітка: локальні промпти живуть лише в пам'яті (не пишуться в state.json і зникають після рестарту)."),
+      ].join("\n")
+    );
+  }
+
+  hasPendingPermission() {
+    return Boolean(this.activePermission || this.permissionQueue.length > 0);
+  }
+
+  requestPermission({ rpcId, toolName, summary, timeoutMs = this.permissionTimeoutMs }) {
+    if (!this.promptPermissionsEnabled || this.closed) {
+      return Promise.resolve({ decision: "deny" });
+    }
+    return new Promise((resolve) => {
+      this.permissionQueue.push({
+        token: ++this.permissionSeq,
+        rpcId,
+        toolName: compactText(this.redact(toolName), 80),
+        summary: compactText(this.redact(summary || ""), 160),
+        timeoutMs,
+        timer: null,
+        settled: false,
+        resolve,
+      });
+      if (!this.activePermission) this.promptNextPermission();
+    });
+  }
+
+  promptNextPermission() {
+    if (this.activePermission || this.closed || !this.permissionQueue.length) return;
+    const item = this.permissionQueue.shift();
+    this.activePermission = item;
+    const sec = Math.max(1, Math.round(item.timeoutMs / 1000));
+    if (this.rl) this.rl.setPrompt("[y/N] ");
+    this.writeLine(
+      `${this.dim(`[${this.timestamp()}]`)} ${this.yellow("?")} ${this.bold(`permission #${this.safe(item.rpcId)}`)} ` +
+        `${item.summary || item.toolName} — allow once? ${this.bold("[y/N]")} ${this.dim(`(${sec}s, /cancel to abort)`)}`
+    );
+    item.timer = setTimeout(() => {
+      this.resolvePermission(item.token, item.rpcId, "timeout");
+    }, item.timeoutMs);
+  }
+
+  resolvePermission(token, rpcId, decision) {
+    const item = this.activePermission;
+    if (!item || item.token !== token || item.rpcId !== rpcId || item.settled) return false;
+    item.settled = true;
+    clearTimeout(item.timer);
+    this.activePermission = null;
+    if (this.rl && !this.closed) this.rl.setPrompt("> ");
+    if (decision === "timeout") {
+      this.showWarn(`permission #${item.rpcId} (${item.toolName}): таймаут → відхилено`);
+    } else if (decision === "allow") {
+      this.showInfo(`permission #${item.rpcId} (${item.toolName}): дозволено один раз`);
+    } else if (decision === "deny") {
+      this.showInfo(`permission #${item.rpcId} (${item.toolName}): відхилено`);
+    } else if (decision === "cancelled") {
+      this.showWarn(`permission #${item.rpcId} (${item.toolName}): скасовано`);
+    }
+    item.resolve({ decision });
+    this.promptNextPermission();
+    return true;
+  }
+
+  cancelPendingPermissions(reason = "turn_ended") {
+    const active = this.activePermission;
+    const queued = this.permissionQueue.splice(0);
+    if (active && !active.settled) {
+      active.settled = true;
+      clearTimeout(active.timer);
+      this.activePermission = null;
+      if (this.rl && !this.closed) this.rl.setPrompt("> ");
+      active.resolve({ decision: reason });
+    }
+    for (const item of queued) {
+      if (!item.settled) {
+        item.settled = true;
+        clearTimeout(item.timer);
+        item.resolve({ decision: reason });
+      }
+    }
+    if ((active || queued.length) && reason === "turn_ended") {
+      this.showWarn("Хід завершився до відповіді на запит дозволу — очікування [y/n] скасовано.");
+    }
+  }
+
+  handleLine(rawLine) {
+    if (this.closed) return;
+    const line = String(rawLine ?? "").trim();
+
+    if (this.activePermission) {
+      const { token, rpcId } = this.activePermission;
+      if (line.toLowerCase() === "/cancel") {
+        this.cancelPendingPermissions("cancelled");
+        this.onCancel();
+        return;
+      }
+      if (/^(y|yes)$/i.test(line)) {
+        this.resolvePermission(token, rpcId, "allow");
+        return;
+      }
+      if (line === "" || /^(n|no)$/i.test(line)) {
+        this.resolvePermission(token, rpcId, "deny");
+        return;
+      }
+      this.showWarn("Введіть y (дозволити один раз), n (відхилити) або /cancel.");
+      return;
+    }
+
+    if (!line) {
+      this.redrawPrompt();
+      return;
+    }
+
+    if (line.startsWith("/")) {
+      const cmd = parseConsoleCommand(line);
+      if (cmd.kind === "help") {
+        this.showHelp();
+      } else if (cmd.kind === "thoughts") {
+        this.showThoughts = cmd.value === null ? !this.showThoughts : cmd.value;
+        this.showInfo(`Показ думок: ${this.showThoughts ? "on" : "off"}`);
+      } else if (cmd.kind === "cancel") {
+        this.onCancel();
+      } else if (cmd.kind === "steer") {
+        this.onLocalPrompt(cmd.text, { steer: true });
+      } else if (cmd.kind === "invalid") {
+        this.showWarn(`Використання: ${cmd.usage}`);
+      } else if (cmd.kind === "unknown") {
+        this.showWarn(`Невідома команда: ${cmd.raw}. Введіть /help.`);
+      } else {
+        this.onCommand(cmd);
+      }
+      return;
+    }
+
+    this.onLocalPrompt(line, { steer: false });
+  }
+
+  start() {
+    if (!this.interactive || this.rl || this.closed) return;
+    this.rl = createInterface({
+      input: this.input,
+      output: this.output,
+      prompt: "> ",
+      terminal: this.isTTY,
+    });
+    this.rl.on("line", (line) => this.handleLine(line));
+    this.rl.on("SIGINT", () => {
+      this.onSigint();
+    });
+    this.rl.on("close", () => {
+      this.rl = null;
+      this.cancelPendingPermissions("closed");
+    });
+    this.redrawPrompt();
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.cancelPendingPermissions("closed");
+    if (this.rl) {
+      try {
+        this.rl.close();
+      } catch {}
+      this.rl = null;
+    }
+    if (!this.atLineStart) {
+      try {
+        this.output.write("\n");
+      } catch {}
+      this.atLineStart = true;
+    }
+  }
+}
+
 /**
  * DeliveryEngine for Antigravity ACP:
  * - Tracks every in-flight `session/prompt` request in `this.inFlight`.
@@ -917,6 +1388,8 @@ class DeliveryEngine {
     onTurnStart = () => {},
     onTurnComplete = () => {},
     onUsage = () => {},
+    hasPendingPermission = () => false,
+    onLocalComplete = () => {},
   }) {
     Object.assign(this, {
       cfg,
@@ -930,6 +1403,8 @@ class DeliveryEngine {
       onTurnStart,
       onTurnComplete,
       onUsage,
+      hasPendingPermission,
+      onLocalComplete,
     });
     this.inFlight = new Map();
     this.activeKey = null;
@@ -938,10 +1413,66 @@ class DeliveryEngine {
     this.wakes = [];
     this.timer = null;
     this.stopped = false;
+    this.paused = false;
+    this.localQueue = [];
+    this.localSeq = 0;
+    this.turnGeneration = 0;
   }
 
   get active() {
     return this.activeKey;
+  }
+
+  setPaused(paused) {
+    this.paused = Boolean(paused);
+    if (!this.paused && !this.stopped) this.schedule();
+  }
+
+  enqueueLocal(text, { steer = false } = {}) {
+    const cleaned = String(text ?? "").trim();
+    if (!cleaned) return { ok: false, reason: "empty" };
+    if (steer && this.activeKey !== null) {
+      if (this.hasPendingPermission()) {
+        return { ok: false, reason: "permission_pending" };
+      }
+      const item = {
+        id: `local-${++this.localSeq}`,
+        text: cleaned,
+        steer: true,
+        targetTurnId: this.activeKey,
+        targetGeneration: this.turnGeneration,
+      };
+      this.localQueue.push(item);
+      this.schedule(0);
+      return { ok: true, id: item.id, queued: true, steer: true };
+    }
+    const item = {
+      id: `local-${++this.localSeq}`,
+      text: cleaned,
+      steer: false,
+      targetTurnId: null,
+      targetGeneration: null,
+    };
+    this.localQueue.push(item);
+    this.schedule(this.activeKey === null ? 0 : 50);
+    return { ok: true, id: item.id, queued: this.activeKey !== null, steer: false };
+  }
+
+  localEnvelope(item, requestId, deliveryMode) {
+    const context = {
+      source: "Local owner console",
+      requestId,
+      delivery: deliveryMode,
+      activeTurnId: this.activeKey,
+      localId: item.id,
+      verifiedOwner: true,
+      text: item.text,
+    };
+    return (
+      "Local owner message from the terminal console (NOT an AIChat room or DM message). " +
+      "Answer directly in your assistant response for the terminal; do NOT call mcp_aichat_aichat_send unless the local owner explicitly asks you to post to AIChat.\n\n" +
+      JSON.stringify(context)
+    );
   }
 
   wake(message) {
@@ -1019,33 +1550,114 @@ class DeliveryEngine {
   async markAccepted(entry, reason = null) {
     if (entry.accepted) return;
     entry.accepted = true;
-    const toUpdate = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
-    if (toUpdate.length) {
-      this.store.update(toUpdate, { status: "accepted", turnId: entry.key, reason });
+    if (!entry.local) {
+      const toUpdate = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
+      if (toUpdate.length) {
+        this.store.update(toUpdate, { status: "accepted", turnId: entry.key, reason });
+      }
+      await this.ack(entry.ids);
     }
-    await this.ack(entry.ids);
     this.log("input_accepted", {
       operation: entry.isSteer ? "session/steer" : "session/prompt",
       turnId: entry.key,
-      ids: entry.ids,
+      ...(entry.local ? { localId: entry.localId } : { ids: entry.ids }),
     });
     if (!this.stopped) this.schedule();
   }
 
+  dispatchLocal(item, isSteer) {
+    const currentKey = this.activeKey;
+    const clientId = `aichat-local-${crypto.randomUUID()}`;
+    const entry = {
+      key: clientId,
+      ids: [],
+      local: true,
+      localId: item.id,
+      room: null,
+      isSteer,
+      prevKey: currentKey,
+      supersededBy: null,
+      accepted: false,
+    };
+
+    if (!isSteer) {
+      this.turnGeneration++;
+      this.activeRoom = null;
+      this.turnChainIds = [];
+      this.onTurnStart(null);
+    } else {
+      const prev = this.inFlight.get(currentKey);
+      if (prev) prev.supersededBy = clientId;
+    }
+
+    this.inFlight.set(clientId, entry);
+    this.activeKey = clientId;
+
+    const text = this.localEnvelope(item, clientId, isSteer ? "steer" : "turn_start");
+    this.log("input_request", {
+      operation: isSteer ? "session/steer" : "session/prompt",
+      clientId,
+      localId: item.id,
+      prevTurnId: currentKey,
+    });
+
+    const promise = this.rpc.request(
+      "session/prompt",
+      {
+        sessionId: this.store.value.sessionId,
+        prompt: [{ type: "text", text }],
+      },
+      0
+    );
+
+    promise.then(
+      (result) => this.handlePromptResolve(entry, result),
+      (error) => this.handlePromptReject(entry, error)
+    );
+  }
+
   drain() {
     if (this.stopped) return;
-    const queued = this.store.queued(this.cfg);
-    if (!queued.length) return;
 
     const currentKey = this.activeKey;
     const isSteer = currentKey !== null;
-    let records;
 
-    if (isSteer) {
-      if (this.cfg.delivery !== "steer" || this.cfg.wake === "never") return;
-      // Avoid firing overlapping steers before the previous steer is confirmed accepted
+    if (!isSteer) {
+      if (this.localQueue.length > 0) {
+        const item = this.localQueue.shift();
+        this.dispatchLocal(item, false);
+        return;
+      }
+      if (this.paused) return;
+    } else {
+      if (this.hasPendingPermission()) return;
       const currentEntry = this.inFlight.get(currentKey);
-      if (currentEntry && currentEntry.isSteer && !currentEntry.accepted) return;
+      const unacceptedSteer = Boolean(currentEntry && currentEntry.isSteer && !currentEntry.accepted);
+      const localSteerIdx = this.localQueue.findIndex((item) => item.steer);
+      if (localSteerIdx !== -1) {
+        const item = this.localQueue[localSteerIdx];
+        if (item.targetTurnId !== currentKey || item.targetGeneration !== this.turnGeneration) {
+          item.steer = false;
+          this.log("local_steer_deferred", { localId: item.id, reason: "turn_changed" });
+          this.onLocalComplete({ id: item.id, status: "deferred", reason: "turn_changed" });
+        } else if (unacceptedSteer) {
+          return;
+        } else {
+          this.localQueue.splice(localSteerIdx, 1);
+          this.dispatchLocal(item, true);
+          return;
+        }
+      }
+      if (this.paused) return;
+      if (this.cfg.delivery !== "steer" || this.cfg.wake === "never") return;
+      if (unacceptedSteer) return;
+    }
+
+    const queued = this.store.queued(this.cfg);
+    if (!queued.length) return;
+
+    let records;
+    if (isSteer) {
       records = queued
         .filter((m) => m.message.from !== "aichat" && m.blockedTurn !== currentKey)
         .slice(0, this.cfg.maxBatch);
@@ -1079,6 +1691,7 @@ class DeliveryEngine {
     };
 
     if (!isSteer) {
+      this.turnGeneration++;
       this.activeRoom = room;
       this.turnChainIds = [...ids];
       this.wakes.push(Date.now());
@@ -1131,24 +1744,32 @@ class DeliveryEngine {
         !entry.accepted && (stopReason === "cancelled" || (entry.watchdogCancelled && !result?.usage));
 
       if (cancelledBeforeAccept) {
-        const uncertainIds = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
-        if (uncertainIds.length) {
-          this.store.update(uncertainIds, {
-            status: "uncertain",
-            processed: false,
-            turnStatus: "cancelled",
-            reason: "Prompt cancelled before acceptance; inspect history or reconcile via session/load",
-          });
-          this.log("input_cancelled_before_processed", {
-            turnId: entry.key,
-            ids: uncertainIds,
-            stopReason,
-            watchdogCancelled: !!entry.watchdogCancelled,
-          });
+        if (entry.local) {
+          this.log("local_prompt_cancelled", { turnId: entry.key, localId: entry.localId, stopReason });
+          this.onLocalComplete({ id: entry.localId, status: "cancelled" });
+        } else {
+          const uncertainIds = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
+          if (uncertainIds.length) {
+            this.store.update(uncertainIds, {
+              status: "uncertain",
+              processed: false,
+              turnStatus: "cancelled",
+              reason: "Prompt cancelled before acceptance; inspect history or reconcile via session/load",
+            });
+            this.log("input_cancelled_before_processed", {
+              turnId: entry.key,
+              ids: uncertainIds,
+              stopReason,
+              watchdogCancelled: !!entry.watchdogCancelled,
+            });
+          }
+          this.turnChainIds = this.turnChainIds.filter((id) => !entry.ids.includes(id));
         }
-        this.turnChainIds = this.turnChainIds.filter((id) => !entry.ids.includes(id));
       } else {
         await this.markAccepted(entry, null);
+        if (entry.local && stopReason === "cancelled") {
+          this.onLocalComplete({ id: entry.localId, status: "cancelled" });
+        }
       }
 
       if (result?.usage) {
@@ -1200,8 +1821,13 @@ class DeliveryEngine {
       this.turnChainIds = [];
       this.activeKey = null;
       this.activeRoom = null;
-      this.log("turn_completed", { turnId: entry.key, stopReason, ids: completedIds });
-      this.onTurnComplete(stopReason);
+      this.turnGeneration++;
+      this.log("turn_completed", {
+        turnId: entry.key,
+        stopReason,
+        ...(entry.local ? { localId: entry.localId } : { ids: completedIds }),
+      });
+      this.onTurnComplete(stopReason, { usage: result?.usage || null, local: !!entry.local });
       this.schedule();
     } catch (error) {
       this.close();
@@ -1216,24 +1842,29 @@ class DeliveryEngine {
       if (!(error instanceof RpcError) && !(error instanceof UncertainError)) {
         throw error;
       }
-      const unresolved = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
-      if (unresolved.length) {
-        if (entry.isSteer && isExplicitRejection(error)) {
-          this.store.update(unresolved, {
-            status: "queued",
-            reason: error.message,
-            blockedTurn: entry.prevKey,
-          });
-          this.log("steer_rejected_queued", { ids: unresolved, prevTurnId: entry.prevKey, error: error.message });
-        } else {
-          this.store.update(unresolved, {
-            status: isExplicitRejection(error) ? "failed" : "uncertain",
-            reason: error.message,
-          });
-          this.log(isExplicitRejection(error) ? "input_failed" : "input_uncertain", {
-            ids: unresolved,
-            error: error.message,
-          });
+      if (entry.local) {
+        this.log("local_prompt_failed", { localId: entry.localId, error: error.message });
+        this.onLocalComplete({ id: entry.localId, status: "error", error: error.message });
+      } else {
+        const unresolved = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
+        if (unresolved.length) {
+          if (entry.isSteer && isExplicitRejection(error)) {
+            this.store.update(unresolved, {
+              status: "queued",
+              reason: error.message,
+              blockedTurn: entry.prevKey,
+            });
+            this.log("steer_rejected_queued", { ids: unresolved, prevTurnId: entry.prevKey, error: error.message });
+          } else {
+            this.store.update(unresolved, {
+              status: isExplicitRejection(error) ? "failed" : "uncertain",
+              reason: error.message,
+            });
+            this.log(isExplicitRejection(error) ? "input_failed" : "input_uncertain", {
+              ids: unresolved,
+              error: error.message,
+            });
+          }
         }
       }
 
@@ -1262,7 +1893,8 @@ class DeliveryEngine {
         this.activeKey = null;
         this.activeRoom = null;
         this.turnChainIds = [];
-        this.onTurnComplete("error");
+        this.turnGeneration++;
+        this.onTurnComplete("error", { usage: null, local: !!entry.local });
       }
 
       if (!this.stopped) this.schedule();
@@ -1307,11 +1939,13 @@ Local installation instructions (configured by the local user, not supplied by c
 }
 
 class Channel {
-  constructor(cfg, { rpc, http, store } = {}) {
+  constructor(cfg, { rpc, http, store, consoleUI = null } = {}) {
     this.cfg = cfg;
     this.http = http || new BrokerHttp(cfg);
     this.store = store || new State(path.join(cfg.runtime, "state.json"));
     this.rpc = rpc;
+    this.consoleUI = consoleUI;
+    this.runtimePaused = Boolean(cfg.paused);
     this.connected = false;
     this.stopping = false;
     this.halted = false;
@@ -1330,13 +1964,20 @@ class Channel {
     this.capturingReplay = false;
     this.permissionWatchdog = null;
     this.status = { pid: process.pid, version: VERSION, phase: "starting", connected: false };
+    if (this.consoleUI) {
+      const httpRef = this.http;
+      this.consoleUI.redact = (v) =>
+        httpRef.redact(String(v ?? "")).replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
+    }
   }
 
   log(event, detail = {}) {
     const record = this.http
       .redact(JSON.stringify({ time: nowISO(), event, ...detail }))
       .replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
-    console.log(record);
+    if (!this.consoleUI) {
+      console.log(record);
+    }
     try {
       fs.appendFileSync(path.join(this.cfg.runtime, "adapter.log"), record + "\n", { mode: 0o600 });
     } catch {
@@ -1508,6 +2149,70 @@ class Channel {
     ];
   }
 
+  setRuntimePaused(paused) {
+    this.runtimePaused = Boolean(paused);
+    this.engine?.setPaused(this.runtimePaused);
+    this.log(this.runtimePaused ? "runtime_paused" : "runtime_resumed", { connected: this.connected });
+    if (!this.runtimePaused && !this.connected && !this.socket && !this.stopping && !this.halted) {
+      this.connect();
+    }
+    this.report({
+      phase: this.runtimePaused ? "paused" : this.engine?.active ? "working" : this.connected ? "waiting" : "connecting",
+    });
+    this.consoleUI?.showInfo(
+      this.runtimePaused
+        ? "Пауза: вхідні від брокера ставляться в чергу (WS лишається онлайн, локальні промпти працюють)."
+        : "Відновлено: обробка черги брокера активна."
+    );
+  }
+
+  cancelActive(source = "console") {
+    const hadPerm = Boolean(this.consoleUI?.hasPendingPermission());
+    if (hadPerm) {
+      this.consoleUI.cancelPendingPermissions("cancelled");
+    }
+    if (!this.engine || this.engine.inFlight.size === 0) {
+      if (!hadPerm) this.consoleUI?.showInfo("Активного ходу немає.");
+      return false;
+    }
+    for (const entry of this.engine.inFlight.values()) {
+      entry.watchdogCancelled = true;
+    }
+    const sessionId = this.store.value.sessionId;
+    this.log("local_cancel_sent", {
+      source,
+      activeTurnId: this.engine.active,
+      inFlight: this.engine.inFlight.size,
+    });
+    if (sessionId && this.rpc) {
+      try {
+        this.rpc.send({ method: "session/cancel", params: { sessionId } });
+      } catch (error) {
+        this.log("session_cancel_failed", { error: error.message });
+      }
+    }
+    this.consoleUI?.showWarn("Надіслано session/cancel для поточного ходу.");
+    return true;
+  }
+
+  consoleStatusSnapshot() {
+    return {
+      agent: this.me,
+      connected: this.connected,
+      paused: this.runtimePaused,
+      mode: this.cfg.mode,
+      sandbox: this.cfg.sandbox,
+      activeTurnId: this.engine?.active || null,
+      localQueue: this.engine?.localQueue.length || 0,
+      pendingPermissions:
+        (this.consoleUI?.activePermission ? 1 : 0) + (this.consoleUI?.permissionQueue.length || 0),
+      counts: this.status.counts || {},
+      rooms: this.status.rooms || this.cfg.rooms,
+      sessionUsage: this.store.value.sessionUsage || { tokensIn: 0, tokensOut: 0 },
+      contextPct: this.contextPct,
+    };
+  }
+
   handleServerRequest(frame) {
     if (frame.method === "session/request_permission") {
       const params = frame.params || {};
@@ -1526,6 +2231,60 @@ class Channel {
       if (this.cfg.approveAichatTools && AICHAT_TOOL_ALLOWLIST.test(toolName) && allowOpt) {
         this.rpc.send({ id: frame.id, result: { outcome: { outcome: "selected", optionId: allowOpt.optionId } } });
         this.log("aichat_tool_approved", { tool: toolName, toolCallId: params.toolCall?.toolCallId });
+        return;
+      }
+
+      if (this.consoleUI?.promptPermissionsEnabled) {
+        this.activity("waiting", this.engine?.activeRoom);
+        const summary = summarizeToolCall(params.toolCall || { name: toolName }, (v) => this.http.redact(v));
+        void this.consoleUI
+          .requestPermission({
+            rpcId: frame.id,
+            toolName,
+            summary,
+            timeoutMs: this.cfg.permissionPromptTimeoutMs,
+          })
+          .then(({ decision }) => {
+            const approved = decision === "allow" && !!allowOpt;
+            try {
+              if (approved) {
+                this.rpc.send({
+                  id: frame.id,
+                  result: { outcome: { outcome: "selected", optionId: allowOpt.optionId } },
+                });
+              } else if (denyOpt) {
+                this.rpc.send({
+                  id: frame.id,
+                  result: { outcome: { outcome: "selected", optionId: denyOpt.optionId } },
+                });
+              } else {
+                this.rpc.send({ id: frame.id, result: { outcome: { outcome: "cancelled" } } });
+              }
+            } catch {}
+
+            if (approved) {
+              this.log("permission_approved_console", {
+                tool: toolName,
+                toolCallId: params.toolCall?.toolCallId,
+              });
+            } else {
+              this.log("permission_declined", {
+                tool: toolName,
+                toolCallId: params.toolCall?.toolCallId,
+                source: decision,
+                reason: `Declined in interactive console (${decision})`,
+              });
+            }
+
+            if (!this.stopping && !this.consoleUI?.hasPendingPermission()) {
+              this.activity(this.engine?.active ? "busy" : "idle", this.engine?.activeRoom);
+              this.engine?.schedule();
+            }
+
+            if (!approved && !["turn_ended", "closed"].includes(decision)) {
+              this.armPermissionWatchdog(toolName, params.toolCall?.toolCallId);
+            }
+          });
         return;
       }
 
@@ -1615,6 +2374,15 @@ class Channel {
               }
             }
             if (update?.sessionUpdate === "usage_update") this.recordContext(update);
+            if (this.consoleUI) {
+              if (update?.sessionUpdate === "agent_thought_chunk") {
+                this.consoleUI.writeChunk("thought", update.content?.text);
+              } else if (update?.sessionUpdate === "agent_message_chunk") {
+                this.consoleUI.writeChunk("message", update.content?.text);
+              } else if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
+                this.consoleUI.showToolCall(update);
+              }
+            }
             if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
               if (update.status === "in_progress") {
                 this.activity("busy", this.engine?.activeRoom);
@@ -1762,27 +2530,79 @@ class Channel {
         this.log(event, detail);
         this.report(event === "input_capacity_failed" ? { lastInputFailure: detail } : {});
       },
+      hasPendingPermission: () => Boolean(this.consoleUI?.hasPendingPermission()),
+      onLocalComplete: (info) => {
+        if (!this.consoleUI) return;
+        if (info.status === "cancelled") {
+          this.consoleUI.showWarn(`Локальний промпт ${info.id} скасовано.`);
+        } else if (info.status === "error") {
+          this.consoleUI.showError(`Локальний промпт ${info.id} завершився помилкою: ${info.error || "error"}`);
+        } else if (info.status === "deferred") {
+          this.consoleUI.showWarn(`Локальний /steer ${info.id} переведено в чергу (хід уже змінився).`);
+        }
+      },
       onTurnStart: (room) => {
         this.clearPermissionWatchdog();
         this.activity("busy", room);
         this.report({ phase: "working" });
       },
-      onTurnComplete: () => {
+      onTurnComplete: (stopReason, meta = {}) => {
         this.clearPermissionWatchdog();
+        this.consoleUI?.cancelPendingPermissions("turn_ended");
         this.activity("idle");
-        this.report({ phase: this.cfg.paused ? "paused" : "waiting" });
+        this.report({ phase: this.runtimePaused ? "paused" : "waiting" });
+        this.consoleUI?.showTurnSummary({
+          stopReason,
+          usage: meta.usage || null,
+          sessionUsage: this.store.value.sessionUsage || null,
+          contextPct: this.contextPct,
+          activity: "idle",
+          local: !!meta.local,
+        });
       },
       onUsage: (usage) => this.recordTurnUsage(usage),
     });
 
+    if (this.consoleUI) {
+      this.consoleUI.onCommand = (cmd) => {
+        if (cmd.kind === "status") this.consoleUI.showStatus(this.consoleStatusSnapshot());
+        else if (cmd.kind === "pause") this.setRuntimePaused(true);
+        else if (cmd.kind === "resume") this.setRuntimePaused(false);
+      };
+      this.consoleUI.onLocalPrompt = (text, opts) => {
+        const res = this.engine.enqueueLocal(text, opts);
+        if (!res.ok) {
+          if (res.reason === "permission_pending") {
+            this.consoleUI.showWarn("Не можна виконати /steer, поки очікується відповідь [y/n]. Спершу підтвердіть/відхиліть або виконайте /cancel.");
+          }
+          return;
+        }
+        if (res.steer) {
+          this.consoleUI.showInfo(`Локальний steer ${res.id} заплановано для поточного ходу.`);
+        } else if (res.queued) {
+          this.consoleUI.showInfo(`Локальний промпт ${res.id} додано в чергу (після поточного ходу; /cancel щоб перервати).`);
+        }
+      };
+      this.consoleUI.onCancel = () => {
+        this.cancelActive("console");
+      };
+    }
+
     this.report({
       agent: this.me,
       model: sessionInfo.models?.currentModelId || this.cfg.model || null,
-      phase: probe ? "probe" : this.cfg.paused ? "paused" : "connecting",
+      phase: probe ? "probe" : this.runtimePaused ? "paused" : "connecting",
       introVersion: intro.intro?.ts,
     });
 
     if (probe) return;
+
+    if (this.consoleUI) {
+      this.consoleUI.start();
+      this.consoleUI.showInfo(
+        `agy-channel ${VERSION} · agent=${this.me} · mode=${this.cfg.mode || "default"} · ${this.consoleUI.interactive ? "interactive TTY (/help)" : "non-TTY console"}`
+      );
+    }
 
     const stopFile = path.join(this.cfg.runtime, "stop");
     if (fs.existsSync(stopFile)) fs.unlinkSync(stopFile);
@@ -1790,7 +2610,7 @@ class Channel {
       if (fs.existsSync(stopFile)) this.stop().catch((error) => console.error(error.message));
     }, 1000);
 
-    if (!this.cfg.paused) this.connect();
+    if (!this.runtimePaused) this.connect();
     else this.log("paused", { message: "No WebSocket connection. HTTP MCP tools remain available." });
   }
 
@@ -1852,6 +2672,9 @@ class Channel {
       this.checkUpdate().catch((error) => this.log("update_check_failed", { error: error.message }));
       this.activity("idle");
     } else if (frame.type === "message") {
+      if (this.consoleUI && frame.message && frame.message.from !== this.me) {
+        this.consoleUI.showBrokerMessage(frame.message, this.humanOwners.includes(frame.message.from));
+      }
       await this.engine.receive(frame.message);
     } else if (frame.type === "rooms") {
       this.report({ rooms: frame.rooms });
@@ -1872,7 +2695,7 @@ class Channel {
   }
 
   connect() {
-    if (this.stopping || this.halted || this.cfg.paused) return;
+    if (this.stopping || this.halted || this.runtimePaused) return;
     const socket = new WebSocket(this.cfg.wsUrl);
     this.socket = socket;
     this.lastFrame = Date.now();
@@ -1978,6 +2801,7 @@ class Channel {
     }
     this.stopping = true;
     this.clearPermissionWatchdog();
+    this.consoleUI?.cancelPendingPermissions("closed");
     this.engine?.close();
     for (const timer of [this.reconnectTimer, this.activityTimer, this.usageTimer]) clearTimeout(timer);
     clearInterval(this.stopWatcher);
@@ -1990,6 +2814,7 @@ class Channel {
     this.activity("idle");
     await this.activityChain.catch(() => {});
     this.rpc?.close();
+    this.consoleUI?.close();
     this.report({
       phase: error ? "halted" : "stopped",
       ...(error ? { error: this.http.redact(error.message) } : {}),
@@ -2232,18 +3057,40 @@ async function main(args = process.argv.slice(2)) {
     throw new Error("Commands: install, run, mcp, probe, status, stop, retry, tool");
   }
 
-  const channel = new Channel(cfg);
+  let consoleUI = null;
+  if (command === "run" && (options.console === true || options.interactive === true)) {
+    if (options["permission-timeout"] !== undefined) {
+      const sec = Number(options["permission-timeout"]);
+      if (!Number.isSafeInteger(sec) || sec < 1 || sec > 600) {
+        throw new Error("Invalid --permission-timeout (expected integer seconds 1..600)");
+      }
+      cfg.permissionPromptTimeoutMs = sec * 1000;
+    }
+    consoleUI = new ConsoleUI({
+      showThoughts: options["no-thoughts"] !== true,
+      promptPermissions: options["no-prompt-permissions"] !== true,
+      permissionTimeoutMs: cfg.permissionPromptTimeoutMs,
+    });
+  }
+
+  const channel = new Channel(cfg, { consoleUI });
   const exit = async () => {
     await channel.stop();
     process.exit();
   };
+  if (consoleUI) {
+    consoleUI.onSigint = () => {
+      void exit();
+    };
+  }
   process.on("SIGINT", exit);
   process.on("SIGTERM", exit);
   try {
     await channel.start({ probe: command === "probe" });
     if (command === "probe") await channel.stop();
   } catch (error) {
-    console.error(channel.http.redact(error.message));
+    if (consoleUI) consoleUI.showError(error.message);
+    else console.error(channel.http.redact(error.message));
     await channel.stop(error);
   }
 }
@@ -2261,6 +3108,7 @@ export {
   BrokerHttp,
   CapacityError,
   Channel,
+  ConsoleUI,
   DeliveryEngine,
   RpcError,
   State,
@@ -2271,11 +3119,15 @@ export {
   agentInstructions,
   atomicJSON,
   callTool,
+  compactText,
   install,
   loadConfig,
   main,
+  parseConsoleCommand,
   safeUploadPath,
+  sanitizeTerminal,
   serveMcp,
+  summarizeToolCall,
   validateMode,
   validateProfileName,
   within,

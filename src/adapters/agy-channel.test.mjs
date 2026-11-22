@@ -4,12 +4,14 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 import {
   AICHAT_TOOL_ALLOWLIST,
   BrokerHttp,
   CapacityError,
   Channel,
+  ConsoleUI,
   DeliveryEngine,
   RpcError,
   State,
@@ -18,7 +20,10 @@ import {
   install,
   loadConfig,
   main,
+  parseConsoleCommand,
   safeUploadPath,
+  sanitizeTerminal,
+  summarizeToolCall,
   validateMode,
   validateProfileName,
 } from "./agy-channel.mjs";
@@ -1214,4 +1219,467 @@ test("Watchdog cancel preserves unaccepted steer as uncertain/cancelled and reco
   assert.equal(store2.value.messages["222"].processed, false);
   assert.equal(store2.value.messages["222"].turnStatus, "cancelled");
   await ch2.stop();
+});
+
+function makeBufferStream(isTTY = true) {
+  const chunks = [];
+  const stream = new PassThrough();
+  stream.isTTY = isTTY;
+  stream.on("data", (d) => chunks.push(String(d)));
+  return {
+    stream,
+    text: () => chunks.join(""),
+  };
+}
+
+test("Console helpers: sanitizeTerminal strips ANSI/OSC 52/OSC 8, summarizeToolCall truncates & redacts, parseConsoleCommand", () => {
+  const dirty =
+    "Привіт\tсвіт\n" +
+    "\x1b[31mRED\x1b[0m " +
+    "\x1b]52;c;c2VjcmV0\x07" +
+    "\x1b]8;;https://evil.example\x1b\\click\x1b]8;;\x1b\\ " +
+    "\x00\x07\x1b[2Jok";
+  const clean = sanitizeTerminal(dirty);
+  assert.equal(clean, "Привіт\tсвіт\nRED click ok");
+  assert.ok(!clean.includes("\x1b"));
+
+  const redact = (v) => String(v).replaceAll("SECRET_TOK", "[REDACTED]");
+  const writeSummary = summarizeToolCall(
+    { name: "write_file", rawInput: { Path: "outbox/file.txt", Content: "SECRET_TOK " + "a".repeat(500) } },
+    redact
+  );
+  assert.match(writeSummary, /write_file outbox\/file\.txt \(\d+ chars\)/);
+  assert.ok(!writeSummary.includes("SECRET_TOK"));
+  assert.ok(!writeSummary.includes("aaaaaaaaaa"));
+
+  const sendSummary = summarizeToolCall(
+    { name: "mcp_aichat_aichat_send", rawInput: { room: "lobby", text: "Hello with SECRET_TOK" } },
+    redact
+  );
+  assert.match(sendSummary, /#lobby/);
+  assert.ok(!sendSummary.includes("SECRET_TOK"));
+  assert.ok(sendSummary.includes("[REDACTED]"));
+
+  assert.deepEqual(parseConsoleCommand("/status"), { kind: "status" });
+  assert.deepEqual(parseConsoleCommand("/pause"), { kind: "pause" });
+  assert.deepEqual(parseConsoleCommand("/resume"), { kind: "resume" });
+  assert.deepEqual(parseConsoleCommand("/cancel"), { kind: "cancel" });
+  assert.deepEqual(parseConsoleCommand("/thoughts off"), { kind: "thoughts", value: false });
+  assert.deepEqual(parseConsoleCommand("/thoughts on"), { kind: "thoughts", value: true });
+  assert.deepEqual(parseConsoleCommand("/steer fix now"), { kind: "steer", text: "fix now" });
+  assert.equal(parseConsoleCommand("/steer").kind, "invalid");
+  assert.equal(parseConsoleCommand("/nope").kind, "unknown");
+  assert.equal(parseConsoleCommand("plain prompt"), null);
+});
+
+test("ConsoleUI streams thoughts/messages, redacts tokens, suppresses stdout JSON logs, and disables interactivity on non-TTY (#2330)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-console-1.json"));
+  const out = makeBufferStream(false); // non-TTY
+  const input = new PassThrough();
+  input.isTTY = false;
+
+  const ui = new ConsoleUI({ input, output: out.stream, isTTY: false, showThoughts: true });
+  assert.equal(ui.interactive, false);
+  assert.equal(ui.promptPermissionsEnabled, false);
+  assert.equal(ui.useColor, false);
+
+  const rpc = new FakeRpc();
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-ui" }));
+
+  const http = new FakeHttp("super-secret-console-token");
+  const ch = new Channel(cfg, { rpc, http, store, consoleUI: ui });
+  await ch.start({ probe: true });
+
+  // Non-TTY console must fall back to immediate auto-deny on non-AIChat permission
+  rpc.emit("request", {
+    id: "p-nontty",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-ui",
+      toolCall: { name: "run_command", toolCallId: "tc-1" },
+      options: [
+        { optionId: "allow", kind: "allow_once" },
+        { optionId: "deny", kind: "reject_once" },
+      ],
+    },
+  });
+  assert.deepEqual(rpc.sent.at(-1), {
+    id: "p-nontty",
+    result: { outcome: { outcome: "selected", optionId: "deny" } },
+  });
+
+  // Stream thought, toggle thoughts off, stream message with secret + OSC injection
+  ui.writeChunk("thought", "first thought ");
+  ui.handleLine("/thoughts off");
+  ui.writeChunk("thought", "hidden thought");
+  ui.writeChunk("message", "answer with super-secret-console-token \x1b]52;c;YmFk\x07ok");
+  ui.showBrokerMessage({ id: 42, from: "alexey", room: "lobby", text: "hi super-secret-console-token" }, true);
+
+  const rendered = out.text();
+  assert.ok(rendered.includes("first thought"));
+  assert.ok(!rendered.includes("hidden thought"));
+  assert.ok(!rendered.includes("super-secret-console-token"));
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes("\x1b"));
+  assert.ok(rendered.includes("#42 alexey [owner]"));
+
+  // adapter.log still received structured JSON logs
+  const logText = fs.readFileSync(path.join(agentDir, ".aichat", "adapter.log"), "utf8");
+  assert.ok(logText.includes('"event":"permission_declined"'));
+  assert.ok(!logText.includes("super-secret-console-token"));
+
+  await ch.stop();
+});
+
+test("Console /pause keeps WS open while pausing broker drain, allows local prompts without state.json/ACK, and /resume drains (#2333)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-pause.json"));
+  const out = makeBufferStream(true);
+  const input = new PassThrough();
+  input.isTTY = true;
+
+  const ui = new ConsoleUI({ input, output: out.stream, isTTY: true });
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-pause" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+
+  const ch = new Channel({ ...cfg, paused: false }, { rpc, http: new FakeHttp(), store, consoleUI: ui });
+  await ch.start({ probe: true });
+  // Simulate an open WS connection and track close/ack calls
+  let wsClosed = false;
+  ch.connected = true;
+  ch.ready = true;
+  ch.socket = { readyState: 1, close: () => (wsClosed = true), send: () => {} };
+  const acked = [];
+  ch.acknowledge = (id) => {
+    acked.push(id);
+    return true;
+  };
+
+  // 1. /pause -> WS stays open, incoming broker message #300 is queued (not drained)
+  ui.handleLine("/pause");
+  assert.equal(wsClosed, false);
+  assert.equal(ch.runtimePaused, true);
+  await ch.engine.receive({ id: 300, from: "alexey", room: "lobby", text: "broker while paused" });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(defs.length, 0);
+  assert.equal(store.value.messages["300"].status, "queued");
+
+  // 2. Local prompt runs even while paused, does NOT touch state.json or call acknowledge()
+  ui.handleLine("local question from owner");
+  await waitFor(() => defs.length === 1);
+  assert.ok(rpc.requests.at(-1).params.prompt[0].text.includes('"source":"Local owner console"'));
+  assert.equal(Object.keys(store.value.messages).length, 1); // only broker #300
+  defs[0].resolve({ stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } });
+  await waitFor(() => ch.engine.active === null);
+  assert.deepEqual(acked, []);
+
+  // 3. /resume -> drains queued broker message #300 automatically
+  ui.handleLine("/resume");
+  await waitFor(() => defs.length === 2);
+  defs[1].resolve({ stopReason: "end_turn" });
+  await waitFor(() => store.value.messages["300"].processed === true);
+  assert.deepEqual(acked, [300]);
+
+  await ch.stop();
+});
+
+test("Local prompt during unaccepted broker steer queues cleanly; /steer verifies activeTurnId & turnGeneration (#2336/#2338)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-local-steer.json"));
+  store.patch({ sessionId: "sess-lsteer" });
+
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+
+  const localEvents = [];
+  const engine = new DeliveryEngine({
+    cfg,
+    store,
+    rpc,
+    owners: ["alexey"],
+    agent: "antigravity-alexey",
+    acknowledge: () => true,
+    onLocalComplete: (e) => localEvents.push(e),
+  });
+
+  // 1. Broker turn #1 (#310) accepted, then broker steer #2 (#311) in-flight & unaccepted
+  await engine.receive({ id: 310, from: "alexey", room: "lobby", text: "turn 1" });
+  await waitFor(() => defs.length === 1);
+  await engine.notification({
+    method: "session/update",
+    params: { sessionId: "sess-lsteer", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "t1" } } },
+  });
+  await engine.receive({ id: 311, from: "alexey", room: "lobby", text: "broker steer 2" });
+  await waitFor(() => defs.length === 2);
+
+  // 2. Plain local prompt while broker steer #2 is unaccepted -> stays queued until turn completes
+  const rPlain = engine.enqueueLocal("local queued prompt", { steer: false });
+  assert.equal(rPlain.ok, true);
+  assert.equal(rPlain.queued, true);
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(defs.length, 2);
+
+  // 3. Explicit /steer while broker steer #2 is unaccepted -> waits for #2 acceptance, then steers!
+  const rSteer = engine.enqueueLocal("urgent local steer", { steer: true });
+  assert.equal(rSteer.ok, true);
+  assert.equal(rSteer.steer, true);
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(defs.length, 2); // still waiting for #2 to be accepted!
+
+  // #1 hands off, #2 gets post-handoff update -> markAccepted triggers drain -> local /steer dispatches as #3!
+  defs[0].resolve({ stopReason: "end_turn" });
+  await new Promise((r) => setTimeout(r, 40));
+  await engine.notification({
+    method: "session/update",
+    params: { sessionId: "sess-lsteer", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "t2" } } },
+  });
+  await waitFor(() => defs.length === 3);
+  assert.ok(rpc.requests[2].params.prompt[0].text.includes("urgent local steer"));
+
+  // Finish #2 and #3 -> queued plain local prompt now runs as #4!
+  defs[1].resolve({ stopReason: "end_turn" });
+  defs[2].resolve({ stopReason: "end_turn" });
+  await waitFor(() => defs.length === 4);
+  assert.ok(rpc.requests[3].params.prompt[0].text.includes("local queued prompt"));
+
+  // 4. Stale /steer (targetGeneration mismatch) is downgraded to queued and not sent as steer on wrong turn
+  engine.localQueue.push({
+    id: "local-stale",
+    text: "stale steer",
+    steer: true,
+    targetTurnId: "old-turn-id",
+    targetGeneration: 0,
+  });
+  engine.drain();
+  assert.equal(defs.length, 4); // NOT steered into turn #4!
+  assert.equal(localEvents.some((e) => e.id === "local-stale" && e.status === "deferred"), true);
+
+  // Resolve #4 -> deferred local-stale now runs safely as turn #5
+  defs[3].resolve({ stopReason: "end_turn" });
+  await waitFor(() => defs.length === 5);
+  defs[4].resolve({ stopReason: "end_turn" });
+  await waitFor(() => engine.active === null);
+  engine.close();
+});
+
+test("Interactive [y/n] permissions: FIFO queue, RPC-id binding, allow_once only, timeout -> deny + watchdog (#2330/#2338)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const pCfg = {
+    ...cfg,
+    permissionPromptTimeoutMs: 70,
+    permissionDeclineTimeoutMs: 60,
+    permissionCancelGraceMs: 150,
+  };
+  const store = new State(path.join(agentDir, ".aichat", "state-perm-tty.json"));
+  const out = makeBufferStream(true);
+  const input = new PassThrough();
+  input.isTTY = true;
+
+  const ui = new ConsoleUI({
+    input,
+    output: out.stream,
+    isTTY: true,
+    promptPermissions: true,
+    permissionTimeoutMs: 70,
+  });
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-perm-tty" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+  const origSend = rpc.send.bind(rpc);
+  rpc.send = (frame) => {
+    origSend(frame);
+    if (frame.method === "session/cancel" && defs[0]) {
+      defs[0].resolve({ stopReason: "cancelled" });
+    }
+  };
+
+  const ch = new Channel(pCfg, { rpc, http: new FakeHttp(), store, consoleUI: ui });
+  await ch.start({ probe: true });
+  await ch.engine.receive({ id: 320, from: "alexey", room: "lobby", text: "run two tools" });
+  await waitFor(() => defs.length === 1);
+
+  // Two parallel permission requests -> strictly serialized FIFO
+  rpc.emit("request", {
+    id: "perm-1",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-perm-tty",
+      toolCall: { name: "run_command", toolCallId: "t1", rawInput: { CommandLine: "echo 1" } },
+      options: [
+        { optionId: "allow_always", kind: "allow_always" },
+        { optionId: "allow_once", kind: "allow_once" },
+        { optionId: "deny", kind: "reject_once" },
+      ],
+    },
+  });
+  rpc.emit("request", {
+    id: "perm-2",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-perm-tty",
+      toolCall: { name: "run_command", toolCallId: "t2", rawInput: { CommandLine: "echo 2" } },
+      options: [
+        { optionId: "allow_once", kind: "allow_once" },
+        { optionId: "deny", kind: "reject_once" },
+      ],
+    },
+  });
+
+  assert.equal(ui.activePermission.rpcId, "perm-1");
+  assert.equal(ui.permissionQueue.length, 1);
+
+  // Stale/wrong token or rpcId cannot resolve perm-1
+  assert.equal(ui.resolvePermission(999, "perm-1", "allow"), false);
+  assert.equal(ui.resolvePermission(ui.activePermission.token, "perm-2", "allow"), false);
+
+  // Watchdog MUST NOT be armed while waiting for human on perm-1
+  assert.equal(ch.permissionWatchdog, null);
+
+  // User approves perm-1 -> must select allow_once (never allow_always), then prompt perm-2
+  ui.handleLine("y");
+  await waitFor(() => rpc.sent.some((f) => f.id === "perm-1"));
+  assert.deepEqual(
+    rpc.sent.find((f) => f.id === "perm-1"),
+    { id: "perm-1", result: { outcome: { outcome: "selected", optionId: "allow_once" } } }
+  );
+  assert.equal(ch.permissionWatchdog, null);
+  assert.equal(ui.activePermission?.rpcId, "perm-2");
+
+  // Do not answer perm-2 -> times out -> auto-deny AND arms permissionWatchdog -> sends session/cancel!
+  await waitFor(() => rpc.sent.some((f) => f.id === "perm-2"));
+  assert.deepEqual(
+    rpc.sent.find((f) => f.id === "perm-2"),
+    { id: "perm-2", result: { outcome: { outcome: "selected", optionId: "deny" } } }
+  );
+  await waitFor(() => rpc.sent.some((f) => f.method === "session/cancel") && ch.engine.active === null);
+
+  await ch.stop();
+});
+
+test("Interactive [y/n] pending when turn ends on its own is cancelled cleanly without arming watchdog (#2336)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const pCfg = { ...cfg, permissionPromptTimeoutMs: 5000, permissionDeclineTimeoutMs: 60 };
+  const store = new State(path.join(agentDir, ".aichat", "state-perm-end.json"));
+  const out = makeBufferStream(true);
+  const input = new PassThrough();
+  input.isTTY = true;
+
+  const ui = new ConsoleUI({ input, output: out.stream, isTTY: true, promptPermissions: true, permissionTimeoutMs: 5000 });
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-perm-end" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+
+  const ch = new Channel(pCfg, { rpc, http: new FakeHttp(), store, consoleUI: ui });
+  await ch.start({ probe: true });
+  await ch.engine.receive({ id: 330, from: "alexey", room: "lobby", text: "task" });
+  await waitFor(() => defs.length === 1);
+
+  rpc.emit("request", {
+    id: "perm-end",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-perm-end",
+      toolCall: { name: "run_command", toolCallId: "t-end" },
+      options: [{ optionId: "deny", kind: "reject_once" }],
+    },
+  });
+  assert.equal(ui.hasPendingPermission(), true);
+
+  // Turn ends on its own before human responds
+  defs[0].resolve({ stopReason: "end_turn" });
+  await waitFor(() => ch.engine.active === null && !ui.hasPendingPermission());
+  await waitFor(() => rpc.sent.some((f) => f.id === "perm-end"));
+  assert.equal(ch.permissionWatchdog, null);
+  assert.equal(rpc.sent.some((f) => f.method === "session/cancel"), false);
+
+  await ch.stop();
+});
+
+test("/steer is blocked during [y/n], and /cancel during [y/n] denies permission + cancels turn safely (#2336/#2337)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const pCfg = { ...cfg, permissionPromptTimeoutMs: 5000, permissionDeclineTimeoutMs: 200 };
+  const store = new State(path.join(agentDir, ".aichat", "state-perm-cancel.json"));
+  const out = makeBufferStream(true);
+  const input = new PassThrough();
+  input.isTTY = true;
+
+  const ui = new ConsoleUI({ input, output: out.stream, isTTY: true, promptPermissions: true, permissionTimeoutMs: 5000 });
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-perm-cancel" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+  const origSend = rpc.send.bind(rpc);
+  rpc.send = (frame) => {
+    origSend(frame);
+    if (frame.method === "session/cancel" && defs[0]) {
+      defs[0].resolve({ stopReason: "cancelled" });
+    }
+  };
+
+  const ch = new Channel(pCfg, { rpc, http: new FakeHttp(), store, consoleUI: ui });
+  await ch.start({ probe: true });
+  await ch.engine.receive({ id: 340, from: "alexey", room: "lobby", text: "unaccepted turn" });
+  await waitFor(() => defs.length === 1);
+
+  rpc.emit("request", {
+    id: "perm-cancel",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-perm-cancel",
+      toolCall: { name: "run_command", toolCallId: "t-cancel" },
+      options: [{ optionId: "deny", kind: "reject_once" }],
+    },
+  });
+  assert.equal(ui.hasPendingPermission(), true);
+
+  // Direct enqueueLocal({ steer: true }) must be refused while [y/n] is pending
+  const blocked = ch.engine.enqueueLocal("try steer", { steer: true });
+  assert.deepEqual(blocked, { ok: false, reason: "permission_pending" });
+  assert.equal(defs.length, 1);
+
+  // Typing /cancel while [y/n] is open denies permission AND sends session/cancel
+  ui.handleLine("/cancel");
+  await waitFor(
+    () =>
+      !ui.hasPendingPermission() &&
+      rpc.sent.some((f) => f.id === "perm-cancel") &&
+      rpc.sent.some((f) => f.method === "session/cancel") &&
+      ch.engine.active === null
+  );
+  // Unaccepted broker #340 stays uncertain + cancelled (no false delivered!)
+  assert.equal(store.value.messages["340"].status, "uncertain");
+  assert.equal(store.value.messages["340"].turnStatus, "cancelled");
+
+  await ch.stop();
 });
