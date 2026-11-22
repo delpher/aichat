@@ -914,13 +914,14 @@ function compactText(value, maxLen = 200) {
 }
 
 function summarizeToolCall(toolCall, redact = (v) => String(v)) {
-  const name = compactText(redact(toolCall?.name || toolCall?.title || "tool"), 80) || "tool";
+  const safeRedact = (v) => redact(sanitizeTerminal(redact(v)));
+  const name = compactText(safeRedact(toolCall?.name || toolCall?.title || "tool"), 80) || "tool";
   let input = toolCall?.rawInput ?? toolCall?.arguments ?? toolCall?.input;
   if (typeof input === "string") {
     try {
       input = JSON.parse(input);
     } catch {
-      const snippet = compactText(redact(input), 120);
+      const snippet = compactText(safeRedact(input), 120);
       return snippet ? `${name}(${snippet})` : name;
     }
   }
@@ -929,23 +930,23 @@ function summarizeToolCall(toolCall, redact = (v) => String(v)) {
   }
   if (/aichat_send$/i.test(name)) {
     const dest = input.room ? `#${String(input.room).replace(/^#/, "")}` : input.to ? `@${input.to}` : "";
-    const text = input.text ? compactText(redact(input.text), 100) : "";
-    return `${name} ${compactText(redact(dest), 60)}${text ? `: "${text}"` : ""}`.trim();
+    const text = input.text ? compactText(safeRedact(input.text), 100) : "";
+    return `${name} ${compactText(safeRedact(dest), 60)}${text ? `: "${text}"` : ""}`.trim();
   }
   if (/aichat_file_send$/i.test(name)) {
     const file = input.path ? path.basename(String(input.path)) : "";
     const dest = input.room ? `#${String(input.room).replace(/^#/, "")}` : input.to ? `@${input.to}` : "";
-    return `${name} ${compactText(redact(file), 60)} → ${compactText(redact(dest), 60)}`.trim();
+    return `${name} ${compactText(safeRedact(file), 60)} → ${compactText(safeRedact(dest), 60)}`.trim();
   }
   if (/^(write_file|edit_file|read_file|replace_file_content|multi_replace_file_content)$/i.test(name)) {
     const target = input.Path || input.path || input.TargetFile || input.file || "";
     const body = input.Content ?? input.content ?? input.Replacement ?? input.ReplacementContent;
     const size = typeof body === "string" ? ` (${body.length} chars)` : "";
-    return `${name} ${compactText(redact(target), 120)}${size}`.trim();
+    return `${name} ${compactText(safeRedact(target), 120)}${size}`.trim();
   }
   if (/^(run_command|bash|shell)$/i.test(name)) {
     const cmd = input.CommandLine || input.command || "";
-    return `${name} ${compactText(redact(cmd), 120)}`.trim();
+    return `${name} ${compactText(safeRedact(cmd), 120)}`.trim();
   }
   const parts = [];
   for (const [key, val] of Object.entries(input)) {
@@ -954,7 +955,7 @@ function summarizeToolCall(toolCall, redact = (v) => String(v)) {
     if (/^(content|body|bytes|replacement|target|text)$/i.test(key) && typeof val === "string" && val.length > 80) {
       parts.push(`${key}=<${val.length} chars>`);
     } else if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
-      parts.push(`${key}=${compactText(redact(val), 60)}`);
+      parts.push(`${key}=${compactText(safeRedact(val), 60)}`);
     }
   }
   return parts.length ? `${name}(${parts.join(", ")})` : name;
@@ -1016,6 +1017,8 @@ class ConsoleUI {
     this.rl = null;
     this.closed = false;
     this.streamMode = null;
+    this.streamBuf = "";
+    this.streamHeaderPrinted = false;
     this.atLineStart = true;
     this.toolNames = new Map();
     this.permissionQueue = [];
@@ -1049,22 +1052,55 @@ class ConsoleUI {
   }
 
   safe(value) {
-    return sanitizeTerminal(this.redact(value));
+    return this.redact(sanitizeTerminal(this.redact(value)));
   }
 
   timestamp() {
     return new Date().toTimeString().slice(0, 8);
   }
 
+  emitStreamText(mode, rawSegment) {
+    if (this.closed || !rawSegment) return;
+    const text = this.safe(rawSegment);
+    if (!text) return;
+    if (!this.streamHeaderPrinted) {
+      if (this.rl && this.interactive && this.atLineStart) {
+        this.output.write("\r\x1b[2K");
+      } else if (!this.atLineStart) {
+        this.output.write("\n");
+        this.atLineStart = true;
+      }
+      const header = mode === "thought" ? this.dim("· thinking") : this.cyan("▸ assistant");
+      this.output.write(header + "\n");
+      this.streamHeaderPrinted = true;
+      this.atLineStart = true;
+    }
+    this.output.write(mode === "thought" ? this.dim(text) : text);
+    this.atLineStart = text.endsWith("\n");
+  }
+
+  flushStream() {
+    if (!this.streamBuf || !this.streamMode) {
+      this.streamBuf = "";
+      return;
+    }
+    const mode = this.streamMode;
+    const pending = this.streamBuf;
+    this.streamBuf = "";
+    this.emitStreamText(mode, pending);
+  }
+
   prepareBlock() {
     if (this.closed) return;
+    this.flushStream();
     if (!this.atLineStart) {
       this.output.write("\n");
       this.atLineStart = true;
-      this.streamMode = null;
     } else if (this.rl && this.interactive) {
       this.output.write("\r\x1b[2K");
     }
+    this.streamMode = null;
+    this.streamHeaderPrinted = false;
   }
 
   redrawPrompt() {
@@ -1079,23 +1115,44 @@ class ConsoleUI {
     this.output.write(rendered + "\n");
     this.atLineStart = true;
     this.streamMode = null;
+    this.streamHeaderPrinted = false;
     this.redrawPrompt();
   }
 
   writeChunk(mode, rawText) {
     if (this.closed) return;
     if (mode === "thought" && !this.showThoughts) return;
-    const text = this.safe(rawText);
-    if (!text) return;
-    if (this.streamMode !== mode) {
+    const chunk = String(rawText ?? "");
+    if (!chunk) return;
+    if (this.streamMode && this.streamMode !== mode) {
       this.prepareBlock();
-      const header = mode === "thought" ? this.dim("· thinking") : this.cyan("▸ assistant");
-      this.output.write(header + "\n");
-      this.streamMode = mode;
-      this.atLineStart = true;
     }
-    this.output.write(mode === "thought" ? this.dim(text) : text);
-    this.atLineStart = text.endsWith("\n");
+    this.streamMode = mode;
+    this.streamBuf += chunk;
+
+    // Flush complete lines immediately so secrets or escape sequences split across chunks
+    // are always redacted/sanitized on the full line before writing to stdout.
+    const lastNl = this.streamBuf.lastIndexOf("\n");
+    if (lastNl !== -1) {
+      const complete = this.streamBuf.slice(0, lastNl + 1);
+      this.streamBuf = this.streamBuf.slice(lastNl + 1);
+      this.emitStreamText(mode, complete);
+    }
+    // Soft cap for extremely long single lines without newlines, keeping a safe overlap tail
+    if (this.streamBuf.length > 4096) {
+      // Redact the whole buffer before cutting: a secret that crosses the cut lies within the kept tail's reach,
+      // so it is replaced here instead of being printed in two halves that join on screen.
+      this.streamBuf = this.redact(sanitizeTerminal(this.redact(this.streamBuf)));
+      const keep = 256;
+      let cut = this.streamBuf.length - keep;
+      const escIdx = this.streamBuf.lastIndexOf("\x1b", cut);
+      if (escIdx !== -1 && cut - escIdx < 128) cut = escIdx;
+      if (cut > 0) {
+        const prefix = this.streamBuf.slice(0, cut);
+        this.streamBuf = this.streamBuf.slice(cut);
+        this.emitStreamText(mode, prefix);
+      }
+    }
   }
 
   showInfo(text) {
@@ -1113,7 +1170,7 @@ class ConsoleUI {
   showBrokerMessage(message, verifiedOwner = false) {
     const dest = message.room ? `#${this.safe(message.room)}` : `DM:${this.safe(message.from)}`;
     const ownerBadge = verifiedOwner ? ` ${this.green("[owner]")}` : "";
-    const preview = compactText(this.redact(message.text), 240);
+    const preview = compactText(this.safe(message.text), 240);
     this.writeLine(
       `${this.dim(`[${this.timestamp()}]`)} ${this.magenta(dest)} ${this.dim(`#${message.id}`)} ${this.bold(
         this.safe(message.from)
@@ -1137,7 +1194,7 @@ class ConsoleUI {
       return;
     }
     if (update?.sessionUpdate === "tool_call_update" && ["completed", "failed", "cancelled"].includes(status)) {
-      const name = compactText(this.redact(update.name || (id && this.toolNames.get(id)) || "tool"), 80);
+      const name = compactText(this.safe(update.name || (id && this.toolNames.get(id)) || "tool"), 80);
       const badge =
         status === "completed" ? this.green("ok") : status === "failed" ? this.red("failed") : this.yellow("cancelled");
       this.writeLine(`${this.dim(`[${this.timestamp()}]`)}   ${this.dim("↳")} ${name}: ${badge}`);
@@ -1188,7 +1245,7 @@ class ConsoleUI {
         "  /thoughts on|off  — увімкнути або вимкнути показ думок моделі",
         "  /help             — ця підказка",
         "  <текст>           — локальний промпт від власника (ставиться в чергу, якщо хід зайнятий)",
-        this.dim("Примітка: локальні промпти живуть лише в пам'яті (не пишуться в state.json і зникають після рестарту)."),
+        this.dim("Примітка: поки відкрито [y/n], консоль очікує y/n або /cancel; локальні промпти живуть лише в пам'яті й зникають після рестарту."),
       ].join("\n")
     );
   }
@@ -1205,8 +1262,8 @@ class ConsoleUI {
       this.permissionQueue.push({
         token: ++this.permissionSeq,
         rpcId,
-        toolName: compactText(this.redact(toolName), 80),
-        summary: compactText(this.redact(summary || ""), 160),
+        toolName: compactText(this.safe(toolName), 80),
+        summary: compactText(this.safe(summary || ""), 160),
         timeoutMs,
         timer: null,
         settled: false,
@@ -1307,6 +1364,7 @@ class ConsoleUI {
       if (cmd.kind === "help") {
         this.showHelp();
       } else if (cmd.kind === "thoughts") {
+        this.flushStream();
         this.showThoughts = cmd.value === null ? !this.showThoughts : cmd.value;
         this.showInfo(`Показ думок: ${this.showThoughts ? "on" : "off"}`);
       } else if (cmd.kind === "cancel") {
@@ -1347,6 +1405,7 @@ class ConsoleUI {
 
   close() {
     if (this.closed) return;
+    this.flushStream();
     this.closed = true;
     this.cancelPendingPermissions("closed");
     if (this.rl) {
@@ -1945,6 +2004,7 @@ class Channel {
     this.store = store || new State(path.join(cfg.runtime, "state.json"));
     this.rpc = rpc;
     this.consoleUI = consoleUI;
+    this.wsAllowed = !cfg.paused;
     this.runtimePaused = Boolean(cfg.paused);
     this.connected = false;
     this.stopping = false;
@@ -2151,10 +2211,15 @@ class Channel {
 
   setRuntimePaused(paused) {
     this.runtimePaused = Boolean(paused);
+    if (!this.runtimePaused) this.wsAllowed = true;
     this.engine?.setPaused(this.runtimePaused);
     this.log(this.runtimePaused ? "runtime_paused" : "runtime_resumed", { connected: this.connected });
-    if (!this.runtimePaused && !this.connected && !this.socket && !this.stopping && !this.halted) {
-      this.connect();
+    if (!this.runtimePaused) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectDelay = 1000;
+      if (this.wsAllowed && !this.connected && !this.socket && !this.stopping && !this.halted) {
+        this.connect();
+      }
     }
     this.report({
       phase: this.runtimePaused ? "paused" : this.engine?.active ? "working" : this.connected ? "waiting" : "connecting",
@@ -2667,7 +2732,7 @@ class Channel {
           .map((m) => m.message.id)
       );
       this.log("connected", { agent: this.me, rooms: frame.rooms });
-      this.report({ phase: "waiting", rooms: frame.rooms });
+      this.report({ phase: this.runtimePaused ? "paused" : "waiting", rooms: frame.rooms });
       this.engine.schedule();
       this.checkUpdate().catch((error) => this.log("update_check_failed", { error: error.message }));
       this.activity("idle");
@@ -2695,7 +2760,7 @@ class Channel {
   }
 
   connect() {
-    if (this.stopping || this.halted || this.runtimePaused) return;
+    if (this.stopping || this.halted || !this.wsAllowed) return;
     const socket = new WebSocket(this.cfg.wsUrl);
     this.socket = socket;
     this.lastFrame = Date.now();
@@ -2747,6 +2812,7 @@ class Channel {
       clearTimeout(authTimer);
       clearInterval(this.heartbeat);
       if (this.socket !== socket) return;
+      this.socket = null;
       this.connected = false;
       this.ready = false;
       if (event.code === 4003) {

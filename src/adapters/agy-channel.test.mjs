@@ -1683,3 +1683,127 @@ test("/steer is blocked during [y/n], and /cancel during [y/n] denies permission
 
   await ch.stop();
 });
+
+test("ConsoleUI redacts secrets (split across chunks or obfuscated with ANSI) and strips split OSC sequences (#2360/#2361/#2362)", () => {
+  const token = "secret-split-token-987654321";
+  const out = makeBufferStream(false);
+  const ui = new ConsoleUI({
+    input: new PassThrough(),
+    output: out.stream,
+    isTTY: false,
+    redact: (v) => String(v).split(token).join("[REDACTED]"),
+  });
+
+  // 1. Split token across two agent_message_chunk frames
+  ui.writeChunk("message", "prefix secret-split-");
+  ui.writeChunk("message", "token-987654321 suffix\n");
+
+  // 2. Token obfuscated with embedded ANSI CSI inside the token (#2362)
+  ui.writeChunk("message", "ansi-wrapped secret-split-\x1b[31mtoken-987654321\x1b[0m end\n");
+
+  // 3. Split OSC 52 sequence AND split token across agent_thought_chunk frames (flushed on close)
+  ui.writeChunk("thought", "thinking \x1b]52;c;c2Vj");
+  ui.writeChunk("thought", "cmV0\x07 secret-split-");
+  ui.writeChunk("thought", "token-987654321 end");
+  ui.close();
+
+  const rendered = out.text();
+  assert.ok(!rendered.includes(token));
+  assert.ok(!rendered.includes("secret-split-"));
+  assert.ok(!rendered.includes("token-987654321"));
+  assert.ok(!rendered.includes("\x1b"));
+  assert.ok(rendered.includes("prefix [REDACTED] suffix"));
+  assert.ok(rendered.includes("ansi-wrapped [REDACTED] end"));
+  assert.ok(rendered.includes("thinking  [REDACTED] end"));
+
+  // 4. Broker message & tool summary also redact tokens obfuscated with ANSI (#2362)
+  const toolSum = summarizeToolCall(
+    { name: "run_command", rawInput: { CommandLine: "echo secret-split-\x1b[31mtoken-987654321" } },
+    (v) => String(v).split(token).join("[REDACTED]")
+  );
+  assert.ok(!toolSum.includes(token));
+  assert.ok(toolSum.includes("[REDACTED]"));
+
+  // 5. A line longer than the soft cap with the token straddling the cut point (no newline until the end)
+  for (let shift = 0; shift < token.length; shift += 5) {
+    const longOut = makeBufferStream(false);
+    const longUi = new ConsoleUI({
+      input: new PassThrough(),
+      output: longOut.stream,
+      isTTY: false,
+      redact: (v) => String(v).split(token).join("[REDACTED]"),
+    });
+    // the cap cuts 256 characters before the end, which puts the cut inside the token
+    longUi.writeChunk("message", "x".repeat(4000) + token + "y".repeat(256 - token.length + shift + 1));
+    longUi.writeChunk("message", " tail");
+    longUi.close();
+    assert.ok(!longOut.text().includes(token), `token leaked at shift ${shift}`);
+  }
+});
+
+test("Runtime /pause allows WebSocket reconnect after disconnect while keeping broker drain paused (#2361)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-pause-reconn.json"));
+  const out = makeBufferStream(true);
+  const ui = new ConsoleUI({ input: new PassThrough(), output: out.stream, isTTY: true });
+
+  const rpc = new FakeRpc();
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-reconn" }));
+
+  const ch = new Channel({ ...cfg, paused: false }, { rpc, http: new FakeHttp(), store, consoleUI: ui });
+  await ch.start({ probe: true });
+
+  // Fake WebSocket class to observe reconnect during /pause
+  const sockets = [];
+  const origWs = globalThis.WebSocket;
+  class FakeWS extends EventEmitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.readyState = 1;
+      this.sent = [];
+      sockets.push(this);
+    }
+    addEventListener(ev, fn) {
+      this.on(ev, fn);
+    }
+    send(data) {
+      this.sent.push(data);
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+  FakeWS.OPEN = 1;
+  globalThis.WebSocket = FakeWS;
+  t.after(() => {
+    globalThis.WebSocket = origWs;
+  });
+
+  // Initial connect (wsAllowed = true because cfg.paused = false)
+  ch.reconnectDelay = 30;
+  ch.connect();
+  assert.equal(sockets.length, 1);
+
+  // User runs /pause -> wsAllowed stays true, runtimePaused = true
+  ui.handleLine("/pause");
+  assert.equal(ch.runtimePaused, true);
+  assert.equal(ch.wsAllowed, true);
+
+  // Simulate sudden WebSocket drop while paused -> reconnect timer MUST open a second socket!
+  sockets[0].emit("close", { code: 1006 });
+  assert.equal(ch.socket, null);
+  await waitFor(() => sockets.length === 2);
+  assert.equal(ch.runtimePaused, true);
+
+  // Drop again with long backoff, then /resume -> clears backoff timer and connects immediately!
+  ch.reconnectDelay = 30000;
+  sockets[1].emit("close", { code: 1006 });
+  assert.equal(ch.socket, null);
+  ui.handleLine("/resume");
+  assert.equal(sockets.length, 3);
+  assert.equal(ch.runtimePaused, false);
+
+  await ch.stop();
+});
