@@ -50,6 +50,73 @@ function mockChannel(f, responder) {
   return { channel, calls, events };
 }
 
+test('a terminal turn is tracked and broker input steers it without opening another turn', async () => {
+  const f = fixture();
+  const x = engineFor(f, async () => ({ turnId: 'terminal-turn' }));
+  try {
+    await x.engine.notification({ method: 'turn/started', params: { threadId: 'our-thread', turn: { id: 'terminal-turn' } } });
+    await x.engine.receive(message(41));
+    await x.engine.drain();
+    assert.equal(x.calls[0].method, 'turn/steer');
+    assert.equal(x.calls[0].params.expectedTurnId, 'terminal-turn');
+    assert.deepEqual(x.acks, [41]);
+  } finally { x.engine.close(); f.close(); }
+});
+
+test('terminal approval lease prevents a decline and an expired lease restores headless handling', async () => {
+  const f = fixture();
+  const { channel } = mockChannel(f, (method) => {
+    if (method === 'thread/resume') return { thread: { id: 'our-thread' } };
+    throw new Error(`Unexpected RPC ${method}`);
+  });
+  const replies = [];
+  const activities = [];
+  channel.rpc.remote = true;
+  channel.rpc.send = (frame) => replies.push(frame);
+  channel.activity = (state) => activities.push(state);
+  const lease = path.join(f.cfg.runtime, `attach-${channel.session}.json`);
+  const approval = (id) => ({ id, method: 'item/commandExecution/requestApproval', params: { threadId: 'our-thread' } });
+  try {
+    await channel.start({ probe: true });
+    fs.writeFileSync(lease, JSON.stringify({ expires: Date.now() + 10000 }));
+    channel.rpc.emit('request', approval(1));
+    assert.deepEqual(replies, []);
+    assert.deepEqual(activities, ['waiting']);
+    channel.rpc.emit('notification', { method: 'serverRequest/resolved', params: { threadId: 'our-thread', requestId: 9 } });
+    await channel.notificationChain;
+    assert.equal(channel.pendingApprovals.size, 1);
+    channel.rpc.emit('notification', { method: 'serverRequest/resolved', params: { threadId: 'our-thread', requestId: 1 } });
+    await channel.notificationChain;
+    assert.equal(channel.pendingApprovals.size, 0);
+    assert.equal(activities.at(-1), 'idle');
+    channel.engine.active = 'active-turn';
+    channel.rpc.emit('request', approval(2));
+    fs.writeFileSync(lease, JSON.stringify({ expires: Date.now() - 1 }));
+    channel.refreshApprovals();
+    channel.refreshApprovals();
+    assert.deepEqual(replies, [{ id: 2, result: { decision: 'decline' } }]);
+    assert.equal(activities.at(-1), 'busy');
+  } finally { await channel.stop(); f.close(); }
+});
+
+test('adapter startup removes stale attach metadata and token files only', async () => {
+  const f = fixture();
+  const { channel } = mockChannel(f, () => ({ thread: { id: 'our-thread' } }));
+  const staleDirectory = path.join(f.cfg.runtime, 'appserver-private-stale');
+  const staleLease = path.join(f.cfg.runtime, 'attach-1c46f324-93bb-43cf-b09e-2d18414d7334.json');
+  const metadata = path.join(f.cfg.runtime, 'attach.json');
+  try {
+    fs.mkdirSync(staleDirectory);
+    fs.writeFileSync(path.join(staleDirectory, 'token'), 'old test key');
+    fs.writeFileSync(staleLease, '{}');
+    fs.utimesSync(staleLease, 1, 1);
+    fs.writeFileSync(metadata, '{}');
+    await channel.start({ probe: true });
+    for (const stale of [staleDirectory, staleLease, metadata]) assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(f.store.file), true);
+  } finally { await channel.stop(); f.close(); }
+});
+
 test('migration receipts suppress previously handled messages without replaying them', async () => {
   const f = fixture(); const x = engineFor(f, async () => { throw new Error('Must not start a turn'); });
   try {
