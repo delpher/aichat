@@ -1,7 +1,7 @@
 import { ArrowDown, LoaderCircle } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
-import { useChat } from "../context";
+import { isAdmin, useChat } from "../context";
 import { dayKey, fmtDay } from "../lib/format";
 import { atHopLimit, type Threads } from "../lib/threads";
 import { knownRooms } from "../lib/views";
@@ -75,7 +75,7 @@ export function MessageList({
   focusId,
   onFocusDone,
 }: Props) {
-  const { overview, session, sender, toast, openRoom } = useChat();
+  const { overview, session, sender, toast, openRoom, api, openMessage } = useChat();
   const box = useRef<HTMLDivElement>(null);
   const [flash, setFlash] = useState<number | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -144,9 +144,14 @@ export function MessageList({
       // Folded into a thread: open it there.
       const root = threads?.rootOf.get(id);
       if (root !== undefined && onOpenThread) return onOpenThread(root, id);
-      toast(`Повідомлення #${id} ще не завантажене. Прокрутіть угору й натисніть «Завантажити старіші».`);
+      // Not loaded here (older, or another conversation): ask the broker where it is and open it there; the
+      // conversation loads older pages until the message is in view.
+      api
+        .get<{ message: ChatMessage }>(`${isAdmin(session) ? "/admin" : ""}/api/messages/${id}`)
+        .then((d) => openMessage(d.message))
+        .catch(() => toast(`Повідомлення #${id} недоступне: його немає або воно в розмові, якої ви не бачите.`));
     },
-    [toast, threads, onOpenThread],
+    [toast, threads, onOpenThread, api, session, openMessage],
   );
 
   // Bring a requested message (from search) into view: load older pages until it is there.

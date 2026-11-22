@@ -608,6 +608,12 @@ export class Store {
     return r ? toMessage(r) : undefined;
   }
 
+  /** Message `id` as history shows it: with who received it, thanks and reactions. */
+  message(id: number): ChatMessage | undefined {
+    const m = this.get(id);
+    return m ? this.withDeliveries([m])[0] : undefined;
+  }
+
   maxId(): number {
     const r = this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM messages").get() as { m: number };
     return r.m;

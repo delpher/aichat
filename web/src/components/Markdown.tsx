@@ -64,9 +64,9 @@ const components: Components = {
 };
 
 /**
- * Highlights @name mentions of known participants and #room references to known rooms inside plain text.
- * A #room counts only at the start of a word (not "a#b" or "&#38;"), so issue numbers like "#12" stay text
- * unless a room is called that.
+ * Highlights @name mentions of known participants, #room references to known rooms and #1234 references to
+ * messages inside plain text (not in code or links). A # counts only at the start of a word (not "a#b" or
+ * "&#38;"); a room called "12" wins over message 12.
  */
 function refPlugin(names: string[], rooms: string[]) {
   const people = new Set(names);
@@ -87,12 +87,18 @@ function refPlugin(names: string[], rooms: string[]) {
         const v = child.value!;
         let last = 0;
         for (let m = re.exec(v); m; m = re.exec(v)) {
-          const room = m[1] === "#";
-          if (room ? !roomSet.has(m[2]) || (m.index > 0 && /[\w&#]/.test(v[m.index - 1])) : !people.has(m[2])) continue;
+          const hash = m[1] === "#";
+          // # only at the start of a word: not "a#b" or "&#38;"
+          if (hash && m.index > 0 && /[\w&#]/.test(v[m.index - 1])) continue;
+          const room = hash && roomSet.has(m[2]);
+          // a #1234 that is no room's name refers to a message
+          const msg = hash && !room && /^\d{1,9}$/.test(m[2]) && !/[\w-]/.test(v[m.index + m[0].length] ?? "");
+          if (hash ? !room && !msg : !people.has(m[2])) continue;
           if (m.index > last) out.push({ type: "text", value: v.slice(last, m.index) });
+          const props = room ? { className: "room-ref", dataRoom: m[2] } : msg ? { className: "msg-ref", dataMsg: m[2] } : { className: "mention" };
           out.push({
-            type: room ? "roomRef" : "mention",
-            data: { hName: "span", hProperties: room ? { className: "room-ref", dataRoom: m[2] } : { className: "mention" } },
+            type: room ? "roomRef" : msg ? "msgRef" : "mention",
+            data: { hName: "span", hProperties: props },
             children: [{ type: "text", value: m[0] }],
           });
           last = m.index + m[0].length;
