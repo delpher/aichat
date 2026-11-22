@@ -180,7 +180,7 @@ describe("spy game web module", () => {
     await waitFor(() => expect(spectatorGet).toHaveBeenCalledWith("/api/games/43/card"));
     expect(screen.queryByLabelText("Ваша картка")).toBeNull();
     expect(screen.getByLabelText("Підсумок партії")).toBeInTheDocument();
-    expect(screen.getByText("шпигуна викрито, і слово він не вгадав")).toBeInTheDocument();
+    expect(screen.getByText("шпигуна викрито")).toBeInTheDocument();
     expect(screen.getByText("«маяк»")).toBeInTheDocument();
     expect(screen.getByText("«острів»")).toBeInTheDocument();
     expect(screen.getAllByText("→ bot1")).toHaveLength(2);

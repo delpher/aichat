@@ -36,6 +36,11 @@ export interface GameDefinition extends GameType {
   /** When several seats may move now in any order (a secret vote): which. Without it, only turn(). */
   movers?(moves: string[]): number[];
   /**
+   * Whether `seat` may make `text` now although it is not among the movers (Spy: an accusation, or the
+   * spy's guess, at any time while clues are given). play() still checks the move.
+   */
+  anytime?(moves: string[], seat: number, text: string): boolean;
+  /**
    * For games with hidden information: the moves as everyone may see them while the game is on (the API,
    * the live feed, the board posted in the room). A finished game shows all its moves. Without it, every
    * move is public.

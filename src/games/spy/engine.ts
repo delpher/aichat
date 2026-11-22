@@ -2,30 +2,47 @@
 // full list of moves, the web UI with the public one (see publicMoves), where the word, the spy and the votes
 // still being cast are left out.
 //
-// Rules (agreed in mini-games-dev, 2519-2526): every player but one gets the same secret word; the spy gets
-// none. Two rounds: in seat order (the broker seats the players at random) each player gives one clue, a word or a short phrase, so that the others see
-// they know the word, without giving it away to the spy. Then everyone votes in secret for whom they think is
-// the spy; the votes are shown together once all are in. The one with the most votes, if no one ties with
-// them, is accused. Accused the spy: the spy has one guess at the word; right, the spy wins, wrong, the
-// others win. Accused someone else, or a tie: the spy wins. A spy who leaves loses; with fewer than three
-// players left the game ends without a winner.
+// Rules (agreed in mini-games-dev, 2519-2526; balance from the board game's rules, alexey 2819-2827): every
+// player but one gets the same secret word; the spy gets none. Two rounds: in seat order (the broker seats the
+// players at random) each player gives one clue, a word or a short phrase, so that the others see they know the
+// word, without giving it away to the spy.
+// - While clues are given, any player may once per game accuse another: the rest vote in secret, yes or no
+//   (the accuser counts as yes). Everyone but the suspect for it: the game ends; the suspect is the spy, the
+//   others win, an innocent one, the spy wins. Otherwise the clues go on.
+// - While clues are given, the spy may stop the game and name the word (privately): right, the spy wins,
+//   wrong, the others win. Not during a vote, and not once caught.
+// - After the two rounds everyone votes in secret for whom they think is the spy. Only a unanimous vote (all
+//   but the suspect) accuses: the spy, the others win; an innocent one, or no unanimous vote, the spy wins.
+// A spy who leaves loses; with fewer than three players left the game ends without a winner.
 //
 // Entries: "deal <players> <spy seat> <word>" first (the broker's; public as "deal <players>"),
-// "clue <text>", "vote <voter> <target>" (public as "vote <voter>" until all have voted), "reveal <seat>
-// spy|team" or "reveal -" (the broker's, once all have voted), "guess <word>" and "out <seat>" (resigned).
+// "clue <text>", "accuse <by> <suspect>", "ballot <voter> yes|no" (public as "ballot <voter>" until the
+// verdict), "vote <voter> <target>" (public as "vote <voter>" until the verdict), "verdict <seat> spy|team" or
+// "verdict -" (the broker's, once all have voted), "stop <spy seat> <word>" (the spy's guess) and "out <seat>"
+// (resigned). Games from before 0.18.2 also have "reveal <seat> spy|team", "reveal -" and "guess <word>": the
+// final vote then went by most votes, and an accused spy had a guess.
 
 export const ROUNDS = 2;
 export const MIN_PLAYERS = 3;
 export const MAX_PLAYERS = 8;
 export const MAX_CLUE = 40;
 
-export type Phase = "deal" | "clue" | "vote" | "guess" | "over";
-export type EndReason = "guessed" | "caught" | "wrong" | "tie" | "spy-left" | "few";
+export type Phase = "deal" | "clue" | "accuse" | "vote" | "guess" | "over";
+export type EndReason = "guessed" | "missed" | "caught" | "wrong" | "tie" | "spy-left" | "few";
 
 export interface Clue {
   seat: number;
   round: number;
   text: string;
+}
+
+export interface Accusation {
+  by: number;
+  suspect: number;
+  /** By seat: yes/no, null for a ballot not shown yet, undefined for none. The accuser's is yes. */
+  ballots: (boolean | null | undefined)[];
+  /** Once all have voted: "spy" or "team" for a unanimous accusation, "-" when it failed. */
+  verdict?: "spy" | "team" | "-";
 }
 
 export interface SpyState {
@@ -37,12 +54,14 @@ export interface SpyState {
   phase: Phase;
   /** Round of clues, 1..ROUNDS. */
   round: number;
-  /** Seat to give a clue, or the spy to guess; -1 while voting or when over. */
+  /** Seat to give a clue (also while an accusation is voted on), or the spy to guess; -1 while voting or when over. */
   turn: number;
   clues: Clue[];
-  /** By seat: the seat voted for, null for a vote not shown yet, undefined for no vote. */
+  /** Accusations made, the one being voted on last. */
+  accusations: Accusation[];
+  /** By seat: the seat voted for in the final vote, null for a vote not shown yet, undefined for no vote. */
   votes: (number | null | undefined)[];
-  /** Set once all have voted: the accused seat (null on a tie) and whether it is the spy. */
+  /** Set by the final vote: the accused seat (null when no one was) and whether it is the spy. */
   accused?: { seat: number | null; spy: boolean };
   guess?: string;
   out: boolean[];
@@ -63,10 +82,28 @@ export const norm = (s: string) =>
 
 const active = (s: SpyState) => [...Array(s.seats).keys()].filter((i) => !s.out[i]);
 
+/** The accusation being voted on, if any. */
+export const pending = (s: SpyState): Accusation | undefined => (s.phase === "accuse" ? s.accusations.at(-1) : undefined);
+
+/** Whether `seat` has made its one accusation. */
+export const hasAccused = (s: SpyState, seat: number) => s.accusations.some((a) => a.by === seat);
+
 /** Seats that may move now: the one whose turn it is, or every player still to vote. */
 export function movers(s: SpyState): number[] {
   if (s.phase === "vote") return active(s).filter((i) => s.votes[i] === undefined);
+  const a = pending(s);
+  if (a) return active(s).filter((i) => i !== a.suspect && a.ballots[i] === undefined);
   return s.phase === "clue" || s.phase === "guess" ? [s.turn] : [];
+}
+
+/** Verbs of the moves a player may make out of turn while clues are given. */
+const ACCUSE = /^(?:accuse|звинувачую)\s+(.+)$/i;
+const GUESS = /^(?:guess|вгадую)\s+(.+)$/i;
+
+/** Whether `seat` may make `text` out of turn now: an accusation or the spy's guess, while clues are given. */
+export function anytime(s: SpyState, seat: number, text: string): boolean {
+  const t = text.trim();
+  return s.phase === "clue" && seat >= 0 && seat < s.seats && !s.out[seat] && (ACCUSE.test(t) || GUESS.test(t));
 }
 
 /** The next seat still playing after `seat`, and whether that wrapped round to the start. */
@@ -91,13 +128,14 @@ function advance(s: SpyState, seat: number) {
 
 const others = (s: SpyState) => active(s).filter((i) => i !== s.spy);
 
+const SPY_WINS: EndReason[] = ["guessed", "wrong", "tie"];
+
 function end(s: SpyState, reason: EndReason) {
   s.phase = "over";
   s.turn = -1;
-  const spyWins = reason === "guessed" || reason === "wrong" || reason === "tie";
   s.end = {
     reason,
-    winners: reason === "few" ? [] : spyWins ? (s.spy === null ? [] : [s.spy]) : others(s),
+    winners: reason === "few" ? [] : SPY_WINS.includes(reason) ? (s.spy === null ? [] : [s.spy]) : others(s),
   };
 }
 
@@ -110,10 +148,17 @@ export function initial(): SpyState {
     round: 1,
     turn: -1,
     clues: [],
+    accusations: [],
     votes: [],
     out: [],
     moves: [],
   };
+}
+
+/** Back to the clues after a failed accusation (or one whose suspect left). */
+function resume(s: SpyState) {
+  s.phase = "clue";
+  if (s.out[s.turn]) advance(s, s.turn);
 }
 
 /** Applies one entry, already in canonical form (from the broker or replay). */
@@ -123,10 +168,12 @@ function apply(s: SpyState, move: string): SpyState {
   s = {
     ...s,
     clues: [...s.clues],
+    accusations: s.accusations.map((a) => ({ ...a, ballots: [...a.ballots] })),
     votes: [...s.votes],
     out: [...s.out],
     moves: [...s.moves, move],
   };
+  const a = pending(s);
   if (kind === "deal") {
     const n = Number(rest[0]);
     s.seats = n;
@@ -139,19 +186,41 @@ function apply(s: SpyState, move: string): SpyState {
   } else if (kind === "clue") {
     s.clues.push({ seat: s.turn, round: s.round, text: arg });
     advance(s, s.turn);
+  } else if (kind === "accuse") {
+    const by = Number(rest[0]);
+    const ballots: Accusation["ballots"] = Array(s.seats).fill(undefined);
+    ballots[by] = true;
+    s.accusations.push({ by, suspect: Number(rest[1]), ballots });
+    s.phase = "accuse";
+  } else if (kind === "ballot") {
+    if (a) a.ballots[Number(rest[0])] = rest[1] === undefined ? null : rest[1] === "yes";
   } else if (kind === "vote") {
     s.votes[Number(rest[0])] = rest[1] !== undefined ? Number(rest[1]) : null;
+  } else if (kind === "verdict") {
+    const seat = rest[0] === "-" ? null : Number(rest[0]);
+    const spy = rest[1] === "spy";
+    if (spy) s.spy = seat;
+    if (a) {
+      a.verdict = seat === null ? "-" : spy ? "spy" : "team";
+      if (seat === null) resume(s);
+      else end(s, spy ? "caught" : "wrong");
+    } else {
+      s.accused = { seat, spy };
+      end(s, seat === null ? "tie" : spy ? "caught" : "wrong");
+    }
+  } else if (kind === "stop") {
+    s.spy = Number(rest[0]);
+    s.guess = rest.slice(1).join(" ");
+    end(s, s.word !== null && norm(s.guess) === norm(s.word) ? "guessed" : "missed");
   } else if (kind === "reveal") {
+    // before 0.18.2: most votes accused, and an accused spy had a guess
     const seat = rest[0] === "-" ? null : Number(rest[0]);
     s.accused = { seat, spy: rest[1] === "spy" };
     if (s.accused.spy) {
       s.spy = seat;
       s.phase = "guess";
       s.turn = seat!;
-    } else {
-      // a wrong accusation or a tie ends the game; the spy is known from the full moves only
-      end(s, seat === null ? "tie" : "wrong");
-    }
+    } else end(s, seat === null ? "tie" : "wrong");
   } else if (kind === "guess") {
     s.guess = arg;
     end(s, s.word !== null && norm(arg) === norm(s.word) ? "guessed" : "caught");
@@ -161,9 +230,13 @@ function apply(s: SpyState, move: string): SpyState {
     s.votes[seat] = undefined;
     // votes for a player who left no longer count
     s.votes = s.votes.map((v) => (v === seat ? undefined : v));
+    if (a) a.ballots[seat] = undefined;
     if (seat === s.spy) end(s, "spy-left");
     else if (active(s).length < MIN_PLAYERS) end(s, "few");
-    else if (s.phase === "clue" && s.turn === seat) advance(s, seat);
+    else if (a && a.suspect === seat) {
+      a.verdict = "-";
+      resume(s);
+    } else if (s.phase === "clue" && s.turn === seat) advance(s, seat);
   } else throw new Error(`невідомий запис: ${move}`);
   return s;
 }
@@ -172,13 +245,13 @@ export function replay(moves: string[]): SpyState {
   return moves.reduce(apply, initial());
 }
 
-/** What everyone may see while the game is on: no word, no spy, and no votes until all are in. */
+/** What everyone may see while the game is on: no word, no spy, and no votes until their verdict. */
 export function publicMoves(moves: string[]): string[] {
-  const revealed = moves.some((m) => m.startsWith("reveal "));
-  return moves.map((m) => {
+  const closed = moves.reduce((last, m, i) => (/^(verdict|reveal) /.test(m) ? i : last), -1);
+  return moves.map((m, i) => {
     const p = m.split(" ");
     if (p[0] === "deal") return `deal ${p[1]}`;
-    if (p[0] === "vote" && !revealed) return `vote ${p[1]}`;
+    if ((p[0] === "vote" || p[0] === "ballot") && i > closed) return `${p[0]} ${p[1]}`;
     return m;
   });
 }
@@ -192,10 +265,38 @@ export interface Context {
   private: boolean;
 }
 
+/** The seat named by `who` (a player's name, or a number from 1). */
+function target(s: SpyState, who: string, ctx: Context): number {
+  const name = who.trim().replace(/^@/, "");
+  let t = ctx.players.findIndex((p) => p !== null && p.toLowerCase() === name.toLowerCase());
+  if (t < 0 && /^\d+$/.test(name)) t = Number(name) - 1;
+  if (t < 0 || t >= s.seats) throw new Error(`немає гравця «${name}»`);
+  if (s.out[t]) throw new Error(`${ctx.players[t] ?? seatLabel(t)} вже не грає`);
+  return t;
+}
+
+const SECRET = "голосують таємно: у вебі — кнопкою, агентам — особистим повідомленням для aichat";
+
 /** Checks `text` as the next move of `ctx.seat` and returns its entry; throws with a readable reason. */
 export function play(s: SpyState, text: string, ctx: Context): string {
   const t = text.trim();
   if (s.phase === "clue") {
+    const accuse = ACCUSE.exec(t);
+    if (accuse) {
+      if (hasAccused(s, ctx.seat)) throw new Error("звинувачувати можна лише раз за гру");
+      const suspect = target(s, accuse[1], ctx);
+      if (suspect === ctx.seat) throw new Error("себе звинувачувати не можна");
+      return `accuse ${ctx.seat} ${suspect}`;
+    }
+    const guess = GUESS.exec(t);
+    if (guess) {
+      // the same answer for everyone in the room, so that no one can prove they are not the spy
+      if (!ctx.private) throw new Error("слово шпигун називає таємно: у вебі — кнопкою, агенти — особистим повідомленням для aichat: guess <слово>");
+      if (ctx.seat !== s.spy) throw new Error("ти не шпигун: слово ти й так знаєш");
+      const word = guess[1].trim().toLowerCase();
+      if (!word || /[\r\n]/.test(word) || word.length > MAX_CLUE) throw new Error("назвіть одне слово");
+      return `stop ${ctx.seat} ${word}`;
+    }
     if (ctx.seat !== s.turn) throw new Error(`зараз підказку дає ${seatLabel(s.turn)}`);
     const clue = t.replace(/^(clue|підказка)\s*:?\s+/i, "").trim();
     if (!clue || /[\r\n]/.test(clue)) throw new Error("підказка — одне слово або коротка фраза в один рядок");
@@ -205,18 +306,23 @@ export function play(s: SpyState, text: string, ctx: Context): string {
     if (ctx.seat !== s.spy && s.word && norm(clue).includes(norm(s.word))) throw new Error("підказка не може містити саме слово");
     return `clue ${clue}`;
   }
+  const a = pending(s);
+  if (a) {
+    if (!ctx.private) throw new Error(`${SECRET}: vote так або vote ні`);
+    const m = /^(?:vote|голос)\s+(так|ні|yes|no|за|проти)$/i.exec(t);
+    if (!m) throw new Error("голос за звинувачення пишуть так: vote так або vote ні");
+    if (ctx.seat === a.suspect) throw new Error("підозрюваний не голосує");
+    if (a.ballots[ctx.seat] !== undefined) throw new Error("ви вже проголосували");
+    return `ballot ${ctx.seat} ${/^(так|yes|за)$/i.test(m[1]) ? "yes" : "no"}`;
+  }
   if (s.phase === "vote") {
-    if (!ctx.private) throw new Error("голосують таємно: у вебі — кнопкою, агентам — особистим повідомленням для aichat: vote <ім'я>");
+    if (!ctx.private) throw new Error(`${SECRET}: vote <ім'я>`);
     const m = /^(?:vote|голос)\s+(.+)$/i.exec(t);
     if (!m) throw new Error("голос пишуть так: vote <ім'я>");
-    const who = m[1].trim().replace(/^@/, "");
-    let target = ctx.players.findIndex((p) => p !== null && p.toLowerCase() === who.toLowerCase());
-    if (target < 0 && /^\d+$/.test(who)) target = Number(who) - 1;
-    if (target < 0 || target >= s.seats) throw new Error(`немає гравця «${who}»`);
-    if (s.out[target]) throw new Error(`${ctx.players[target] ?? seatLabel(target)} вже не грає`);
-    if (target === ctx.seat) throw new Error("за себе голосувати не можна");
+    const v = target(s, m[1], ctx);
+    if (v === ctx.seat) throw new Error("за себе голосувати не можна");
     if (s.votes[ctx.seat] !== undefined) throw new Error("ви вже проголосували");
-    return `vote ${ctx.seat} ${target}`;
+    return `vote ${ctx.seat} ${v}`;
   }
   if (s.phase === "guess") {
     if (ctx.seat !== s.turn) throw new Error("зараз слово вгадує шпигун");
@@ -227,7 +333,15 @@ export function play(s: SpyState, text: string, ctx: Context): string {
   throw new Error(s.phase === "over" ? "партію завершено" : "картки ще не роздано");
 }
 
-/** The broker's own entries: the deal at the start, and the reveal once all have voted. */
+const yesNo = (b: boolean | null | undefined) => (b ? "так" : "ні");
+
+/** "гравець 1 → гравець 3, …" for the final vote. */
+const voteList = (s: SpyState) => s.votes.flatMap((v, i) => (v == null ? [] : [`${seatLabel(i)} → ${seatLabel(v)}`])).join(", ");
+
+/** "гравець 1 — так, …" for an accusation. */
+const ballotList = (a: Accusation) => a.ballots.flatMap((b, i) => (b == null ? [] : [`${seatLabel(i)} — ${yesNo(b)}`])).join(", ");
+
+/** The broker's own entries: the deal at the start, and the verdict once all have voted. */
 export function auto(s: SpyState, random: () => number, seats: number, words: readonly string[]): { move: string; note: string } | null {
   const pick = (n: number) => Math.min(n - 1, Math.floor(random() * n));
   if (!s.moves.length) {
@@ -238,24 +352,28 @@ export function auto(s: SpyState, random: () => number, seats: number, words: re
       note: "Картки роздано: кожен бачить своє слово, шпигун — що він шпигун. Порядок гравців випадковий. Коло 1.",
     };
   }
-  if (s.phase === "vote" && movers(s).length === 0) {
-    const tally = new Map<number, number>();
-    for (const v of s.votes) if (v != null) tally.set(v, (tally.get(v) ?? 0) + 1);
-    const top = Math.max(0, ...tally.values());
-    const leaders = [...tally].filter(([, n]) => n === top).map(([seat]) => seat);
-    const seat = leaders.length === 1 ? leaders[0] : null;
-    const votes = s.votes.flatMap((v, i) => (v == null ? [] : [`${seatLabel(i)} → ${seatLabel(v)}`])).join(", ");
-    if (seat === null)
-      return {
-        move: "reveal -",
-        note: `Голоси: ${votes}. Нічия — нікого не викрито.`,
-      };
-    const spy = seat === s.spy;
+  if (movers(s).length) return null;
+  const a = pending(s);
+  if (a) {
+    const voters = active(s).filter((i) => i !== a.suspect);
+    const unanimous = voters.every((i) => a.ballots[i] === true);
+    const head = `Голоси за звинувачення ${seatLabel(a.suspect)}: ${ballotList(a)}.`;
+    if (!unanimous) return { move: "verdict -", note: `${head} Не одностайно — гра триває.` };
+    const spy = a.suspect === s.spy;
     return {
-      move: `reveal ${seat} ${spy ? "spy" : "team"}`,
-      note:
-        `Голоси: ${votes}. Викрито: ${seatLabel(seat)}. ` +
-        (spy ? "Це шпигун! Остання спроба: шпигун називає слово (move <слово>)." : "Це не шпигун."),
+      move: `verdict ${a.suspect} ${spy ? "spy" : "team"}`,
+      note: `${head} Одностайно! ${seatLabel(a.suspect)} — ${spy ? "шпигун." : "не шпигун."}`,
+    };
+  }
+  if (s.phase === "vote") {
+    const voters = active(s);
+    const accused = voters.find((t) => voters.every((i) => i === t || s.votes[i] === t));
+    const head = `Голоси: ${voteList(s)}.`;
+    if (accused === undefined) return { move: "verdict -", note: `${head} Одностайного рішення немає — шпигуна не викрито.` };
+    const spy = accused === s.spy;
+    return {
+      move: `verdict ${accused} ${spy ? "spy" : "team"}`,
+      note: `${head} Одностайно викрито: ${seatLabel(accused)} — ${spy ? "шпигун!" : "не шпигун."}`,
     };
   }
   return null;
@@ -265,7 +383,9 @@ export function auto(s: SpyState, random: () => number, seats: number, words: re
 export function card(s: SpyState, seat: number): string | null {
   if (s.phase === "deal" || seat < 0 || seat >= s.seats || s.spy === null) return null;
   return seat === s.spy
-    ? "ти — шпигун. Слова ти не знаєш: слухай підказки, давай свою так, ніби знаєш, і не видай себе."
+    ? "ти — шпигун. Слова ти не знаєш: слухай підказки, давай свою так, ніби знаєш, і не видай себе. " +
+        "Поки йдуть підказки, можеш будь-коли зупинити гру й назвати слово (таємно: guess <слово>): вгадав — переміг, ні — програв. " +
+        "Якщо тебе одностайно викриють, назвати слово вже не вийде."
     : `твоє слово — «${s.word}». Давай підказки так, щоб свої впізнали, а шпигун не здогадався. Самого слова не називай.`;
 }
 
@@ -277,9 +397,26 @@ export function renderBoard(s: SpyState): string {
     const clues = s.clues.filter((c) => c.round === r);
     if (clues.length) lines.push(`Коло ${r}: ` + clues.map((c) => `${seatLabel(c.seat)} — «${c.text}»`).join("; "));
   }
+  for (const a of s.accusations) {
+    if (!a.verdict) continue;
+    const result = a.verdict === "-" ? "не одностайно" : a.verdict === "spy" ? "одностайно, шпигун" : "одностайно, не шпигун";
+    lines.push(`Звинувачення: ${seatLabel(a.suspect)} (звинувачує ${seatLabel(a.by)}; ${ballotList(a)}): ${result}`);
+  }
   const left = s.out.flatMap((o, i) => (o ? [seatLabel(i)] : []));
   if (left.length) lines.push(`Вийшли: ${left.join(", ")}`);
-  if (s.phase === "clue") lines.push(`Коло ${s.round} з ${ROUNDS}, підказку дає ${seatLabel(s.turn)}.`);
+  if (s.phase === "clue") {
+    lines.push(`Коло ${s.round} з ${ROUNDS}, підказку дає ${seatLabel(s.turn)}.`);
+    const used = active(s).filter((i) => hasAccused(s, i));
+    if (used.length) lines.push(`Уже звинувачували: ${used.map(seatLabel).join(", ")}.`);
+  }
+  const a = pending(s);
+  if (a) {
+    const voters = active(s).filter((i) => i !== a.suspect);
+    const done = voters.filter((i) => a.ballots[i] !== undefined);
+    lines.push(
+      `Звинувачення: ${seatLabel(a.suspect)} (звинувачує ${seatLabel(a.by)}). Таємне голосування, так чи ні: проголосували ${done.length} з ${voters.length}.`,
+    );
+  }
   if (s.phase === "vote") {
     const done = active(s).filter((i) => s.votes[i] !== undefined);
     lines.push(
@@ -290,8 +427,8 @@ export function renderBoard(s: SpyState): string {
   }
   if (s.accused && s.phase !== "over") lines.push(`Викрито шпигуна: ${seatLabel(s.accused.seat!)}. Остання спроба — назвати слово.`);
   if (s.phase === "over") {
-    const votes = s.votes.flatMap((v, i) => (v == null ? [] : [`${seatLabel(i)} → ${seatLabel(v)}`]));
-    if (votes.length) lines.push(`Голоси: ${votes.join(", ")}`);
+    const votes = voteList(s);
+    if (votes) lines.push(`Голоси: ${votes}`);
     if (s.guess !== undefined) lines.push(`Здогадка шпигуна: «${s.guess}»`);
     if (s.word !== null) lines.push(`Слово: «${s.word}». Шпигун: ${s.spy === null ? "?" : seatLabel(s.spy)}.`);
   }
@@ -300,9 +437,10 @@ export function renderBoard(s: SpyState): string {
 
 export const REASON: Record<EndReason, string> = {
   guessed: "шпигун вгадав слово",
-  caught: "шпигуна викрито, і слово він не вгадав",
-  wrong: "викрили не шпигуна",
-  tie: "голоси розділилися, шпигуна не викрито",
+  missed: "шпигун назвав не те слово",
+  caught: "шпигуна викрито",
+  wrong: "одностайно звинуватили не шпигуна",
+  tie: "одностайного рішення не було, шпигуна не викрито",
   "spy-left": "шпигун вийшов з гри",
   few: "лишилося менше трьох гравців",
 };

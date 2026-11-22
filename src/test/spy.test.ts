@@ -94,28 +94,97 @@ const reveal = (moves: string[]) => {
   return { moves: [...moves, a.move], note: a.note };
 };
 
-test("spy: the accused spy gets one guess; a wrong accusation or a tie lets the spy win", () => {
-  // caught, then guesses right (case and ґ/г do not matter) or wrong
+test("spy: the final vote accuses only when unanimous; then no guess", () => {
+  // all but the suspect: the spy is caught and loses at once
   const caught = reveal(vote(allClues(), [1, 2, 1, 1]));
-  assert.equal(caught.moves.at(-1), "reveal 1 spy");
-  assert.match(caught.note, /Викрито: гравець 2\. Це шпигун!/);
-  let s = run(caught.moves);
-  assert.deepEqual([s.phase, s.turn], ["guess", 1]);
-  assert.throws(() => engine.play(s, "стіл", ctx(0)), /вгадує шпигун/);
-  assert.deepEqual(run([...caught.moves, engine.play(s, "СТІЛЕЦЬ", ctx(1))]).end, { reason: "guessed", winners: [1] });
-  assert.deepEqual(run([...caught.moves, "guess стіл"]).end, {
-    reason: "caught",
-    winners: [0, 2, 3],
-  });
-  // the wrong one
+  assert.equal(caught.moves.at(-1), "verdict 1 spy");
+  assert.match(caught.note, /Одностайно викрито: гравець 2 — шпигун!/);
+  assert.deepEqual(run(caught.moves).end, { reason: "caught", winners: [0, 2, 3] });
+  // unanimous for an innocent one: the spy wins
   const wrong = reveal(vote(allClues(), [2, 2, 1, 2]));
-  assert.equal(wrong.moves.at(-1), "reveal 2 team");
+  assert.equal(wrong.moves.at(-1), "verdict 2 team");
   assert.deepEqual(run(wrong.moves).end, { reason: "wrong", winners: [1] });
-  // a tie
-  const tie = reveal(vote(allClues(), [1, 2, 3, 0]));
-  assert.equal(tie.moves.at(-1), "reveal -");
-  assert.deepEqual(run(tie.moves).end, { reason: "tie", winners: [1] });
-  assert.match(engine.renderBoard(run(tie.moves)), /Слово: «стілець»\. Шпигун: гравець 2\./);
+  // most votes but not all: no one is accused, the spy wins
+  const most = reveal(vote(allClues(), [1, 2, 1, 2]));
+  assert.equal(most.moves.at(-1), "verdict -");
+  assert.match(most.note, /Одностайного рішення немає/);
+  assert.deepEqual(run(most.moves).end, { reason: "tie", winners: [1] });
+  assert.match(engine.renderBoard(run(most.moves)), /Слово: «стілець»\. Шпигун: гравець 2\./);
+  // the votes stay hidden until the verdict
+  const pub = engine.publicMoves(vote(allClues(), [1, 2, 1, 1]));
+  assert.equal(pub.at(-1), "vote 3");
+  assert.equal(engine.publicMoves(caught.moves).at(-2), "vote 3 1");
+});
+
+test("spy: the spy may stop the game and name the word, privately, only while clues are given", () => {
+  const s = run(clues([DEAL], ["дерево"]));
+  // out of turn is fine; in the room it is refused the same way for everyone
+  assert.equal(engine.anytime(s, 1, "guess стіл"), true, "also on their own turn");
+  assert.equal(engine.anytime(s, 3, "guess стіл"), true);
+  assert.equal(engine.anytime(s, 3, "просто слово"), false);
+  assert.throws(() => engine.play(s, "guess стіл", ctx(1)), /таємно/);
+  assert.throws(() => engine.play(s, "guess стіл", ctx(0)), /таємно/);
+  assert.throws(() => engine.play(s, "guess стіл", ctx(0, true)), /ти не шпигун/);
+  assert.equal(engine.play(s, "вгадую СТІЛЕЦЬ", ctx(1, true)), "stop 1 стілець");
+  assert.deepEqual(run([...s.moves, "stop 1 стілець"]).end, { reason: "guessed", winners: [1] });
+  assert.deepEqual(run([...s.moves, "stop 1 стіл"]).end, { reason: "missed", winners: [0, 2, 3] });
+  assert.match(engine.card(s, 1)!, /guess <слово>/);
+  // not while voting
+  const voting = run(allClues());
+  assert.equal(engine.anytime(voting, 1, "guess стіл"), false);
+  assert.throws(() => engine.play(voting, "guess стіл", ctx(1, true)), /vote <ім'я>/);
+});
+
+test("spy: anyone may accuse once; a unanimous yes ends the game, otherwise the clues go on", () => {
+  const s = run(clues([DEAL], ["дерево"]));
+  assert.equal(engine.anytime(s, 3, "accuse ann"), true);
+  assert.equal(engine.play(s, "accuse ann", ctx(3)), "accuse 3 0");
+  assert.equal(engine.play(s, "звинувачую 2", ctx(0)), "accuse 0 1");
+  assert.throws(() => engine.play(s, "accuse dan", ctx(3)), /себе/);
+  // ann (seat 0) accuses bob, the spy: the others vote, the accuser counts as yes
+  let moves = [...s.moves, "accuse 0 1"];
+  let a = run(moves);
+  assert.equal(a.phase, "accuse");
+  assert.deepEqual(engine.movers(a), [2, 3]);
+  assert.equal(engine.anytime(a, 1, "guess стіл"), false, "no guess once accused");
+  assert.throws(() => engine.play(a, "vote так", ctx(2)), /таємно/);
+  assert.throws(() => engine.play(a, "vote так", ctx(1, true)), /не голосує|вже/);
+  assert.equal(engine.play(a, "vote так", ctx(2, true)), "ballot 2 yes");
+  assert.equal(engine.play(a, "голос ні", ctx(3, true)), "ballot 3 no");
+  // unanimous: the spy is caught
+  const yes = reveal([...moves, "ballot 2 yes", "ballot 3 yes"]);
+  assert.equal(yes.moves.at(-1), "verdict 1 spy");
+  assert.deepEqual(run(yes.moves).end, { reason: "caught", winners: [0, 2, 3] });
+  // one no: the clues go on from where they were, and ann may not accuse again
+  const no = reveal([...moves, "ballot 2 yes", "ballot 3 no"]);
+  assert.equal(no.moves.at(-1), "verdict -");
+  assert.match(no.note, /гравець 3 — так, гравець 4 — ні\. Не одностайно — гра триває/);
+  a = run(no.moves);
+  assert.deepEqual([a.phase, a.turn, a.round], ["clue", 1, 1]);
+  assert.throws(() => engine.play(a, "accuse cat", ctx(0)), /лише раз/);
+  assert.match(engine.renderBoard(a), /Звинувачення: гравець 2 \(звинувачує гравець 1; .*\): не одностайно/);
+  assert.match(engine.renderBoard(a), /Уже звинувачували: гравець 1/);
+  // ballots stay hidden until the verdict
+  assert.equal(engine.publicMoves([...moves, "ballot 2 yes"]).at(-1), "ballot 2");
+  assert.equal(engine.publicMoves(no.moves).at(-2), "ballot 3 no");
+  // unanimous against an innocent one: the spy wins
+  moves = [...s.moves, "accuse 1 2", "ballot 0 yes", "ballot 3 yes"];
+  const wrong = reveal(moves);
+  assert.equal(wrong.moves.at(-1), "verdict 2 team");
+  assert.deepEqual(run(wrong.moves).end, { reason: "wrong", winners: [1] });
+  // the suspect leaves: the accusation is dropped
+  a = run([...s.moves, "accuse 0 3", "out 3"]);
+  assert.deepEqual([a.phase, a.turn], ["clue", 1]);
+});
+
+test("spy: games from before 0.18.2 replay as they were played", () => {
+  const old = [...vote(allClues(), [1, 2, 3, 1]), "reveal 1 spy"];
+  let s = run(old);
+  assert.deepEqual([s.phase, s.turn], ["guess", 1]);
+  assert.deepEqual(run([...old, "guess стілець"]).end, { reason: "guessed", winners: [1] });
+  assert.deepEqual(run([...old, "guess стіл"]).end, { reason: "caught", winners: [0, 2, 3] });
+  s = run([...vote(allClues(), [1, 2, 3, 0]), "reveal -"]);
+  assert.deepEqual(s.end, { reason: "tie", winners: [1] });
 });
 
 test("spy: leaving: the spy loses, fewer than three ends it, a turn passes on, votes for the one who left go", () => {
@@ -209,6 +278,19 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
       await bots[who].send({ room, text });
       await settle();
     };
+    // out of turn: bot3 accuses bot2; the others vote in secret, not unanimously, so the clues go on
+    await say("bot3", "move accuse bot2");
+    let g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
+    assert.equal(g.moves.at(-1), "accuse 3 2");
+    assert.deepEqual(g.movers, [0, 1]);
+    await bots.bot1.send({ to: "aichat", text: "vote так" });
+    await call("olena", "POST", `/api/games/${id}/move`, { move: "vote ні" });
+    await settle();
+    g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
+    assert.deepEqual(g.moves.slice(-3), ["ballot 1 yes", "ballot 0 no", "verdict -"]);
+    assert.equal(g.turn, 0);
+    // the spy's guess is refused in the room, the same way as anyone's
+    await say("bot1", "move guess щось");
     for (let r = 0; r < 2; r++) {
       assert.equal(
         (
@@ -222,7 +304,7 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
       await say("bot2", `move підказка два ${r}`);
       await say("bot3", `move підказка три ${r}`);
     }
-    let g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
+    g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
     assert.deepEqual(g.movers, [0, 1, 2, 3]);
 
     // a vote in the room is refused there; by direct message or on the site it stays secret
@@ -239,14 +321,11 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
     const before = (await call("watcher", "GET", `/api/games/${id}/card`)).status; // still not a player
     assert.equal(before, 403);
 
-    // the last vote reveals all of them; the spy was caught and guesses wrong
+    // the last vote reveals all of them; all but bot1 voted for bot1, the spy: caught, no guess
     await bots.bot1.send({ to: "aichat", text: "vote olena" });
     await settle();
     g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
-    assert.equal(g.moves.at(-1), "reveal 1 spy");
-    assert.equal(g.turn, 1);
-    await say("bot1", "move щось");
-    g = (await call("watcher", "GET", `/api/games/${id}`)).body.game;
+    assert.equal(g.moves.at(-1), "verdict 1 spy");
     assert.equal(g.status, "finished");
     assert.deepEqual(g.result!.winners, [0, 2, 3]);
     assert.match(g.result!.text, /^Перемога: olena, bot2, bot3\. Шпигуна викрито/);
@@ -258,13 +337,16 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
       limit: 200,
     });
     const last = history.findIndex((m: ChatMessage) => m.from === "aichat" && /завершено/.test(m.text));
-    const allVoted = history.findIndex((m: ChatMessage) => m.from === "aichat" && /^bot1: проголосував/.test(m.text));
-    assert.ok(allVoted > 0 && last > allVoted);
+    const allVoted = history.findIndex((m: ChatMessage) => m.from === "aichat" && /^bot1: проголосував/.test(m.text) && /Голоси:/.test(m.text));
+    assert.ok(allVoted > 0 && last >= allVoted);
     for (const m of history.slice(0, last)) assert.doesNotMatch(m.text, new RegExp(word), m.text);
     for (const m of history.slice(0, allVoted)) assert.doesNotMatch(m.text, /гравець \d → /, m.text);
     assert.match(history[allVoted].text, /Голоси: гравець 1 → гравець 2, гравець 2 → гравець 1/);
     assert.ok(history.some((m: ChatMessage) => m.from === "aichat" && /голосують таємно/.test(m.text)));
     assert.ok(history.some((m: ChatMessage) => /bot2: проголосував/.test(m.text)));
+    assert.ok(history.some((m: ChatMessage) => /^bot3: звинувачує: гравець 3!/.test(m.text)));
+    assert.ok(history.some((m: ChatMessage) => /^bot1: слово шпигун називає таємно/.test(m.text)));
+    assert.ok(history.some((m: ChatMessage) => /Не одностайно — гра триває/.test(m.text)));
     assert.match(history[last].text, new RegExp(`Слово: «${word}»`));
   } finally {
     for (const c of Object.values(bots)) c.close();
