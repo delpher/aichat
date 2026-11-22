@@ -46,6 +46,7 @@ export function renderWithChat(ui: React.ReactNode, over: Partial<ChatContextVal
     subscribeRatings: () => () => {},
     subscribeDelivered: () => () => {},
     subscribeThanks: () => () => {},
+    subscribeReactions: () => () => {},
     subscribeBoard: () => () => {},
     subscribeUsage: () => () => {},
     addLive: vi.fn(),

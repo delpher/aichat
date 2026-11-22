@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AgentNote, ChatMessage, FileInfo, HookFields, HookRule, RoomBrief, WorldIntro } from "../protocol.js";
+import type { AgentNote, ChatMessage, FileInfo, HookFields, HookRule, ReactionNote, RoomBrief, WorldIntro } from "../protocol.js";
 
 interface HookRow {
   id: string;
@@ -198,6 +198,19 @@ export class Store {
         by TEXT NOT NULL,
         ts TEXT NOT NULL,
         PRIMARY KEY (message_id, by)
+      );
+      CREATE TABLE IF NOT EXISTS reactions (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        by TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        UNIQUE (message_id, by, emoji)
+      );
+      CREATE INDEX IF NOT EXISTS reactions_message ON reactions (message_id);
+      CREATE TABLE IF NOT EXISTS reaction_cursors (
+        agent TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS games (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -789,6 +802,64 @@ export class Store {
     return (this.db.prepare("SELECT by FROM thanks WHERE message_id = ? ORDER BY ts, by").all(id) as { by: string }[]).map((r) => r.by);
   }
 
+  /** `by` puts `emoji` on message `id`; false if they already had. */
+  addReaction(id: number, by: string, emoji: string): boolean {
+    const res = this.db
+      .prepare("INSERT OR IGNORE INTO reactions (message_id, by, emoji, ts) VALUES (?, ?, ?, ?)")
+      .run(id, by, emoji, new Date().toISOString());
+    return Number(res.changes) > 0;
+  }
+
+  /** `by` takes `emoji` back from message `id`; false if it was not there. */
+  removeReaction(id: number, by: string, emoji: string): boolean {
+    const res = this.db.prepare("DELETE FROM reactions WHERE message_id = ? AND by = ? AND emoji = ?").run(id, by, emoji);
+    return Number(res.changes) > 0;
+  }
+
+  /** Reactions to message `id`: emoji → who, oldest first; emoji in the order they first appeared. */
+  reactionsFor(id: number): Record<string, string[]> {
+    const rows = this.db.prepare("SELECT emoji, by FROM reactions WHERE message_id = ? ORDER BY seq").all(id) as { emoji: string; by: string }[];
+    const out: Record<string, string[]> = {};
+    for (const r of rows) (out[r.emoji] ??= []).push(r.by);
+    return out;
+  }
+
+  /**
+   * Reactions by others to `agent`'s messages that the agent has not been told about (after its cursor, and after
+   * `after` if that is further), oldest first, at most `limit`; `seq` is the cursor to move to once these are told.
+   */
+  unseenReactions(agent: string, limit: number, after = 0): { notes: (ReactionNote & { seq: number })[] } {
+    const saved = (this.db.prepare("SELECT seq FROM reaction_cursors WHERE agent = ?").get(agent) as { seq: number } | undefined)?.seq ?? 0;
+    const cursor = Math.max(saved, after);
+    const rows = this.db
+      .prepare(
+        `SELECT r.seq, r.message_id AS id, r.emoji, r.by, r.ts, m.room, m.recipient
+           FROM reactions r JOIN messages m ON m.id = r.message_id
+          WHERE m.sender = ? AND r.by != ? AND r.seq > ?
+          ORDER BY r.seq LIMIT ?`,
+      )
+      .all(agent, agent, cursor, limit) as { seq: number; id: number; emoji: string; by: string; ts: string; room: string | null; recipient: string | null }[];
+    return {
+      notes: rows.map((r) => ({
+        seq: Number(r.seq),
+        id: Number(r.id),
+        emoji: r.emoji,
+        by: r.by,
+        ts: r.ts,
+        ...(r.room ? { room: r.room } : r.recipient ? { with: r.recipient } : {}),
+      })),
+    };
+  }
+
+  /** `agent` has been told about reactions up to `seq`; the cursor never moves back. */
+  markReactionsSeen(agent: string, seq: number) {
+    this.db
+      .prepare(
+        "INSERT INTO reaction_cursors (agent, seq) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET seq = MAX(seq, excluded.seq)",
+      )
+      .run(agent, seq);
+  }
+
   /** Thanks each author got in all, for messages that still exist. */
   thanksReceived(): Map<string, number> {
     const rows = this.db
@@ -812,11 +883,22 @@ export class Store {
       .all(messages[0].id, messages[messages.length - 1].id) as { message_id: number; by: string }[];
     const thankedBy = new Map<number, string[]>();
     for (const r of thanks) thankedBy.set(r.message_id, [...(thankedBy.get(r.message_id) ?? []), r.by]);
+    const reactionRows = this.db
+      .prepare("SELECT message_id, emoji, by FROM reactions WHERE message_id BETWEEN ? AND ? ORDER BY seq")
+      .all(messages[0].id, messages[messages.length - 1].id) as { message_id: number; emoji: string; by: string }[];
+    const reactions = new Map<number, Record<string, string[]>>();
+    for (const r of reactionRows) {
+      let set = reactions.get(r.message_id);
+      if (!set) reactions.set(r.message_id, (set = {}));
+      (set[r.emoji] ??= []).push(r.by);
+    }
     for (const m of messages) {
       const to = by.get(m.id);
       if (to) m.delivered_to = to;
       const th = thankedBy.get(m.id);
       if (th) m.thanked_by = th;
+      const re = reactions.get(m.id);
+      if (re) m.reactions = re;
     }
     return messages;
   }
@@ -879,6 +961,7 @@ export class Store {
       // the room is gone for good: its deliveries and brief go with its history
       this.db.prepare("DELETE FROM deliveries WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
       this.db.prepare("DELETE FROM thanks WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
+      this.db.prepare("DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room = ?)").run(room);
       this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
       this.db.prepare("DELETE FROM briefs WHERE room = ?").run(room);
     }

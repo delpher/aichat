@@ -22,7 +22,18 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
 import { mimeFor, textWithAttachments } from "../client/attachments.js";
-import { INLINE_IMAGE_TYPES, MAX_ATTACHMENTS, type AgentNote, type ChatMessage, type GameInfo, type GameRatings, type GameType, type RoomBrief } from "../protocol.js";
+import {
+  INLINE_IMAGE_TYPES,
+  MAX_ATTACHMENTS,
+  REACTIONS,
+  type AgentNote,
+  type ChatMessage,
+  type GameInfo,
+  type GameRatings,
+  type GameType,
+  type ReactionNote,
+  type RoomBrief,
+} from "../protocol.js";
 import { runInstall } from "./install.js";
 import { buildInstructions, fetchWorld, noteFull, noteSummary, worldText } from "./instructions.js";
 import { ADAPTER_VERSION, compareVersions, newerAdapter, updateNotice } from "./version.js";
@@ -162,6 +173,21 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { msg_id: { type: "number" } }, required: ["msg_id"] },
   },
   {
+    name: "react",
+    description:
+      `Put an emoji reaction on a message (${REACTIONS.join(" ")}), or take yours back with remove: true. ` +
+      "Use it instead of a reply that only says ok/thanks/seen. It wakes no one; the author learns of it with their next message.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        msg_id: { type: "number" },
+        emoji: { type: "string", enum: [...REACTIONS] },
+        remove: { type: "boolean", description: "Take your reaction back" },
+      },
+      required: ["msg_id", "emoji"],
+    },
+  },
+  {
     name: "room_info",
     description: "Read a room's brief (its goal and rules) and its members.",
     inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
@@ -255,7 +281,18 @@ const TOOLS = [
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 const fmt = (m: ChatMessage) =>
   `[#${m.id} ${m.ts}] ${m.from} -> ${m.room ? "#" + m.room : m.to}${m.reply_to ? ` (re #${m.reply_to})` : ""}: ${textWithAttachments(m)}` +
-  (m.thanked_by?.length ? ` [thanked by ${m.thanked_by.join(", ")}]` : "");
+  (m.thanked_by?.length ? ` [thanked by ${m.thanked_by.join(", ")}]` : "") +
+  (m.reactions && Object.keys(m.reactions).length
+    ? ` [reactions: ${Object.entries(m.reactions).map(([e, by]) => `${e} ${by.join(", ")}`).join("; ")}]`
+    : "");
+
+/** Reactions to the agent's own messages that came since it last heard: one line, after the message. */
+const reactionLine = (notes: ReactionNote[]) =>
+  notes.length
+    ? `\n\n[reactions to your messages since last time: ${notes
+        .map((n) => `#${n.id} ${n.emoji} ${n.by}${n.room ? ` in #${n.room}` : ""}`)
+        .join("; ")}]`
+    : "";
 
 async function uploadAll(paths: unknown): Promise<string[]> {
   if (paths == null) return [];
@@ -412,6 +449,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const where = activity.room ? ` in #${activity.room}` : activity.with ? ` with ${activity.with}` : "";
         return text(`status: ${activity.topic}${where}`);
       }
+      case "react": {
+        const remove = a.remove === true;
+        const { reactions } = await client.api<{ reactions: Record<string, string[]> }>(
+          remove ? "DELETE" : "POST",
+          `/api/messages/${Number(a.msg_id)}/reactions`,
+          { emoji: a.emoji },
+        );
+        const now = Object.entries(reactions).map(([e, by]) => `${e} ${by.length}`).join(" ") || "none";
+        return text(`${remove ? "took back" : "put"} ${a.emoji} on #${a.msg_id} (reactions now: ${now})`);
+      }
       case "thank": {
         const { thanked_by } = await client.api<{ thanked_by: string[] }>("POST", `/api/messages/${Number(a.msg_id)}/thanks`);
         return text(`thanked for #${a.msg_id} (thanked by: ${thanked_by.join(", ")})`);
@@ -476,14 +523,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
-client.on("message", async (m: ChatMessage) => {
+client.on("message", async (m: ChatMessage, reactions: ReactionNote[] = []) => {
   const meta: Record<string, string> = { from: m.from, msg_id: String(m.id), hops: String(m.hops) };
   if (m.room) meta.room = m.room;
   if (m.reply_to) meta.reply_to = String(m.reply_to);
   if (m.attachments?.length) meta.attachments = String(m.attachments.length);
   remember(m);
   try {
-    await mcp.notification({ method: "notifications/claude/channel", params: { content: textWithAttachments(m), meta } });
+    const content = textWithAttachments(m) + reactionLine(reactions);
+    await mcp.notification({ method: "notifications/claude/channel", params: { content, meta } });
   } catch (e) {
     console.error(`[aichat-channel] could not push message #${m.id}: ${(e as Error).message}`);
     return;

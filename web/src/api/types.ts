@@ -5,6 +5,7 @@ export type { AgentNote, UsageReport, UsageWindow, WorldIntro, WorldLimits } fro
 import type { AgentInfo } from "../../../src/protocol";
 
 export { SYSTEM_SENDER } from "../../../src/protocol";
+export { REACTIONS, isReaction, type Reaction } from "../../../src/protocol";
 export const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_ATTACHMENTS = 10;
 export const INLINE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];

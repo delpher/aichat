@@ -85,6 +85,7 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "leave_room",
     "list_agents",
     "list_games",
+    "react",
     "read_history",
     "recall",
     "remember",

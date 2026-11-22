@@ -32,9 +32,12 @@ import {
   INLINE_IMAGE_TYPES,
   MAX_ATTACHMENTS,
   MAX_DESCRIPTION_LENGTH,
+  MAX_REACTION_NOTES,
   MAX_STATUS_TOPIC,
   NAME_RE,
+  REACTIONS,
   ROOM_RE,
+  isReaction,
   type AgentActivity,
   type AdapterInfo,
   type AgentInfo,
@@ -188,6 +191,13 @@ export class Broker {
   private usage = new Map<string, UsageReport>();
   /** Agents whose Claude Code hooks have reported at least once: for them a delivery means "busy". */
   private hooked = new Set<string>();
+  /**
+   * Reaction notes offered to an agent and not yet confirmed: message id → the reaction cursor its `delivered`
+   * moves to. `reactionsOffered` is the highest seq offered, so the next frame carries only newer ones; both are
+   * forgotten when the agent connects again, and whatever was not confirmed is offered anew.
+   */
+  private reactionOffers = new Map<string, Map<number, number>>();
+  private reactionsOffered = new Map<string, number>();
   private activityTimer?: NodeJS.Timeout;
   private hooksTimer?: NodeJS.Timeout;
   private sent = new Map<string, number[]>();
@@ -802,6 +812,11 @@ export class Broker {
     const m = this.store.get(id);
     if (!m) throw new BrokerError(`unknown message: ${id}`, 404);
     if (!this.recipients(m).includes(agent)) throw new BrokerError(`message ${id} was not sent to you`, 403);
+    const told = this.reactionOffers.get(agent)?.get(id);
+    if (told !== undefined) {
+      this.reactionOffers.get(agent)!.delete(id);
+      this.store.markReactionsSeen(agent, told);
+    }
     if (!this.store.markDelivered(id, agent)) return;
     const f: ServerFrame = { type: "delivered", id, to: agent };
     for (const ws of this.sockets.get(m.from) ?? []) this.sendFrame(ws, f);
@@ -828,6 +843,27 @@ export class Broker {
     for (const name of new Set([m.from, ...this.recipients(m)])) for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
     for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, f);
     return thanked_by;
+  }
+
+  /**
+   * `by` puts (`on`) or takes back an `emoji` on message `id`. Anyone who can see a message may react to it, also to
+   * messages from the broker and the keeper, but not to their own. Putting one twice or taking back one that is not
+   * there changes nothing. A reaction is not a message: it wakes no one and is no activity for hooks; everyone who
+   * can see the message hears of it, and the author's agent learns of it with its next message (messageFrame).
+   */
+  react(by: string, id: number, raw: unknown, on: boolean, viewer: { admin?: boolean } = {}): Record<string, string[]> {
+    const m = this.store.get(id);
+    if (!m || !(viewer.admin ? this.adminCanSee(by, m) : this.canSee(by, m))) throw new BrokerError(`unknown message: ${id}`, 404);
+    const emoji = (raw as { emoji?: unknown } | null)?.emoji;
+    if (!isReaction(emoji)) throw new BrokerError(`emoji must be one of ${REACTIONS.join(" ")}`);
+    if (m.from === by) throw new BrokerError("you cannot react to your own message", 400);
+    const changed = on ? this.store.addReaction(id, by, emoji) : this.store.removeReaction(id, by, emoji);
+    const reactions = this.store.reactionsFor(id);
+    if (!changed) return reactions;
+    const f: ServerFrame = { type: "reaction", id, author: m.from, by, emoji, on, reactions };
+    for (const name of new Set([m.from, ...this.recipients(m)])) for (const ws of this.sockets.get(name) ?? []) this.sendFrame(ws, f);
+    for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, f);
+    return reactions;
   }
 
   history(agent: string, q: { room?: string; with?: string; limit?: number; before?: number }): ChatMessage[] {
@@ -915,12 +951,29 @@ export class Broker {
     return this.store.membersOf(m.room!).filter((a) => a !== m.from);
   }
 
+  /**
+   * The message frame for agent `name`: with the reactions to its own messages it has not been told about yet
+   * (decided in AIChat-dev-team 2428/2430). They ride on a message the agent gets anyway and never wake it.
+   */
+  private messageFrame(name: string, m: ChatMessage): ServerFrame {
+    const offered = this.reactionsOffered.get(name) ?? 0;
+    const { notes } = this.store.unseenReactions(name, MAX_REACTION_NOTES, offered);
+    if (!notes.length) return { type: "message", message: m };
+    const seq = notes[notes.length - 1].seq;
+    this.reactionsOffered.set(name, seq);
+    let offers = this.reactionOffers.get(name);
+    if (!offers) this.reactionOffers.set(name, (offers = new Map()));
+    offers.set(m.id, seq);
+    return { type: "message", message: m, reactions_since: notes.map(({ seq: _seq, ...n }) => n) };
+  }
+
   private deliver(m: ChatMessage) {
     for (const [ws, who] of this.observers) if (this.adminCanSee(who, m)) this.sendFrame(ws, { type: "message", message: m });
     for (const name of this.recipients(m)) {
       const socks = this.sockets.get(name);
       if (socks?.size) {
-        for (const ws of socks) this.sendFrame(ws, { type: "message", message: m });
+        const frame = this.messageFrame(name, m);
+        for (const ws of socks) this.sendFrame(ws, frame);
         this.store.setCursor(name, m.id);
         continue;
       }
@@ -1023,7 +1076,12 @@ export class Broker {
         const wake = this.sockets.get(name)?.size ? undefined : this.wakeFor(agent, pending);
         // a new adapter session is greeted, a dropped connection of the same session is not (alexey, 1703)
         const fresh = this.newSession(agent, f.session);
-        for (const m of wake ? pending.filter((p) => !wake.skipped.has(p.id)) : pending) this.sendFrame(ws, { type: "message", message: m });
+        // a new connection: reactions offered before and never confirmed are offered again
+        if (!this.sockets.get(name)?.size) {
+          this.reactionOffers.delete(name);
+          this.reactionsOffered.delete(name);
+        }
+        for (const m of wake ? pending.filter((p) => !wake.skipped.has(p.id)) : pending) this.sendFrame(ws, this.messageFrame(name, m));
         if (pending.length) this.store.setCursor(name, pending[pending.length - 1].id);
         const client = adapterInfo(f.client);
         this.trackPresence(name, () => {
@@ -1231,6 +1289,9 @@ export class Broker {
       }
       const thanksMatch = url.pathname.match(/^\/api\/messages\/(\d+)\/thanks$/);
       if (req.method === "POST" && thanksMatch) return reply(200, { thanked_by: this.thank(me, Number(thanksMatch[1])) });
+      const reactMatch = url.pathname.match(/^\/api\/messages\/(\d+)\/reactions$/);
+      if (reactMatch && (req.method === "POST" || req.method === "DELETE"))
+        return reply(200, { reactions: this.react(me, Number(reactMatch[1]), await readJson(req), req.method === "POST") });
       if (route === "POST /api/files") return reply(201, { file: await this.upload(me, req) });
       const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)$/);
       if (req.method === "GET" && fileMatch) {
@@ -1862,6 +1923,12 @@ export class Broker {
     if (req.method === "POST" && thanksMatch) {
       const b = await readJson(req);
       return reply(200, { thanked_by: this.thank(humanAs(b.as), Number(thanksMatch[1]), { admin: true }) });
+    }
+    const reactMatch = url.pathname.match(/^\/admin\/api\/messages\/(\d+)\/reactions$/);
+    if (reactMatch && (req.method === "POST" || req.method === "DELETE")) {
+      const b = await readJson(req);
+      const reactions = this.react(humanAs(b.as), Number(reactMatch[1]), b, req.method === "POST", { admin: true });
+      return reply(200, { reactions });
     }
     if (route === "POST /admin/api/files") return reply(201, { file: await this.upload(humanAs(url.searchParams.get("as")), req) });
     const fileMatch = url.pathname.match(/^\/admin\/api\/files\/([^/]+)$/);

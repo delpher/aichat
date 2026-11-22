@@ -168,7 +168,7 @@ export class BrokerClient extends EventEmitter {
   }
 
   private onFrame(f: ServerFrame) {
-    if (f.type === "message") return void this.emit("message", f.message);
+    if (f.type === "message") return void this.emit("message", f.message, f.reactions_since ?? []);
     if (f.type === "presence") return void this.emit("presence", { agent: f.agent, online: f.online });
     const ref = "ref" in f ? f.ref : undefined;
     if (ref && this.pending.has(ref)) {

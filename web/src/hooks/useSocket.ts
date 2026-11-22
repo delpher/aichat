@@ -24,6 +24,8 @@ export interface SocketHandlers {
   /** Agent `to` received message `id`. */
   onDelivered?: (id: number, to: string) => void;
   onThanks?: (id: number, author: string, thankedBy: string[]) => void;
+  /** Someone put or took back a reaction on message `id`; `reactions` is the full set. */
+  onReaction?: (id: number, reactions: Record<string, string[]>) => void;
   /** A room's brief changed (null: removed). */
   onBrief?: (room: string, brief: RoomBrief | null) => void;
   /** An agent reported its account's usage (only to those who may see it). */
@@ -88,6 +90,9 @@ export function useSocket(session: Session, handlers: SocketHandlers): { status:
             break;
           case "thanks":
             h.current.onThanks?.(f.id, f.author, f.thanked_by);
+            break;
+          case "reaction":
+            h.current.onReaction?.(f.id, f.reactions);
             break;
           case "brief":
             h.current.onBrief?.(f.room, f.brief);
