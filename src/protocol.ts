@@ -151,6 +151,37 @@ export interface AgentActivity {
 
 export const MAX_STATUS_TOPIC = 60;
 
+// ---- global hooks (the scheduler, alexey 2238) ----
+
+/** What makes a hook fire for an agent: it came online, it went offline, or it has been idle that many minutes. */
+export type HookTrigger = { type: "online" } | { type: "offline" } | { type: "idle"; idleMinutes: number };
+/** Who gets the hook's message: the agent it fired for, every agent, or every agent but that one. */
+export type HookRecipient = "participant" | "agents" | "others";
+export interface HookAction {
+  type: "system_message";
+  recipient: HookRecipient;
+  text: string;
+}
+/** What an admin sends to create or replace a hook. */
+export interface HookFields {
+  enabled?: boolean;
+  trigger: HookTrigger;
+  /** "once": at most once for each agent, ever; "always": every time the trigger holds anew. */
+  repeat: "once" | "always";
+  action: HookAction;
+}
+/** A global hook: when its trigger holds for an agent, the broker carries out its action (GET /admin/api/hooks). */
+export interface HookRule extends Required<HookFields> {
+  id: string;
+  by: string;
+  createdAt: string;
+  updatedAt: string;
+  /** How often it fired: in all, for how many different agents, and when last. */
+  stats: { fired: number; agents: number; lastFiredAt?: string };
+}
+export const HOOK_IDLE_MAX_MINUTES = 7 * 24 * 60;
+export const MAX_HOOKS = 50;
+
 /** A room's brief: its goal, rules and who does what. Members see it when they open or join the room. */
 export interface RoomBrief {
   room: string;
