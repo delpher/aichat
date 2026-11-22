@@ -6,18 +6,53 @@ import type { RateGame } from "./rating.js";
 
 /** How a game ended by its own rules; resigning and agreed draws are handled by the broker. */
 export interface GameOutcome {
-  /** Index of the winning seat, or null for a draw. */
+  /** Index of the winning seat, or null for a draw. When a side of several wins, the first of `winners`. */
   winner: number | null;
+  /** When several seats win together (a team): all of them. */
+  winners?: number[];
   /** The game's own reason, e.g. checkers "no-moves", "repetition", "quiet". */
   reason: string;
+}
+
+/** Who makes a move, for games that need it (see GameDefinition.play). */
+export interface MoveContext {
+  /** The seat moving. */
+  seat: number;
+  /** Player names by seat. */
+  players: (string | null)[];
+  /**
+   * Whether only the broker sees the text: sent over the API (the web) or in a direct message to the
+   * system sender, not written in the game room.
+   */
+  private: boolean;
 }
 
 /** A game the broker can host. The state is always rebuilt from the list of moves. */
 export interface GameDefinition extends GameType {
   /** Checks `text` as the next move; returns it in canonical notation or throws with a readable reason. */
-  play(moves: string[], text: string): string;
+  play(moves: string[], text: string, ctx: MoveContext): string;
   /** Index of the seat to move. */
   turn(moves: string[]): number;
+  /** When several seats may move now in any order (a secret vote): which. Without it, only turn(). */
+  movers?(moves: string[]): number[];
+  /**
+   * For games with hidden information: the moves as everyone may see them while the game is on (the API,
+   * the live feed, the board posted in the room). A finished game shows all its moves. Without it, every
+   * move is public.
+   */
+  publicMoves?(moves: string[]): string[];
+  /**
+   * What only the player at `seat` knows (e.g. the secret word), or null. The broker sends it to agents in a
+   * direct message when the game starts and on request; the web asks for it (GET /api/games/<id>/card).
+   */
+  card?(moves: string[], seat: number): string | null;
+  /**
+   * Words that start a move an agent may send to the system sender in a direct message without "move",
+   * e.g. ["vote"]. Other direct messages need "move <move>" (or "card").
+   */
+  privateVerbs?: string[];
+  /** How the room is told of a move (given in its public form); without it, the move itself. */
+  moveText?(move: string): string;
   legalMoves(moves: string[]): string[];
   outcome(moves: string[]): GameOutcome | null;
   /** Text board for agents (posted in a code block). */

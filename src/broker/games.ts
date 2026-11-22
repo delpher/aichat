@@ -34,6 +34,8 @@ export interface GameHost {
   join(agent: string, room: string): void;
   /** Posts a message from the system sender to a room. */
   announce(room: string, text: string): void;
+  /** A direct message from the system sender to one player (their card in a game with hidden information). */
+  notify?(to: string, text: string): void;
   /** Tells every connected client the game changed. */
   publish(game: GameInfo): void;
   /** Tells every connected client the ratings of a game type changed. */
@@ -127,15 +129,87 @@ export class Games {
     this.host.publishRatings?.(g.game, this.ratingsOf(g.game));
   }
 
-  /** A stored game as the API and the WebSocket show it. */
+  /** A stored game as the API and the WebSocket show it: of a game with hidden information, only the public part. */
   info(g: GameRecord): GameInfo {
     const def = this.defs.get(g.game);
+    const active = g.status === "active" && !!def;
     return {
       ...g,
+      moves: def ? this.visible(def, g) : g.moves,
       room: gameRoom(g.id),
-      turn: g.status === "active" && def ? def.turn(g.moves) : null,
+      turn: active ? def.turn(g.moves) : null,
+      ...(active && def.movers ? { movers: def.movers(g.moves) } : {}),
       result: g.result ? { ...g.result, text: def ? this.resultText(def, g, g.result) : g.result.reason } : null,
     };
+  }
+
+  /** The moves everyone may see: all of them once the game is over. */
+  private visible(def: GameDefinition, g: GameRecord): string[] {
+    return def.publicMoves && g.status !== "finished" ? def.publicMoves(g.moves) : g.moves;
+  }
+
+  /** Seats that may move now. */
+  private movers(def: GameDefinition, moves: string[]): number[] {
+    return def.movers ? def.movers(moves) : [def.turn(moves)];
+  }
+
+  /** What only `by` knows in game `id` (GET /api/games/<id>/card); null when the game has no secrets. */
+  card(by: string, id: number): string | null {
+    const g = this.get(id);
+    const seat = g.players.indexOf(by);
+    if (seat < 0) throw new GameError("only the players have cards", 403);
+    const def = this.def(g.game);
+    return def.card && g.status !== "open" ? def.card(g.moves, seat) : null;
+  }
+
+  /** Sends each agent at the table its card, when the game has cards (people see theirs on the site). */
+  private dealCards(def: GameDefinition, g: GameRecord) {
+    if (!def.card || !this.host.notify) return;
+    g.players.forEach((p, seat) => {
+      const card = p && !this.host.isHuman(p) ? def.card!(g.moves, seat) : null;
+      if (card) this.host.notify!(p!, this.cardText(def, g, card));
+    });
+  }
+
+  private cardText(def: GameDefinition, g: GameRecord, card: string): string {
+    const verb = def.privateVerbs?.[0];
+    return (
+      `Партія #${g.id} (${def.title}), кімната ${gameRoom(g.id)}: ${card}\n` +
+      `Цю картку бачиш лише ти. Нагадати її: напиши мені особисто «card ${g.id}». ` +
+      `Таємні ходи теж пиши мені особисто: «move ${g.id} <хід>»` +
+      (verb ? ` або просто «${verb} …»` : "") +
+      "; решту ходів пиши в кімнату партії. Відповідати на це повідомлення не треба."
+    );
+  }
+
+  /**
+   * A direct message to the system sender: "card [<id>]", "move [<id>] <move>", or a move starting with one
+   * of the game's privateVerbs. Returns the answer to send back, or null for a message that is not a game
+   * command: that is not answered, so an agent saying thanks does not start a conversation with the broker.
+   */
+  onDirect(from: string, text: string): string | null {
+    const t = text.trim();
+    const card = /^(?:card|картка)(?:\s+#?(\d+))?$/i.exec(t);
+    const move = card ? null : /^(?:move|хід)\s+(?:#?(\d+)\s+)?(.+)$/is.exec(t);
+    const startsWithVerb = (g: GameRecord) =>
+      (this.defs.get(g.game)?.privateVerbs ?? []).some((v) => t.toLowerCase().startsWith(v.toLowerCase() + " "));
+    const mine = this.host.store.games({ status: "active" }).filter((g) => g.players.includes(from) && !!this.defs.get(g.game)?.card);
+    if (!card && !move && !mine.some(startsWithVerb)) return null;
+    const asked = Number((card ?? move)?.[1]) || undefined;
+    const games = asked ? mine.filter((g) => g.id === asked) : card || move ? mine : mine.filter(startsWithVerb);
+    if (!games.length)
+      return asked ? `Немає партії #${asked} з таємними ходами, у якій ти зараз граєш.` : "У тебе зараз немає партії з таємними ходами.";
+    if (games.length > 1)
+      return `Ти граєш у кількох партіях (${games.map((g) => `#${g.id}`).join(", ")}): вкажи номер, наприклад «${card ? "card" : "move"} ${games[0].id} …».`;
+    const g = games[0];
+    const def = this.def(g.game);
+    if (card) return this.cardText(def, g, def.card!(g.moves, g.players.indexOf(from)) ?? "карток ще не роздано.");
+    try {
+      this.move(from, g.id, move ? move[2].trim() : t, true);
+      return `Прийнято (партія #${g.id}).`;
+    } catch (e) {
+      return `Партія #${g.id}: ${(e as Error).message}`;
+    }
   }
 
   /**
@@ -176,6 +250,7 @@ export class Games {
       const notes = this.runAuto(def, g);
       if (notes.length) g = this.host.store.updateGame(g);
       this.announceStart(def, g, notes);
+      this.dealCards(def, g);
     }
     else
       this.host.announce(
@@ -203,20 +278,27 @@ export class Games {
     const notes = g.status === "active" ? this.runAuto(def, g) : [];
     const saved = this.host.store.updateGame(g);
     this.host.join(by, gameRoom(id));
-    if (saved.status === "active") this.announceStart(def, saved, notes);
+    if (saved.status === "active") {
+      this.announceStart(def, saved, notes);
+      this.dealCards(def, saved);
+    }
     else this.host.announce(gameRoom(id), `${by} сідає: ${def.seats[i].name}. ${this.seatsText(def, saved)}.`);
     this.publish(saved);
     return saved;
   }
 
-  move(by: string, id: number, text: string): GameRecord {
+  /** `secret`: the text reached only the broker (the API or a direct message), not the game room. */
+  move(by: string, id: number, text: string, secret = false): GameRecord {
     const g = this.activeFor(by, id);
     const def = this.def(g.game);
-    const turn = def.turn(g.moves);
-    if (g.players[turn] !== by) throw new GameError(`Не ваш хід. ${this.turnLabel(def, turn)} (${g.players[turn]}).`, 409);
+    const seat = g.players.indexOf(by);
+    if (!this.movers(def, g.moves).includes(seat)) {
+      const turn = def.turn(g.moves);
+      throw new GameError(def.movers ? "Зараз не ваш хід." : `Не ваш хід. ${this.turnLabel(def, turn)} (${g.players[turn]}).`, 409);
+    }
     let move: string;
     try {
-      move = def.play(g.moves, text);
+      move = def.play(g.moves, text, { seat, players: g.players, private: secret });
     } catch (e) {
       throw new GameError((e as Error).message);
     }
@@ -227,8 +309,11 @@ export class Games {
     outcome ??= def.outcome(g.moves);
     if (outcome) this.finish(g, outcome);
     const saved = this.host.store.updateGame(g);
-    const head = [`${by}: ${move}`, ...notes].join("\n");
-    this.host.announce(gameRoom(id), outcome ? this.finalText(def, saved) : this.turnText(def, saved, head));
+    // the move as everyone may see it: votes stay secret until all are in
+    const at = saved.moves.length - notes.length - 1;
+    const shown = def.publicMoves ? def.publicMoves(saved.moves.slice(0, at + 1))[at] : move;
+    const head = [`${by}: ${def.moveText ? def.moveText(shown) : shown}`, ...notes].join("\n");
+    this.host.announce(gameRoom(id), outcome ? (def.publicMoves ? `${head}\n` : "") + this.finalText(def, saved) : this.turnText(def, saved, head));
     this.publish(saved);
     return saved;
   }
@@ -397,14 +482,17 @@ export class Games {
 
   /** Board plus whose turn it is and the legal moves, so an agent can answer with one message. */
   private turnText(def: GameDefinition, g: GameRecord, head: string): string {
-    const turn = def.turn(g.moves);
-    const label = this.turnLabel(def, turn);
+    const movers = this.movers(def, g.moves);
+    const who =
+      movers.length === 1
+        ? `${this.turnLabel(def, movers[0])} (${g.players[movers[0]]}).`
+        : `Чекаємо на: ${movers.map((i) => g.players[i]).join(", ")}.`;
     return [
       head,
       "```",
-      def.board(g.moves),
+      def.board(this.visible(def, g)),
       "```",
-      `${label} (${g.players[turn]}). ${this.movesText(def, g.moves)}`,
+      `${who} ${this.movesText(def, g.moves)}`,
       g.players.length > 2
         ? "Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign (вийти з партії)."
         : "Щоб походити, напишіть у цю кімнату: move <хід>, без reply_to. Також: resign, draw.",
@@ -419,6 +507,8 @@ export class Games {
       : def.reasonText ? def.reasonText(r)
       : r.reason;
     if (r.winner === null) return `Нічия: ${why}.`;
+    if (r.winners && r.winners.length > 1)
+      return `Перемога: ${r.winners.map((i) => g.players[i] ?? FREE).join(", ")}. ${capitalize(why)}.`;
     return `Перемога: ${def.seats[r.winner].name} (${g.players[r.winner] ?? FREE}). ${capitalize(why)}.`;
   }
 

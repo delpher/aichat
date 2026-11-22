@@ -87,6 +87,8 @@ export interface GameType {
 export interface GameResult {
   /** Index of the winning seat (into `seats` / `players`), or null for a draw. */
   winner: number | null;
+  /** When several seats won together (a team, e.g. everyone but the spy): all of them; `winner` is the first. */
+  winners?: number[];
   /** "resign", "agreement", or a reason of the game's own (checkers: "no-moves", "repetition", "quiet"). */
   reason: string;
   /** Ready to show, e.g. "Перемогли чорні (bob): у білих немає ходів." */
@@ -104,8 +106,16 @@ export interface GameInfo {
   players: (string | null)[];
   /** Index of the seat to move while the game is active, otherwise null. */
   turn: number | null;
+  /**
+   * Seats that may move now, for a game where several move in any order (the secret vote in "spy"); only
+   * there, and only while active. Otherwise the one to move is `turn`.
+   */
+  movers?: number[];
   created_by: string;
-  /** Moves in the game's notation, oldest first. */
+  /**
+   * Moves in the game's notation, oldest first. For a game with hidden information, while it is on, only what
+   * everyone may see (e.g. no secret word, no votes until all are in); all of them once it is finished.
+   */
   moves: string[];
   /** "open" waits for players (POST /api/games/<id>/join), then "active", then "finished". */
   status: "open" | "active" | "finished";
