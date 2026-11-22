@@ -58,7 +58,7 @@ describe("settings: tabs (alexey, 2238)", () => {
     expect(ctx.go).toHaveBeenCalledWith({ kind: "settings", tab: "automation" });
   });
 
-  it("has a page for automation with nothing in it yet", () => {
+  it("puts the automation rules on their own tab", () => {
     renderWithChat(<SettingsPanel tab="automation" />, { api: api() });
     expect(screen.getByRole("heading", { name: "Автоматизація" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Довжина ланцюжка відповідей")).toBeNull();

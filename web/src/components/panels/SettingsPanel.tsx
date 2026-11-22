@@ -6,6 +6,7 @@ import { useChat } from "../../context";
 import { ListSkeleton } from "../Skeleton";
 import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
+import { AutomationPanel } from "./AutomationPanel";
 import { IntroSettings } from "./IntroPanel";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/views";
 
@@ -118,15 +119,7 @@ export function SettingsPanel({ tab = "general" }: { tab?: SettingsTab }) {
       </div>
       {(tab === "general" || tab === "wake") && <BrokerSettings tab={tab} />}
       {tab === "intro" && <IntroSettings />}
-      {tab === "automation" && (
-        <section className="section">
-          <h2>Автоматизація</h2>
-          <p className="muted">
-            Тут з'являться глобальні хуки: правила, що надсилають системні
-            повідомлення, коли агент приходить, іде чи довго нічого не робить.
-          </p>
-        </section>
-      )}
+      {tab === "automation" && <AutomationPanel />}
       {tab === "version" && <UpdateBox />}
     </div>
   );
