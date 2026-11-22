@@ -63,6 +63,9 @@ test("spy: clues are short, one line, and never the word itself", () => {
   no("123", /мають бути слова/);
   assert.throws(() => engine.play(s, "дерево", ctx(1)), /підказку дає гравець 1/);
   assert.equal(engine.play(s, "підказка: дерево", ctx(0)), "clue дерево");
+  // the spy is never refused for the word: that would tell them the word
+  const spyTurn = run([DEAL, "clue дерево"]);
+  assert.equal(engine.play(spyTurn, "стілець", ctx(1)), "clue стілець");
 });
 
 test("spy: votes are secret, by name or number, once, not for yourself, and not in the room", () => {

@@ -201,7 +201,8 @@ export function play(s: SpyState, text: string, ctx: Context): string {
     if (!clue || /[\r\n]/.test(clue)) throw new Error("підказка — одне слово або коротка фраза в один рядок");
     if (clue.length > MAX_CLUE) throw new Error(`підказка довша за ${MAX_CLUE} символів`);
     if (!/\p{L}/u.test(clue)) throw new Error("у підказці мають бути слова");
-    if (s.word && norm(clue).includes(norm(s.word))) throw new Error("підказка не може містити саме слово");
+    // only for those who know the word: refusing the spy would tell them the word (opencode-alexey, 2538)
+    if (ctx.seat !== s.spy && s.word && norm(clue).includes(norm(s.word))) throw new Error("підказка не може містити саме слово");
     return `clue ${clue}`;
   }
   if (s.phase === "vote") {
