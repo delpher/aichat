@@ -1100,3 +1100,54 @@
   color: #f3e7cf;
   transform: translateY(-4px);
 }
+
+.spy-guess-early {
+  border-color: var(--warn);
+}
+.spy-act-cell {
+  white-space: nowrap;
+  text-align: right;
+}
+.spy-history-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.spy-accusations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.spy-history-card .spy-accusations {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.spy-accusations h4 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-2);
+}
+.spy-accusations ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+.spy-accusation-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.spy-accusation-ballots {
+  margin: 2px 0 0;
+}

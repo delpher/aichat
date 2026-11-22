@@ -175,6 +175,11 @@ test("spy: anyone may accuse once; a unanimous yes ends the game, otherwise the 
   // the suspect leaves: the accusation is dropped
   a = run([...s.moves, "accuse 0 3", "out 3"]);
   assert.deepEqual([a.phase, a.turn], ["clue", 1]);
+  // a voter leaves: unanimity counts those still playing (5 players, so 4 stay)
+  const five = clues(["deal 5 1 стілець"], ["дерево"]);
+  a = run([...five, "accuse 0 1", "ballot 2 yes", "ballot 3 yes", "out 4"]);
+  assert.deepEqual(engine.movers(a), []);
+  assert.equal(reveal(a.moves).moves.at(-1), "verdict 1 spy");
 });
 
 test("spy: games from before 0.18.2 replay as they were played", () => {

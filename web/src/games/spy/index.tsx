@@ -1,7 +1,19 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useChat } from "../../context";
 import type { GameModule, PlayProps } from "../types";
-import { MAX_CLUE, REASON, ROUNDS, initial, renderBoard, replay, seatLabel, type SpyState } from "./engine";
+import {
+  MAX_CLUE,
+  REASON,
+  ROUNDS,
+  hasAccused,
+  initial,
+  pending,
+  renderBoard,
+  replay,
+  seatLabel,
+  type Accusation,
+  type SpyState,
+} from "./engine";
 
 function safeReplay(moves: string[]): SpyState {
   try {
@@ -18,10 +30,24 @@ function formatMove(move: string): string {
     const text = rest.join(" ");
     return `«${text.length > 22 ? `${text.slice(0, 21)}…` : text}»`;
   }
+  if (kind === "accuse") {
+    return `${seatLabel(Number(rest[0]))} звинувачує ${seatLabel(Number(rest[1]))}`;
+  }
+  if (kind === "ballot") {
+    const voter = seatLabel(Number(rest[0]));
+    if (rest[1] === undefined) return `${voter}: голос`;
+    return `${voter}: ${rest[1] === "yes" ? "так" : "ні"}`;
+  }
   if (kind === "vote") {
     const voter = seatLabel(Number(rest[0]));
     return rest[1] !== undefined ? `${voter} → ${seatLabel(Number(rest[1]))}` : `${voter}: голос`;
   }
+  if (kind === "verdict") {
+    if (rest[0] === "-") return "Не одностайно";
+    const who = seatLabel(Number(rest[0]));
+    return rest[1] === "spy" ? `Викрито: ${who} (шпигун)` : `Викрито: ${who} (свій)`;
+  }
+  if (kind === "stop") return `Шпигун: «${rest.slice(1).join(" ")}»`;
   if (kind === "reveal") {
     if (rest[0] === "-") return "Нічия";
     const who = seatLabel(Number(rest[0]));
@@ -34,6 +60,47 @@ function formatMove(move: string): string {
 
 function spyMoveRows(moves: string[]): Array<Array<{ text: string; ply: number }>> {
   return moves.map((m, i) => [{ text: formatMove(m), ply: i + 1 }]);
+}
+
+function verdictText(verdict: Accusation["verdict"]): string {
+  if (verdict === "spy") return "одностайно — шпигун";
+  if (verdict === "team") return "одностайно — не шпигун";
+  return "не одностайно";
+}
+
+function AccusationHistory({
+  accusations,
+  playerName,
+}: {
+  accusations: Accusation[];
+  playerName: (seat: number) => string;
+}) {
+  if (!accusations.length) return null;
+  return (
+    <div className="spy-accusations" aria-label="Історія звинувачень">
+      <h4>Звинувачення</h4>
+      <ul>
+        {accusations.map((a, idx) => {
+          const ballots = a.ballots.flatMap((b, seat) =>
+            typeof b === "boolean" ? [`${playerName(seat)} — ${b ? "так" : "ні"}`] : [],
+          );
+          return (
+            <li key={idx}>
+              <div className="spy-accusation-head">
+                <span>
+                  <b>{playerName(a.by)}</b> → <b>{playerName(a.suspect)}</b>
+                </span>
+                <span className={`spy-badge${a.verdict === "spy" ? " spy" : a.verdict === "team" ? " accused" : ""}`}>
+                  {verdictText(a.verdict)}
+                </span>
+              </div>
+              {ballots.length > 0 && <p className="muted small spy-accusation-ballots">{ballots.join(", ")}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
@@ -65,24 +132,43 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
     };
   }, [api, game.id, dealt, sender]);
 
-  // Clear draft inputs whenever the position advances or changes
   useEffect(() => {
     setClue("");
+  }, [state.phase, state.turn, state.round]);
+
+  useEffect(() => {
     setGuess("");
-  }, [state]);
+  }, [state.phase]);
 
   const playerName = (seat: number) => game.players[seat] ?? seatLabel(seat);
   const mySeatIdx = sender ? game.players.indexOf(sender) : -1;
   const mySeat = mySeatIdx >= 0 ? mySeatIdx : null;
 
   const isSpyCard = card !== null && /^ти\s*[—–-]\s*шпигун/i.test(card);
-  const cardWord = card !== null ? /«([^»]+)»/.exec(card)?.[1] ?? null : null;
+  const cardWord = !isSpyCard && card !== null ? /«([^»]+)»/.exec(card)?.[1] ?? null : null;
+
+  const live = game.status === "active" && ply === game.moves.length;
+  const canActAnytime = live && state.phase === "clue" && mySeat !== null && !state.out[mySeat];
+  const alreadyAccused = mySeat !== null && hasAccused(state, mySeat);
 
   const seats = Array.from({ length: state.seats }, (_, i) => i);
   const rounds = Array.from({ length: ROUNDS }, (_, i) => i + 1);
   const activeSeats = seats.filter((i) => !state.out[i]);
+  const activeAccusation = pending(state);
+  const completedAccusations = state.accusations.filter((a) => a.verdict !== undefined);
+
+  const accusationVoters = activeAccusation ? activeSeats.filter((i) => i !== activeAccusation.suspect) : [];
+  const accusationVotedCount = activeAccusation
+    ? accusationVoters.filter((i) => activeAccusation.ballots[i] !== undefined).length
+    : 0;
   const votedCount = activeSeats.filter((i) => state.votes[i] !== undefined).length;
-  const showVotesCol = state.phase === "vote" || state.phase === "guess" || state.phase === "over";
+  const hasFinalVotes = state.votes.some((v) => v !== undefined);
+  const showVotesCol =
+    state.phase === "accuse" ||
+    state.phase === "vote" ||
+    state.phase === "guess" ||
+    (state.phase === "over" && hasFinalVotes);
+  const showAccuseCol = canActAnytime;
 
   const trimmedClue = clue.trim();
   const clueValid = trimmedClue.length > 0 && trimmedClue.length <= MAX_CLUE && /\p{L}/u.test(trimmedClue);
@@ -96,7 +182,14 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
     setClue("");
   };
 
-  const submitGuess = (e: FormEvent) => {
+  const submitEarlyGuess = (e: FormEvent) => {
+    e.preventDefault();
+    if (!guessValid) return;
+    onMove(`guess ${trimmedGuess}`);
+    setGuess("");
+  };
+
+  const submitLegacyGuess = (e: FormEvent) => {
     e.preventDefault();
     if (!guessValid) return;
     onMove(trimmedGuess);
@@ -127,6 +220,29 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
             </>
           )}
         </section>
+      )}
+
+      {canActAnytime && isSpyCard && !hiddenCard && (
+        <form className="spy-controls spy-guess-early" onSubmit={submitEarlyGuess}>
+          <label className="small" htmlFor={`spy-early-guess-${game.id}`}>
+            Зупинити гру й назвати слово (якщо помилитеся — програєте):
+          </label>
+          <div className="spy-form">
+            <input
+              id={`spy-early-guess-${game.id}`}
+              type="text"
+              className="spy-input"
+              value={guess}
+              maxLength={MAX_CLUE}
+              placeholder="Таємне слово…"
+              aria-label="Слово шпигуна"
+              onChange={(e) => setGuess(e.target.value)}
+            />
+            <button type="submit" className="btn primary sm" disabled={!guessValid}>
+              Назвати слово
+            </button>
+          </div>
+        </form>
       )}
 
       {state.phase === "deal" && (
@@ -164,6 +280,7 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
               </div>
             )}
           </dl>
+          <AccusationHistory accusations={completedAccusations} playerName={playerName} />
         </section>
       )}
 
@@ -172,6 +289,13 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
           {state.phase === "clue" && (
             <>
               Коло <b>{state.round}</b> з {ROUNDS} · підказку дає <b>{playerName(state.turn)}</b>
+            </>
+          )}
+          {state.phase === "accuse" && activeAccusation && (
+            <>
+              Звинувачення: <b>{playerName(activeAccusation.suspect)}</b> (звинувачує{" "}
+              <b>{playerName(activeAccusation.by)}</b>) · проголосували <b className="num">{accusationVotedCount}</b> з{" "}
+              <b className="num">{accusationVoters.length}</b>
             </>
           )}
           {state.phase === "vote" && (
@@ -214,9 +338,35 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
         </form>
       )}
 
+      {state.phase === "accuse" && activeAccusation && canMove !== null && (
+        <div className="spy-controls" role="group" aria-label="Голосування за звинувачення">
+          <p className="small">
+            Згодні, що <b>{playerName(activeAccusation.suspect)}</b> — шпигун? Голосування таємне:
+          </p>
+          <div className="spy-votes">
+            <button type="button" className="btn primary sm" onClick={() => onMove("vote так")}>
+              Так
+            </button>
+            <button type="button" className="btn quiet sm" onClick={() => onMove("vote ні")}>
+              Ні
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.phase === "accuse" && activeAccusation && canMove === null && mySeat !== null && !state.out[mySeat] && (
+        <p className="muted small spy-voted-note">
+          {mySeat === activeAccusation.suspect
+            ? "Вас звинуватили. Підозрюваний у цьому голосуванні не бере участі…"
+            : activeAccusation.ballots[mySeat] !== undefined
+              ? "Ваш голос прийнято. Чекаємо, поки проголосують решта гравців…"
+              : null}
+        </p>
+      )}
+
       {state.phase === "vote" && canMove !== null && (
         <div className="spy-controls" role="group" aria-label="Таємне голосування">
-          <p className="small">Хто шпигун? Оберіть таємно:</p>
+          <p className="small">Хто шпигун? Оберіть таємно (викриття одностайне):</p>
           <div className="spy-votes">
             {activeSeats
               .filter((i) => i !== canMove)
@@ -243,7 +393,7 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
         )}
 
       {state.phase === "guess" && canMove !== null && canMove === state.turn && (
-        <form className="spy-controls" onSubmit={submitGuess}>
+        <form className="spy-controls" onSubmit={submitLegacyGuess}>
           <label className="small" htmlFor={`spy-guess-${game.id}`}>
             Вас викрили! Назвіть таємне слово, щоб перемогти:
           </label>
@@ -275,6 +425,7 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
                   <th key={r}>Коло {r}</th>
                 ))}
                 {showVotesCol && <th>Голос</th>}
+                {showAccuseCol && <th aria-label="Дії" />}
               </tr>
             </thead>
             <tbody>
@@ -282,8 +433,12 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
                 const isTurn = (state.phase === "clue" || state.phase === "guess") && state.turn === seat;
                 const isOut = Boolean(state.out[seat]);
                 const isSpyKnown = state.spy === seat;
-                const isWrongAccused = state.accused?.seat === seat && !state.accused.spy;
+                const isSuspectNow = Boolean(activeAccusation && activeAccusation.suspect === seat);
+                const isWrongAccused =
+                  (state.accused?.seat === seat && !state.accused.spy) ||
+                  state.accusations.some((a) => a.verdict === "team" && a.suspect === seat);
                 const vote = state.votes[seat];
+                const ballot = activeAccusation?.ballots[seat];
                 const rowClass = [isTurn ? "turn" : "", isOut ? "out" : "", isSpyKnown ? "spy-row" : ""]
                   .filter(Boolean)
                   .join(" ");
@@ -294,7 +449,8 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
                         <span className="seat-dot seat-num">{seat + 1}</span>
                         <span className="spy-name">{playerName(seat)}</span>
                         {isSpyKnown && <span className="spy-badge spy">шпигун</span>}
-                        {isWrongAccused && <span className="spy-badge accused">викритий</span>}
+                        {isSuspectNow && <span className="spy-badge accused">підозрюваний</span>}
+                        {!isSuspectNow && isWrongAccused && <span className="spy-badge accused">викритий</span>}
                         {isOut && <span className="spy-badge">вийшов</span>}
                       </div>
                     </td>
@@ -308,16 +464,54 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
                       );
                     })}
                     {showVotesCol && (
-                      <td className={typeof vote === "number" ? "spy-vote-shown" : "spy-empty"}>
+                      <td
+                        className={
+                          state.phase === "accuse"
+                            ? typeof ballot === "boolean"
+                              ? "spy-vote-shown"
+                              : "spy-empty"
+                            : typeof vote === "number"
+                              ? "spy-vote-shown"
+                              : "spy-empty"
+                        }
+                      >
                         {isOut
                           ? "вийшов"
-                          : typeof vote === "number"
-                            ? `→ ${playerName(vote)}`
-                            : vote === null
-                              ? "проголосував"
-                              : state.phase === "vote"
-                                ? "чекаємо"
-                                : "—"}
+                          : state.phase === "accuse" && activeAccusation
+                            ? seat === activeAccusation.suspect
+                              ? "підозрюваний"
+                              : seat === activeAccusation.by
+                                ? "так (ініціатор)"
+                                : typeof ballot === "boolean"
+                                  ? ballot
+                                    ? "так"
+                                    : "ні"
+                                  : ballot === null
+                                    ? "проголосував"
+                                    : "чекаємо"
+                            : typeof vote === "number"
+                              ? `→ ${playerName(vote)}`
+                              : vote === null
+                                ? "проголосував"
+                                : state.phase === "vote"
+                                  ? "чекаємо"
+                                  : "—"}
+                      </td>
+                    )}
+                    {showAccuseCol && (
+                      <td className="spy-act-cell">
+                        {seat !== mySeat && !isOut && (
+                          <button
+                            type="button"
+                            className="btn quiet sm"
+                            disabled={alreadyAccused}
+                            title={alreadyAccused ? "Звинувачувати можна лише раз за гру" : `Звинуватити ${playerName(seat)}`}
+                            aria-label={`Звинуватити ${playerName(seat)}`}
+                            onClick={() => onMove(`accuse ${game.players[seat] ?? seat + 1}`)}
+                          >
+                            Звинуватити
+                          </button>
+                        )}
                       </td>
                     )}
                   </tr>
@@ -326,6 +520,12 @@ export function SpyPlay({ game, ply, canMove, onMove }: PlayProps) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {state.phase !== "over" && completedAccusations.length > 0 && (
+        <section className="spy-history-card">
+          <AccusationHistory accusations={completedAccusations} playerName={playerName} />
+        </section>
       )}
     </div>
   );
@@ -344,11 +544,12 @@ function SpyTile() {
 export const spy: GameModule = {
   id: "spy",
   rules:
-    "Гра для 3–8 гравців. Усі, крім одного шпигуна, отримують у приватній картці однакове таємне слово; шпигун слова не знає. " +
-    "За два кола кожен по черзі дає одну підказку (слово або коротку фразу до 40 символів, своїм не можна називати саме слово). " +
-    "Далі всі таємно голосують, хто шпигун, і голоси відкриваються разом. Якщо викрили шпигуна, його особа відкривається, " +
-    "і він має останній шанс вгадати слово (саме слово лишається приватним до кінця партії): вгадав — переміг шпигун, ні — перемогли свої. " +
-    "Якщо викрили не шпигуна або вийшла нічия — переміг шпигун. Агенти: move <підказка>, голос особисто для aichat — vote <ім'я>, здогадка — move <слово>.",
+    "Гра для 3–8 гравців із випадковим порядком ходів. Усі, крім одного шпигуна, отримують у приватній картці однакове таємне слово; " +
+    "шпигун слова не знає. За два кола кожен по черзі дає одну підказку (слово або коротку фразу до 40 символів, своїм не можна називати саме слово). " +
+    "Поки йдуть підказки, кожен гравець раз за гру може звинуватити підозрюваного (move accuse <ім'я> або кнопкою): решта таємно голосують так чи ні. " +
+    "Якщо всі «так» — гра завершується (шпигун — перемога своїх, невинний — перемога шпигуна); інакше підказки тривають. " +
+    "Також поки йдуть підказки, шпигун може будь-коли таємно зупинити гру й назвати слово (guess <слово>): вгадав — переміг, помилився — програв. " +
+    "Після двох кіл — фінальне таємне голосування (vote <ім'я>): викриття лише одностайне, без права шпигуна вгадувати після викриття.",
   Tile: SpyTile,
   Play: SpyPlay,
   moveRows: spyMoveRows,
