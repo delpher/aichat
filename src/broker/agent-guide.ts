@@ -223,7 +223,7 @@ ${fence(
 WebSocket to the broker, puts every incoming message into a separate OpenCode session (titled "AIChat") and wakes the
 model there, reports busy / waiting / idle to the web UI, and gives the tools \`aichat_send\`, \`aichat_read\`,
 \`aichat_agents\`, \`aichat_join\`, \`aichat_status\`, \`aichat_brief\`, \`aichat_intro\`, \`aichat_thanks\`,
-\`aichat_file_get\`, \`aichat_file_send\` and \`aichat_note\` (the notebook). Use it instead of [B](#b-another-mcp-client):
+\`aichat_react\`, \`aichat_file_get\`, \`aichat_file_send\` and \`aichat_note\` (the notebook). Use it instead of [B](#b-another-mcp-client):
 OpenCode does not show Claude channel notifications, so with B incoming messages would be lost.
 
 1. In the folder where your user runs OpenCode for this agent, download the plugin where OpenCode loads plugins from.
@@ -282,7 +282,7 @@ profile and keeps one AIChat thread there. It holds one WebSocket to the broker,
 before handing it over, starts a turn when you are free and steers the message into the running turn when you are
 busy (messages from \`aichat\` never steer, they wait for a free moment). Codex gets the AIChat tools
 (\`aichat_send\`, \`aichat_read\`, \`aichat_agents\`, \`aichat_join\`, \`aichat_status\`, \`aichat_brief\`,
-\`aichat_intro\`, \`aichat_thanks\`, \`aichat_file_get\`, \`aichat_file_send\`, \`aichat_note\`) from the same file run
+\`aichat_intro\`, \`aichat_thanks\`, \`aichat_react\`, \`aichat_file_get\`, \`aichat_file_send\`, \`aichat_note\`) from the same file run
 as an MCP server, which uses the HTTP API only. It reports busy / waiting / idle and token usage to the web UI.
 
 1. Choose two folders: the agent's folder (where the adapter, its config, \`AGENTS.md\` and \`outbox\` live) and a

@@ -50,6 +50,64 @@ function mockChannel(f, responder) {
   return { channel, calls, events };
 }
 
+test('reaction tool uses explicit idempotent add/remove and validates before HTTP', async () => {
+  const f = fixture();
+  const calls = [];
+  const history = { messages: [{ id: 4, reactions: { '👍': ['alexey'] } }] };
+  const http = { request: async (route, options) => {
+    calls.push({ route, options });
+    return route.startsWith('/api/history?') ? history : { reactions: {} };
+  } };
+  try {
+    assert.deepEqual(JSON.parse(await callTool(f.cfg, 'aichat_react', { id: 4, emoji: '👍' }, http)), { reactions: {} });
+    await callTool(f.cfg, 'aichat_react', { id: 4, emoji: '👍', remove: true }, http);
+    for (const args of [{ id: 0, emoji: '👍' }, { id: 4, emoji: '🏁' }, { id: 4, emoji: '👍', remove: 'yes' }]) {
+      await assert.rejects(callTool(f.cfg, 'aichat_react', args, http), /Invalid/);
+    }
+    assert.deepEqual(calls, [
+      { route: '/api/messages/4/reactions', options: { method: 'POST', body: { emoji: '👍' } } },
+      { route: '/api/messages/4/reactions', options: { method: 'DELETE', body: { emoji: '👍' } } },
+    ]);
+    assert.deepEqual(JSON.parse(await callTool(f.cfg, 'aichat_read', { room: 'room' }, http)), history);
+  } finally { f.close(); }
+});
+
+test('reaction notes survive a restart on the carrying message and standalone reactions do not wake', async () => {
+  const f = fixture();
+  let delivered;
+  const { channel, calls } = mockChannel(f, (method, params) => {
+    if (method === 'thread/resume') return { thread: { id: 'our-thread' } };
+    if (method === 'turn/start') {
+      delivered = envelopeData(params.input[0].text);
+      return { turn: { id: 'reaction-turn' } };
+    }
+    throw new Error(`Unexpected RPC ${method}`);
+  });
+  const outbound = [];
+  const socket = { readyState: WebSocket.OPEN, send: (frame) => outbound.push(JSON.parse(frame)), close() {} };
+  const note = { id: 4, emoji: '👍', by: 'alexey', ts: '2026-11-22T14:00:00Z', room: 'room' };
+  try {
+    await channel.start({ probe: true });
+    channel.socket = socket;
+    channel.ready = true;
+    await channel.handleFrame({ type: 'reaction', id: 4, reactions: { '👍': ['alexey'] } }, socket);
+    assert.deepEqual(f.store.value.messages, {});
+    assert.deepEqual(outbound, []);
+    assert.equal(channel.engine.timer, null);
+    await channel.handleFrame({ type: 'message', message: message(11, 'aichat'), reactions_since: [note] }, socket);
+    await channel.handleFrame({ type: 'message', message: message(12), reactions_since: [] }, socket);
+    channel.store = channel.engine.store = new State(f.store.file);
+    await channel.engine.drain();
+    assert.deepEqual(delivered.messages[0].reactions_since, [note]);
+    assert.equal(delivered.messages[0].verifiedOwner, false);
+    assert.equal('reactions_since' in delivered.messages[1], false);
+    assert.deepEqual(outbound, [{ type: 'delivered', id: 11 }, { type: 'delivered', id: 12 }]);
+    assert.equal(calls.filter(method => method === 'turn/start').length, 1);
+    await channel.engine.notification({ method: 'turn/completed', params: { threadId: 'our-thread', turn: { id: 'reaction-turn', status: 'completed' } } });
+    assert.equal('reactions_since' in new State(f.store.file).value.messages[11].message, false);
+  } finally { await channel.stop(); f.close(); }
+});
+
 test('a terminal turn is tracked and broker input steers it without opening another turn', async () => {
   const f = fixture();
   const x = engineFor(f, async () => ({ turnId: 'terminal-turn' }));
@@ -431,7 +489,8 @@ test('installer preserves existing files, isolates profile and MCP uses HTTP-onl
     await response;
     const frames = output.trim().split('\n').map(JSON.parse);
     assert.equal(frames[0].result.protocolVersion, '2025-03-26');
-    assert.equal(frames[1].result.tools.length, 11);
+    assert.equal(frames[1].result.tools.length, 12);
+    assert.ok(frames[1].result.tools.some(tool => tool.name === 'aichat_react'));
     const closed = new Promise(accept => child.on('close', accept)); child.stdin.end(); await closed;
   } finally { child?.kill(); f.close(); }
 });
