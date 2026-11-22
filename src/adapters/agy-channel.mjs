@@ -1126,9 +1126,31 @@ class DeliveryEngine {
   async handlePromptResolve(entry, result) {
     try {
       this.inFlight.delete(entry.key);
-      await this.markAccepted(entry, null);
-
       const stopReason = result?.stopReason || "end_turn";
+      const cancelledBeforeAccept =
+        !entry.accepted && (stopReason === "cancelled" || (entry.watchdogCancelled && !result?.usage));
+
+      if (cancelledBeforeAccept) {
+        const uncertainIds = entry.ids.filter((id) => this.store.value.messages[id]?.status === "uncertain");
+        if (uncertainIds.length) {
+          this.store.update(uncertainIds, {
+            status: "uncertain",
+            processed: false,
+            turnStatus: "cancelled",
+            reason: "Prompt cancelled before acceptance; inspect history or reconcile via session/load",
+          });
+          this.log("input_cancelled_before_processed", {
+            turnId: entry.key,
+            ids: uncertainIds,
+            stopReason,
+            watchdogCancelled: !!entry.watchdogCancelled,
+          });
+        }
+        this.turnChainIds = this.turnChainIds.filter((id) => !entry.ids.includes(id));
+      } else {
+        await this.markAccepted(entry, null);
+      }
+
       if (result?.usage) {
         this.onUsage(result.usage);
         // Natural completion of this prompt (with usage): mark its own messages processed immediately
@@ -1383,6 +1405,9 @@ class Channel {
     }
     if (state.stage === "wait_update") {
       state.stage = "wait_cancel";
+      for (const entry of this.engine.inFlight.values()) {
+        entry.watchdogCancelled = true;
+      }
       const sessionId = this.store.value.sessionId;
       this.log("permission_decline_watchdog_cancel", {
         tool: state.tool,
@@ -1580,15 +1605,12 @@ class Channel {
           if (frame.method === "session/update" && frame.params?.sessionId === this.store.value.sessionId) {
             const update = frame.params.update;
             if (this.permissionWatchdog?.stage === "wait_update") {
-              const isDeclinedToolStatus =
-                update?.sessionUpdate === "tool_call_update" &&
-                ((this.permissionWatchdog.toolCallId && update.toolCallId === this.permissionWatchdog.toolCallId) ||
-                  ["failed", "cancelled"].includes(update.status));
-              if (isDeclinedToolStatus || update?.sessionUpdate === "usage_update") {
-                const wd = this.permissionWatchdog;
-                clearTimeout(wd.timer);
-                wd.timer = setTimeout(() => this.onPermissionWatchdogTimeout(wd), this.cfg.permissionDeclineTimeoutMs);
-              } else {
+              const isGenuineProgress =
+                update?.sessionUpdate === "agent_message_chunk" ||
+                update?.sessionUpdate === "agent_thought_chunk" ||
+                (update?.sessionUpdate === "tool_call" &&
+                  (!this.permissionWatchdog.toolCallId || update.toolCallId !== this.permissionWatchdog.toolCallId));
+              if (isGenuineProgress) {
                 this.clearPermissionWatchdog();
               }
             }
@@ -1793,8 +1815,10 @@ class Channel {
     }
 
     // 2. Mark incomplete `accepted`/`delivered` messages from a previous process as interrupted
+    // (preserve `processed: false, turnStatus: "cancelled"` on watchdog-cancelled inputs reconciled via replay,
+    // since replay proves the input reached session history but not that the model processed it).
     const incomplete = Object.values(this.store.value.messages).filter(
-      (m) => ["accepted", "delivered"].includes(m.status) && !m.processed
+      (m) => ["accepted", "delivered"].includes(m.status) && !m.processed && m.turnStatus !== "cancelled"
     );
     if (incomplete.length) {
       this.store.update(

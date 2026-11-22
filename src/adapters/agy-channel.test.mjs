@@ -992,14 +992,18 @@ test("Channel permission_declined watchdog: cancels & recovers, disarms on model
         options: [{ optionId: "deny", kind: "reject_once" }],
       },
     });
-    // Declined tool's own failed status update must NOT disarm the watchdog
-    rpc.emit("notification", {
-      method: "session/update",
-      params: {
-        sessionId: "sess-wd-a",
-        update: { sessionUpdate: "tool_call_update", toolCallId: "wc-a", status: "failed" },
-      },
-    });
+    // Declined tool's status update and service updates must NOT disarm the watchdog
+    for (const update of [
+      { sessionUpdate: "tool_call_update", toolCallId: "wc-a", status: "failed" },
+      { sessionUpdate: "available_commands_update", availableCommands: [] },
+      { sessionUpdate: "current_mode_update", currentModeId: "accept-edits" },
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "echo" } },
+    ]) {
+      rpc.emit("notification", {
+        method: "session/update",
+        params: { sessionId: "sess-wd-a", update },
+      });
+    }
 
     await waitFor(() => rpc.sent.some((f) => f.method === "session/cancel"));
     await waitFor(() => ch.engine.active === null);
@@ -1091,4 +1095,123 @@ test("Channel permission_declined watchdog: cancels & recovers, disarms on model
     assert.equal(process.exitCode, 1);
     assert.match(ch.status.error, /hung after permission_declined/);
   }
+});
+
+test("Watchdog cancel preserves unaccepted steer as uncertain/cancelled and reconciles via session/load (#2302-#2306)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const wdCfg = { ...cfg, permissionDeclineTimeoutMs: 50, permissionCancelGraceMs: 150 };
+  const storePath = path.join(agentDir, ".aichat", "state-wd-cancel.json");
+  const store = new State(storePath);
+
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-wd-cancel" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+  const origSend = rpc.send.bind(rpc);
+  rpc.send = (frame) => {
+    origSend(frame);
+    if (frame.method === "session/cancel" && defs[1]) {
+      defs[1].resolve({ stopReason: "cancelled" });
+    }
+  };
+
+  const ch = new Channel(wdCfg, { rpc, http: new FakeHttp(), store });
+  await ch.start({ probe: true });
+  const acked = [];
+  ch.acknowledge = (id) => {
+    acked.push(id);
+    return true;
+  };
+
+  // 1. Message #220 starts turn 1 and is accepted
+  await ch.engine.receive({ id: 220, from: "alexey", room: "lobby", text: "first task" });
+  await waitFor(() => defs.length === 1);
+  rpc.emit("notification", {
+    method: "session/update",
+    params: {
+      sessionId: "sess-wd-cancel",
+      update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "working" } },
+    },
+  });
+  await waitFor(() => store.value.messages["220"].status === "delivered");
+
+  // 2. Steer #221 arrives mid-turn (unaccepted), #1 resolves early (handoff without usage)
+  await ch.engine.receive({ id: 221, from: "alexey", room: "lobby", text: "unseen steer" });
+  await waitFor(() => defs.length === 2);
+  defs[0].resolve({ stopReason: "end_turn" });
+  await new Promise((r) => setTimeout(r, 40));
+
+  // 3. Permission declined while #221 is unaccepted -> watchdog cancels -> #221 resolves cancelled
+  rpc.emit("request", {
+    id: "perm-steer",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-wd-cancel",
+      toolCall: { name: "write_file", toolCallId: "wc-steer" },
+      options: [{ optionId: "deny", kind: "reject_once" }],
+    },
+  });
+
+  await waitFor(() => ch.engine.active === null);
+
+  // Already-accepted #220 -> processed with turnStatus "cancelled"
+  assert.equal(store.value.messages["220"].status, "delivered");
+  assert.equal(store.value.messages["220"].processed, true);
+  assert.equal(store.value.messages["220"].turnStatus, "cancelled");
+
+  // Unaccepted steer #221 -> stays uncertain (NOT delivered/processed, NOT auto-requeued)
+  assert.equal(store.value.messages["221"].status, "uncertain");
+  assert.equal(store.value.messages["221"].processed, false);
+  assert.equal(store.value.messages["221"].turnStatus, "cancelled");
+  assert.deepEqual(acked, [220]);
+
+  const steerRequestId = store.value.messages["221"].requestId;
+  assert.ok(steerRequestId);
+  await ch.stop();
+
+  // 4. Add a second cancelled-uncertain message #222 that will NOT appear in replay, then reload session
+  const store2 = new State(storePath);
+  store2.enqueue({ id: 222, from: "alexey", room: "lobby", text: "not in replay" }, wdCfg);
+  store2.update([222], {
+    status: "uncertain",
+    requestId: "aichat-missing-222",
+    processed: false,
+    turnStatus: "cancelled",
+  });
+
+  const rpc2 = new FakeRpc();
+  rpc2.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" }, agentCapabilities: { loadSession: true } }));
+  rpc2.onRequest("session/list", () => ({ sessions: [{ sessionId: "sess-wd-cancel" }] }));
+  rpc2.onRequest("session/load", () => {
+    rpc2.emit("notification", {
+      method: "session/update",
+      params: {
+        sessionId: "sess-wd-cancel",
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: `{"requestId":"${steerRequestId}"}` },
+        },
+      },
+    });
+    return { sessionId: "sess-wd-cancel" };
+  });
+
+  const ch2 = new Channel(wdCfg, { rpc: rpc2, http: new FakeHttp(), store: store2 });
+  await ch2.start({ probe: true });
+
+  // #221 found in replay -> accepted, but still processed: false + turnStatus: "cancelled"
+  assert.equal(store2.value.messages["221"].status, "accepted");
+  assert.equal(store2.value.messages["221"].processed, false);
+  assert.equal(store2.value.messages["221"].turnStatus, "cancelled");
+
+  // #222 NOT in replay -> remains uncertain + cancelled
+  assert.equal(store2.value.messages["222"].status, "uncertain");
+  assert.equal(store2.value.messages["222"].processed, false);
+  assert.equal(store2.value.messages["222"].turnStatus, "cancelled");
+  await ch2.stop();
 });
