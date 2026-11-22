@@ -227,6 +227,7 @@ export class Broker {
         this.notifyRooms(agent);
       },
       announce: (room, text) => this.announce(room, text),
+      notify: (to, text) => this.notify(to, text),
       publish: (game) => this.broadcast({ type: "game", game }),
       publishRatings: (game, ratings) => this.broadcast({ type: "ratings", game, ratings }),
       random: opts.random,
@@ -332,7 +333,8 @@ export class Broker {
     if (text.length > cfg.maxTextLength) throw new BrokerError(`text is longer than ${cfg.maxTextLength} characters`);
     if (!!args.to === !!args.room) throw new BrokerError("set exactly one of `to` (agent) or `room`");
     if (args.to) {
-      if (!cfg.agents.some((a) => a.name === args.to)) throw new BrokerError(`unknown agent: ${args.to}`, 404);
+      // the system sender takes game commands in direct messages (secret moves, see Games.onDirect)
+      if (args.to !== SYSTEM_SENDER && !cfg.agents.some((a) => a.name === args.to)) throw new BrokerError(`unknown agent: ${args.to}`, 404);
       if (args.to === from) throw new BrokerError("cannot send a message to yourself");
     }
     if (args.room) {
@@ -363,6 +365,10 @@ export class Broker {
     this.log(`#${msg.id} ${from} -> ${msg.to ?? "#" + msg.room} (hops ${hops}${files})`);
     this.deliver(msg);
     if (msg.room && GAME_ROOM_RE.test(msg.room)) this.games.onRoomMessage(from, msg.room, text);
+    if (msg.to === SYSTEM_SENDER) {
+      const answer = this.games.onDirect(from, text);
+      if (answer) this.notify(from, answer);
+    }
     this.hooks.realActivity(from);
     return msg;
   }
@@ -1450,17 +1456,18 @@ export class Broker {
         return reply(200, { games: this.games.list(q).map(info) });
       }
       if (route === "POST /api/games") return reply(201, { game: info(this.games.create(me, await readJson(req))) });
-      const m = url.pathname.match(/^\/api\/games\/(\d+)(?:\/(join|move|resign|draw))?$/);
+      const m = url.pathname.match(/^\/api\/games\/(\d+)(?:\/(join|move|resign|draw|card))?$/);
       if (!m) return reply(404, { error: "not found" });
       const id = Number(m[1]);
       if (req.method === "GET" && !m[2]) return reply(200, { game: info(this.games.get(id)) });
+      if (req.method === "GET" && m[2] === "card") return reply(200, { card: this.games.card(me, id) });
       if (req.method !== "POST" || !m[2]) return reply(404, { error: "not found" });
       const b = m[2] === "join" || m[2] === "move" ? await readJson(req) : {};
       const g =
         m[2] === "join"
           ? this.games.join(me, id, b.seat)
           : m[2] === "move"
-            ? this.games.move(me, id, typeof b.move === "string" ? b.move : "")
+            ? this.games.move(me, id, typeof b.move === "string" ? b.move : "", true)
             : m[2] === "resign"
               ? this.games.resign(me, id)
               : this.games.draw(me, id);

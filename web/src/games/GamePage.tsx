@@ -70,11 +70,13 @@ export function GamePage({ id }: { id: number }) {
   const shownPly = ply === null ? latest : Math.min(ply, latest);
   const mySeat = seatOf(game, sender);
   const live = game.status === "active" && shownPly === latest;
-  const canMove = live && !busy && mySeat !== null && game.turn === mySeat ? mySeat : null;
+  // seats that may move now: usually the one whose turn it is, several in a secret vote (spy)
+  const movers = game.movers ?? (game.turn != null ? [game.turn] : []);
+  const canMove = live && !busy && mySeat !== null && movers.includes(mySeat) ? mySeat : null;
   // Players see their own seat nearest them; spectators see the first seat there.
   const bottom = mySeat ?? 0;
   const others = game.players.map((_, i) => i).filter((i) => i !== bottom);
-  const waitingFor = live && game.turn != null && game.turn !== mySeat ? game.players[game.turn] : null;
+  const waitingFor = live && movers.length && canMove === null ? movers.map((i) => game.players[i]).join(", ") : null;
 
   // People see only rooms they are in; admins see every room. Anyone may join a game room.
   const inRoom = session.mode === "admin" || overview.rooms.some((r) => r.name === game.room);
@@ -122,7 +124,7 @@ export function GamePage({ id }: { id: number }) {
       <div className="game">
         <div className="game-board">
           {others.map((i) => (
-            <PlayerBar key={i} name={game.players[i]} seat={i} seatId={t?.seats[i]?.id} numbered={game.players.length > 2} label={seatName(t, i)} turn={live && game.turn === i} rating={ratings[game.players[i] ?? ""]} />
+            <PlayerBar key={i} name={game.players[i]} seat={i} seatId={t?.seats[i]?.id} numbered={game.players.length > 2} label={seatName(t, i)} turn={live && movers.includes(i)} rating={ratings[game.players[i] ?? ""]} />
           ))}
           {m ? (
             <m.Play game={game} ply={shownPly} canMove={canMove} bottom={bottom} onMove={(move) => void act("move", { move })} />
@@ -137,7 +139,7 @@ export function GamePage({ id }: { id: number }) {
             seatId={t?.seats[bottom]?.id}
             numbered={game.players.length > 2}
             label={seatName(t, bottom)}
-            turn={live && game.turn === bottom}
+            turn={live && movers.includes(bottom)}
             rating={ratings[game.players[bottom] ?? ""]}
           />
         </div>
