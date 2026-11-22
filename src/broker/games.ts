@@ -243,7 +243,8 @@ export class Games {
     if (new Set(named).size !== named.length) throw new GameError("a player cannot take two seats");
     if (!named.includes(by) && !this.host.isHuman(by)) throw new GameError("agents may only create games they play in", 403);
     const status = named.length === n ? "active" : "open";
-    let g = this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
+    if (status === "active") this.shuffle(def, players);
+    let g =this.host.store.createGame({ game: def.id, players, created_by: by, moves: [], status, result: null, draw_offer: null });
     const room = gameRoom(g.id);
     for (const n of new Set([...named, by])) this.host.join(n, room);
     if (status === "active") {
@@ -274,7 +275,10 @@ export class Games {
       throw new GameError(`that seat is taken; free: ${free.join(", ") || "none"}`, 409);
     }
     g.players[i] = by;
-    if (!g.players.includes(null)) g.status = "active";
+    if (!g.players.includes(null)) {
+      g.status = "active";
+      this.shuffle(def, g.players);
+    }
     const notes = g.status === "active" ? this.runAuto(def, g) : [];
     const saved = this.host.store.updateGame(g);
     this.host.join(by, gameRoom(id));
@@ -285,6 +289,16 @@ export class Games {
     else this.host.announce(gameRoom(id), `${by} сідає: ${def.seats[i].name}. ${this.seatsText(def, saved)}.`);
     this.publish(saved);
     return saved;
+  }
+
+  /** For games with shuffleSeats: mixes the full table in place (Fisher-Yates), before the first entry. */
+  private shuffle(def: GameDefinition, players: (string | null)[]) {
+    if (!def.shuffleSeats) return;
+    const random = this.host.random ?? Math.random;
+    for (let i = players.length - 1; i > 0; i--) {
+      const j = Math.min(i, Math.floor(random() * (i + 1)));
+      [players[i], players[j]] = [players[j], players[i]];
+    }
   }
 
   /** `secret`: the text reached only the broker (the API or a direct message), not the game room. */

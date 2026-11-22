@@ -3,7 +3,7 @@
 // still being cast are left out.
 //
 // Rules (agreed in mini-games-dev, 2519-2526): every player but one gets the same secret word; the spy gets
-// none. Two rounds: in seat order each player gives one clue, a word or a short phrase, so that the others see
+// none. Two rounds: in seat order (the broker seats the players at random) each player gives one clue, a word or a short phrase, so that the others see
 // they know the word, without giving it away to the spy. Then everyone votes in secret for whom they think is
 // the spy; the votes are shown together once all are in. The one with the most votes, if no one ties with
 // them, is accused. Accused the spy: the spy has one guess at the word; right, the spy wins, wrong, the
@@ -235,7 +235,7 @@ export function auto(s: SpyState, random: () => number, seats: number, words: re
     const word = words[pick(words.length)];
     return {
       move: `deal ${seats} ${spy} ${word}`,
-      note: "Картки роздано: кожен бачить своє слово, шпигун — що він шпигун. Коло 1.",
+      note: "Картки роздано: кожен бачить своє слово, шпигун — що він шпигун. Порядок гравців випадковий. Коло 1.",
     };
   }
   if (s.phase === "vote" && movers(s).length === 0) {
