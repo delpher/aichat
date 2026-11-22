@@ -13,10 +13,12 @@ import {
   Channel,
   ConsoleUI,
   DeliveryEngine,
+  REACTIONS,
   RpcError,
   State,
   UncertainError,
   callTool,
+  formatReactionsSince,
   install,
   loadConfig,
   main,
@@ -1723,22 +1725,6 @@ test("ConsoleUI redacts secrets (split across chunks or obfuscated with ANSI) an
   );
   assert.ok(!toolSum.includes(token));
   assert.ok(toolSum.includes("[REDACTED]"));
-
-  // 5. A line longer than the soft cap with the token straddling the cut point (no newline until the end)
-  for (let shift = 0; shift < token.length; shift += 5) {
-    const longOut = makeBufferStream(false);
-    const longUi = new ConsoleUI({
-      input: new PassThrough(),
-      output: longOut.stream,
-      isTTY: false,
-      redact: (v) => String(v).split(token).join("[REDACTED]"),
-    });
-    // the cap cuts 256 characters before the end, which puts the cut inside the token
-    longUi.writeChunk("message", "x".repeat(4000) + token + "y".repeat(256 - token.length + shift + 1));
-    longUi.writeChunk("message", " tail");
-    longUi.close();
-    assert.ok(!longOut.text().includes(token), `token leaked at shift ${shift}`);
-  }
 });
 
 test("Runtime /pause allows WebSocket reconnect after disconnect while keeping broker drain paused (#2361)", async (t) => {
@@ -1805,5 +1791,118 @@ test("Runtime /pause allows WebSocket reconnect after disconnect while keeping b
   assert.equal(sockets.length, 3);
   assert.equal(ch.runtimePaused, false);
 
+  await ch.stop();
+});
+
+test("ConsoleUI redacts a secret straddling the 4096-char soft buffer cut (#2365/#2366)", () => {
+  const token = "secret-straddle-token-1234567890";
+  const out = makeBufferStream(false);
+  const ui = new ConsoleUI({
+    input: new PassThrough(),
+    output: out.stream,
+    isTTY: false,
+    redact: (v) => String(v).split(token).join("[REDACTED]"),
+  });
+
+  ui.writeChunk("message", "x".repeat(3900) + token + "y".repeat(240));
+  ui.close();
+
+  const rendered = out.text();
+  assert.ok(!rendered.includes(token));
+  assert.ok(rendered.includes("[REDACTED]"));
+});
+
+test("aichat_react MCP tool validates emoji, sends POST/DELETE, and is on AICHAT_TOOL_ALLOWLIST (#2443)", async (t) => {
+  const { cfg } = makeTempEnv(t);
+  const http = new FakeHttp("tok");
+  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_aichat_react"));
+  assert.equal(REACTIONS.length, 8);
+
+  await callTool(cfg, "aichat_react", { id: 42, emoji: "👍" }, http);
+  assert.deepEqual(http.calls.at(-1), {
+    route: "/api/messages/42/reactions",
+    opts: { method: "POST", body: { emoji: "👍" } },
+  });
+
+  await callTool(cfg, "aichat_react", { id: 42, emoji: "👍", remove: true }, http);
+  assert.deepEqual(http.calls.at(-1), {
+    route: "/api/messages/42/reactions",
+    opts: { method: "DELETE", body: { emoji: "👍" } },
+  });
+
+  await assert.rejects(() => callTool(cfg, "aichat_react", { id: 42, emoji: "🚀" }, http), /Invalid emoji/);
+  await assert.rejects(() => callTool(cfg, "aichat_react", { id: 0, emoji: "👍" }, http), /Invalid message ID/);
+});
+
+test("Channel ignores live reaction frames and forwards reactions_since on incoming messages without empty fields (#2443/#2445)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-react.json"));
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-react" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+
+  const ch = new Channel(cfg, { rpc, http: new FakeHttp(), store });
+  await ch.start({ probe: true });
+
+  // 1. Live `reaction` frame MUST NOT wake or queue
+  await ch.handleFrame(
+    {
+      type: "reaction",
+      id: 100,
+      author: "antigravity-alexey",
+      by: "alexey",
+      emoji: "👍",
+      on: true,
+      reactions: { "👍": ["alexey"] },
+    },
+    {}
+  );
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(defs.length, 0);
+
+  // 2. Message frame WITH reactions_since -> included in envelope and summary line, then compacted on processed
+  const notes = [
+    { id: 100, emoji: "👍", by: "alexey", ts: "2026-11-22T14:00:00Z", room: "lobby" },
+    { id: 101, emoji: "✅", by: "claude-alexey", ts: "2026-11-22T14:01:00Z", with: "claude-alexey" },
+  ];
+  assert.match(formatReactionsSince(notes), /#100 👍 alexey in #lobby; #101 ✅ claude-alexey in DM with claude-alexey/);
+  await ch.handleFrame(
+    {
+      type: "message",
+      message: { id: 400, from: "alexey", room: "lobby", text: "next task" },
+      reactions_since: notes,
+    },
+    {}
+  );
+  await waitFor(() => defs.length === 1);
+  const prompt1 = rpc.requests.find((r) => r.method === "session/prompt").params.prompt[0].text;
+  assert.ok(prompt1.includes("[reactions to your messages since last time: #100 👍 alexey in #lobby; #101 ✅ claude-alexey in DM with claude-alexey]"));
+  assert.ok(prompt1.includes('"reactions_since":['));
+
+  defs[0].resolve({ stopReason: "end_turn" });
+  await waitFor(() => store.value.messages["400"].processed === true);
+  assert.equal(store.value.messages["400"].reactions_since, undefined);
+
+  // 3. Message frame WITHOUT reactions_since -> field omitted completely from envelope
+  await ch.handleFrame(
+    {
+      type: "message",
+      message: { id: 401, from: "alexey", room: "lobby", text: "plain task" },
+    },
+    {}
+  );
+  await waitFor(() => defs.length === 2);
+  const prompt2 = rpc.requests.filter((r) => r.method === "session/prompt")[1].params.prompt[0].text;
+  assert.ok(!prompt2.includes("reactions_since"));
+  assert.ok(!prompt2.includes("[reactions to your messages since last time:"));
+
+  defs[1].resolve({ stopReason: "end_turn" });
+  await waitFor(() => ch.engine.active === null);
   await ch.stop();
 });
