@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 // The broker's bundle step (scripts/bundle.mjs) puts its own version here; a copy straight from the repo is a dev build.
@@ -19,6 +20,88 @@ const nowISO = () => new Date().toISOString();
 const enc = encodeURIComponent;
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 const digest = data => crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
+const ATTACH_TOKEN_ENV = 'AICHAT_CODEX_APP_SERVER_BEARER';
+const ATTACH_LEASE_MS = 10000;
+const ATTACH_DIRECTORY = /^appserver-private-[\w-]+$/;
+
+function appEnvironment(cfg) {
+  const env = { ...process.env, CODEX_HOME: cfg.codexHome };
+  for (const key of ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_TOOL_CALL_ID', 'AICHAT_TOKEN', ATTACH_TOKEN_ENV]) delete env[key];
+  return env;
+}
+
+function removeAttachToken(directory) {
+  try { fs.unlinkSync(path.join(directory, 'token')); } catch {}
+  try { fs.rmdirSync(directory); } catch {}
+}
+
+// Called under adapter.lock. Only remove files and directories created for attach.
+function cleanOldAttachFiles(runtime) {
+  const staleBefore = Date.now() - ATTACH_LEASE_MS * 2;
+  for (const entry of fs.readdirSync(runtime, { withFileTypes: true })) {
+    const file = path.join(runtime, entry.name);
+    if (entry.isDirectory() && ATTACH_DIRECTORY.test(entry.name)) removeAttachToken(file);
+    if (!entry.isFile() || !/^attach-[0-9a-f-]{36}\.(json|lock)$/i.test(entry.name)) continue;
+    try { if (fs.statSync(file).mtimeMs < staleBefore) fs.unlinkSync(file); } catch {}
+  }
+  try { fs.unlinkSync(path.join(runtime, 'attach.json')); } catch {}
+}
+
+function createAttachToken(cfg) {
+  const directory = fs.mkdtempSync(path.join(cfg.runtime, 'appserver-private-'));
+  try {
+    // Node's POSIX mode does not create a private Windows ACL.
+    if (process.platform === 'win32') {
+      const user = execFileSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+      const sid = user.match(/S-1-(?:\d+-)+\d+/)?.[0];
+      if (!sid) throw new Error('Cannot identify the Windows account');
+      execFileSync('icacls.exe', [directory, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`], { stdio: 'ignore', windowsHide: true });
+    }
+    const tokenFile = path.join(directory, 'token');
+    const token = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(tokenFile, token, { mode: 0o600, flag: 'wx' });
+    return { tokenFile, token, directory };
+  } catch {
+    removeAttachToken(directory);
+    throw new Error('Could not create a private App Server token');
+  }
+}
+
+async function attachTerminal(cfg) {
+  if (!cfg.attachPort) throw new Error('Set attachPort and restart the adapter before attaching a terminal');
+  const metadataFile = path.join(cfg.runtime, 'attach.json');
+  if (!fs.existsSync(metadataFile)) throw new Error('Start the adapter in loopback mode before attaching a terminal');
+  const info = json(metadataFile);
+  const endpoint = `ws://127.0.0.1:${cfg.attachPort}`;
+  if (info.endpoint !== endpoint || !/^[0-9a-f-]{36}$/i.test(info.instance) ||
+      typeof info.threadId !== 'string' || !info.threadId || !ATTACH_DIRECTORY.test(info.tokenDirectory)) {
+    throw new Error('Invalid attach metadata');
+  }
+  const token = fs.readFileSync(path.join(cfg.runtime, info.tokenDirectory, 'token'), 'utf8').trim();
+  if (!/^[0-9a-f]{64}$/.test(token)) throw new Error('Invalid App Server token');
+  const release = acquireLock(path.join(cfg.runtime, `attach-${info.instance}.lock`));
+  const lease = path.join(cfg.runtime, `attach-${info.instance}.json`);
+  let timer, child;
+  const renew = () => atomicJSON(lease, { expires: Date.now() + ATTACH_LEASE_MS });
+  const interrupt = () => child?.kill();
+  try {
+    renew();
+    child = spawn(cfg.codex, ['resume', info.threadId, '--remote', endpoint, '--remote-auth-token-env', ATTACH_TOKEN_ENV], {
+      env: { ...appEnvironment(cfg), [ATTACH_TOKEN_ENV]: token }, cwd: cfg.agentDir, stdio: 'inherit',
+    });
+    timer = setInterval(() => { try { renew(); } catch { interrupt(); } }, 2000);
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', interrupt);
+    const [code] = await once(child, 'exit');
+    process.exitCode = code ?? 1;
+  } finally {
+    clearInterval(timer);
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', interrupt);
+    try { fs.unlinkSync(lease); } catch {}
+    release();
+  }
+}
 export function atomicJSON(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;
@@ -62,6 +145,7 @@ export function loadConfig(file = path.resolve('aichat.config.json')) {
   if (!['steer', 'queue'].includes(cfg.delivery) || !['always', 'mention', 'never'].includes(cfg.wake)) throw new Error('Invalid delivery/wake policy');
   if (!Array.isArray(cfg.rooms) || !cfg.rooms.every(v => typeof v === 'string') || !Array.isArray(cfg.owners) || !cfg.owners.every(v => typeof v === 'string')) throw new Error('rooms/owners must be string arrays');
   if (raw.instructions !== undefined && (typeof raw.instructions !== 'string' || raw.instructions.length > 20000)) throw new Error('instructions must be local text of at most 20000 characters');
+  if (cfg.attachPort !== undefined && (!Number.isInteger(cfg.attachPort) || cfg.attachPort < 1024 || cfg.attachPort > 65535)) throw new Error('attachPort must be an integer between 1024 and 65535');
   for (const key of ['maxQueue', 'maxQueueAgeMs', 'maxQueueBytes', 'maxRecords', 'maxBatch', 'maxWakesPerMinute', 'requestTimeoutMs']) {
     if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) throw new Error(`Invalid ${key}`);
   }
@@ -130,25 +214,64 @@ export class UncertainError extends Error { constructor(message) { super(message
 export class AppRpc extends EventEmitter {
   constructor(cfg) {
     super(); this.pending = new Map(); this.sequence = 1; this.closed = false;
-    const env = { ...process.env, CODEX_HOME: cfg.codexHome };
-    for (const key of ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_TOOL_CALL_ID', 'AICHAT_TOKEN']) delete env[key];
-    this.child = spawn(cfg.codex, ['app-server'], { env, cwd: cfg.agentDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.remote = cfg.attachPort !== undefined;
+    const args = ['app-server'];
+    if (this.remote) {
+      this.endpoint = `ws://127.0.0.1:${cfg.attachPort}`;
+      Object.assign(this, createAttachToken(cfg));
+      args.push('--listen', this.endpoint, '--ws-auth', 'capability-token', '--ws-token-file', this.tokenFile);
+    }
+    this.child = spawn(cfg.codex, args, { env: appEnvironment(cfg), cwd: cfg.agentDir, windowsHide: true,
+      stdio: [this.remote ? 'ignore' : 'pipe', this.remote ? 'ignore' : 'pipe', 'pipe'] });
     this.child.stderr.on('data', data => this.emit('diagnostic', String(data)));
-    this.child.on('error', error => this.fail(error));
-    this.child.on('exit', code => { if (!this.closed) this.fail(new UncertainError(`App Server exited (${code})`)); });
+    this.child.on('error', error => { this.startError = error; this.fail(error); });
+    this.child.on('exit', code => {
+      this.startError = new UncertainError(`App Server exited (${code})`);
+      if (!this.closed) this.fail(this.startError);
+    });
+    if (this.remote) return;
     this.child.stdin.on('error', error => this.fail(new UncertainError(error.message)));
     this.lines = createInterface({ input: this.child.stdout });
-    this.lines.on('line', line => {
-      let frame; try { frame = JSON.parse(line); } catch { return; }
-      if (frame.method && frame.id !== undefined) { this.emit('request', frame); return; }
-      const pending = this.pending.get(frame.id);
-      if (pending) {
-        clearTimeout(pending.timer); this.pending.delete(frame.id);
-        if (frame.error) pending.reject(new RpcError(frame.error)); else pending.resolve(frame.result);
-      } else if (frame.method) this.emit('notification', frame);
-    });
+    this.lines.on('line', line => this.frame(line));
   }
-  send(frame) { this.child.stdin.write(JSON.stringify(frame) + '\n'); }
+  frame(line) {
+    let frame; try { frame = JSON.parse(line); } catch { return; }
+    if (frame.method && frame.id !== undefined) { this.emit('request', frame); return; }
+    const pending = this.pending.get(frame.id);
+    if (pending) {
+      clearTimeout(pending.timer); this.pending.delete(frame.id);
+      if (frame.error) pending.reject(new RpcError(frame.error)); else pending.resolve(frame.result);
+    } else if (frame.method) this.emit('notification', frame);
+  }
+  async connect() {
+    const deadline = Date.now() + 10000;
+    while (!this.closed && !this.startError && Date.now() < deadline) {
+      const socket = new WebSocket(this.endpoint, { headers: { Authorization: `Bearer ${this.token}` } });
+      const opened = await new Promise(resolve => {
+        socket.addEventListener('open', () => resolve(true), { once: true });
+        socket.addEventListener('close', () => resolve(false), { once: true });
+        socket.addEventListener('error', () => resolve(false), { once: true });
+        AbortSignal.timeout(500).addEventListener('abort', () => resolve(false), { once: true });
+      });
+      if (opened && !this.closed) {
+        this.socket = socket;
+        socket.addEventListener('message', event => this.frame(event.data));
+        socket.addEventListener('close', () => {
+          if (!this.closed) this.fail(new UncertainError('App Server WebSocket disconnected'));
+        });
+        return;
+      }
+      socket.close();
+      await delay(100);
+    }
+    throw this.startError || new Error('Could not connect to the authenticated loopback App Server');
+  }
+  send(frame) {
+    if (this.remote) {
+      if (this.socket?.readyState !== WebSocket.OPEN) throw new UncertainError('App Server WebSocket is not open');
+      this.socket.send(JSON.stringify(frame));
+    } else this.child.stdin.write(JSON.stringify(frame) + '\n');
+  }
   request(method, params, timeout = 20000) {
     if (this.closed) return Promise.reject(new UncertainError('App Server connection closed'));
     const id = this.sequence++;
@@ -160,10 +283,24 @@ export class AppRpc extends EventEmitter {
   }
   fail(error) { for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(error); } this.pending.clear(); this.emit('failure', error); }
   async initialize() {
+    if (this.remote) await this.connect();
     const info = await this.request('initialize', { clientInfo: { name: 'codex-channel', title: 'AIChat', version: VERSION }, capabilities: { experimentalApi: true } });
     this.send({ method: 'initialized', params: {} }); return info;
   }
-  close() { this.closed = true; this.fail(new UncertainError('App Server connection closed')); this.lines.close(); this.child.stdin.end(); this.child.kill(); }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.fail(new UncertainError('App Server connection closed'));
+    this.lines?.close();
+    this.child.stdin?.end();
+    this.socket?.close();
+    const exited = this.child.pid && this.child.exitCode === null && this.child.signalCode === null
+      ? new Promise(resolve => this.child.once('exit', resolve))
+      : Promise.resolve();
+    this.child.kill();
+    if (this.directory) removeAttachToken(this.directory);
+    return exited;
+  }
 }
 export class BrokerHttp {
   constructor(cfg) { this.cfg = cfg; this.token = fs.readFileSync(cfg.tokenFile, 'utf8').trim(); if (!this.token) throw new Error('Empty AIChat token'); }
@@ -494,6 +631,7 @@ export class Channel {
     this.session = crypto.randomUUID(); this.reconnectDelay = 1000; this.lastFrame = Date.now(); this.ready = false;
     this.activityChain = Promise.resolve(); this.desiredActivity = { state: 'idle' }; this.lastActivity = 0;
     this.lastUsage = 0; this.latestUsage = null; this.notificationChain = Promise.resolve();
+    this.pendingApprovals = new Map();
     this.status = { pid: process.pid, version: VERSION, phase: 'starting', connected: false };
   }
   log(event, detail = {}) {
@@ -535,9 +673,25 @@ export class Channel {
     if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify({ type: 'delivered', id })); return true;
   }
+  terminalAttached() {
+    if (!this.rpc.remote || this.stopping) return false;
+    try { return json(path.join(this.cfg.runtime, `attach-${this.session}.json`)).expires > Date.now(); }
+    catch { return false; }
+  }
+  declineApproval(frame) {
+    this.rpc.send({ id: frame.id, result: frame.method.includes('/permissions/') ? { permissions: {}, scope: 'turn' } : { decision: 'decline' } });
+    this.log('approval_declined', { method: frame.method, threadId: frame.params?.threadId, reason: 'No terminal is handling this request' });
+  }
+  refreshApprovals() {
+    if (this.terminalAttached() || !this.pendingApprovals.size) return;
+    for (const frame of this.pendingApprovals.values()) this.declineApproval(frame);
+    this.pendingApprovals.clear();
+    this.activity(this.engine?.active ? 'busy' : 'idle', this.engine?.activeRoom);
+  }
   async start({ probe = false } = {}) {
     fs.mkdirSync(this.cfg.runtime, { recursive: true });
     this.release = acquireLock(path.join(this.cfg.runtime, 'adapter.lock'));
+    cleanOldAttachFiles(this.cfg.runtime);
     this.report();
     const [me, intro, agents] = await Promise.all([this.http.request('/api/me'), this.http.request('/api/intro'), this.http.request('/api/agents')]);
     this.me = me.name; this.intro = intro;
@@ -550,8 +704,11 @@ export class Channel {
       else if (frame.params?.threadId && frame.params.threadId !== this.store.value.threadId) this.rpc.send({ id: frame.id, error: { code: -32601, message: 'Request belongs to another thread' } });
       else if (frame.method.endsWith('/requestApproval')) {
         this.activity('waiting', this.engine?.activeRoom);
-        this.rpc.send({ id: frame.id, result: frame.method.includes('/permissions/') ? { permissions: {}, scope: 'turn' } : { decision: 'decline' } });
-        this.log('approval_declined', { method: frame.method, threadId: frame.params?.threadId, reason: 'Chat approval flow is not enabled in v1; configure permissions locally.' });
+        if (this.terminalAttached()) {
+          this.pendingApprovals.set(frame.id, frame);
+          return;
+        }
+        this.declineApproval(frame);
         this.activity(this.engine?.active ? 'busy' : 'idle', this.engine?.activeRoom);
       } else if (frame.method === 'item/tool/requestUserInput') this.rpc.send({ id: frame.id, result: { answers: {} } });
       else this.rpc.send({ id: frame.id, error: { code: -32601, message: 'Interactive request unavailable in channel adapter' } });
@@ -588,8 +745,15 @@ export class Channel {
       this.notificationChain = this.notificationChain.then(async () => {
         await this.engine.notification(frame);
         if (frame.params?.threadId !== this.store.value.threadId) return;
+        if (frame.method === 'serverRequest/resolved' && this.pendingApprovals.delete(frame.params.requestId) && !this.pendingApprovals.size) {
+          this.activity(this.engine.active ? 'busy' : 'idle', this.engine.activeRoom);
+        }
         if (frame.method === 'turn/started') { this.activity('busy', this.engine.activeRoom); this.report({ phase: 'working' }); }
-        if (frame.method === 'turn/completed') { this.activity('idle'); this.report({ phase: this.cfg.paused ? 'paused' : 'waiting' }); }
+        if (frame.method === 'turn/completed' && !this.engine.active) {
+          this.pendingApprovals.clear();
+          this.activity('idle');
+          this.report({ phase: this.cfg.paused ? 'paused' : 'waiting' });
+        }
         if (frame.method === 'thread/tokenUsage/updated') this.usage(frame.params.tokenUsage);
         if (frame.method === 'item/started' && /tool|command|mcp/i.test(frame.params.item?.type || '')) this.activity('busy', this.engine.activeRoom);
         if (frame.method === 'item/completed' && frame.params.item?.type === 'mcpToolCall') this.log('mcp_tool_completed', { turnId: frame.params.turnId, tool: frame.params.item.tool, status: frame.params.item.status });
@@ -598,8 +762,19 @@ export class Channel {
     await this.reconcile();
     this.report({ agent: this.me, model: thread.model, phase: probe ? 'probe' : this.cfg.paused ? 'paused' : 'connecting', introVersion: intro.intro?.ts });
     if (probe) return;
+    if (this.rpc.remote) {
+      atomicJSON(path.join(this.cfg.runtime, 'attach.json'), {
+        instance: this.session, endpoint: this.rpc.endpoint, threadId: this.store.value.threadId,
+        tokenDirectory: path.basename(this.rpc.directory),
+      });
+    }
     const stopFile = path.join(this.cfg.runtime, 'stop'); if (fs.existsSync(stopFile)) fs.unlinkSync(stopFile);
-    this.stopWatcher = setInterval(() => { if (fs.existsSync(stopFile)) this.stop().catch(error => console.error(error.message)); }, 1000);
+    this.stopWatcher = setInterval(() => {
+      if (fs.existsSync(stopFile)) this.stop().catch(error => console.error(error.message));
+      else if (this.rpc.remote) {
+        try { this.refreshApprovals(); } catch (error) { void this.stop(error); }
+      }
+    }, 1000);
     if (!this.cfg.paused) this.connect();
     else this.log('paused', { message: 'No WebSocket connection. HTTP MCP tools remain available.' });
   }
@@ -698,7 +873,9 @@ export class Channel {
     clearInterval(this.stopWatcher); clearInterval(this.heartbeat);
     this.ready = false; this.connected = false; this.socket?.close();
     this.activity('idle'); await this.activityChain.catch(() => {});
-    this.rpc?.close(); this.report({ phase: error ? 'halted' : 'stopped', ...(error ? { error: this.http.redact(error.message) } : {}) }); this.release?.();
+    await this.rpc?.close();
+    if (this.rpc?.remote) try { fs.unlinkSync(path.join(this.cfg.runtime, 'attach.json')); } catch {}
+    this.report({ phase: error ? 'halted' : 'stopped', ...(error ? { error: this.http.redact(error.message) } : {}) }); this.release?.();
     this.log(error ? 'stopped_with_error' : 'stopped');
   }
 }
@@ -738,6 +915,7 @@ export async function main(args = process.argv.slice(2)) {
   const configFile = options.config ? expand(options.config) : path.resolve('aichat.config.json');
   if (command === 'mcp') return serveMcp(configFile);
   const cfg = loadConfig(configFile);
+  if (command === 'attach') return attachTerminal(cfg);
   if (command === 'stop') { fs.mkdirSync(cfg.runtime, { recursive: true }); fs.writeFileSync(path.join(cfg.runtime, 'stop'), 'stop'); console.log('Stop requested'); return; }
   if (command === 'status') {
     const store = new State(path.join(cfg.runtime, 'state.json'));
@@ -770,7 +948,7 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'tool') {
     const payload = json(expand(options.input)); console.log(await callTool(cfg, payload.name, payload.arguments || {})); return;
   }
-  if (!['run', 'probe'].includes(command)) throw new Error('Commands: install, run, mcp, probe, status, stop, retry, tool');
+  if (!['run', 'probe'].includes(command)) throw new Error('Commands: install, run, attach, mcp, probe, status, stop, retry, tool');
   const channel = new Channel(cfg);
   const exit = async () => { await channel.stop(); process.exit(); };
   process.on('SIGINT', exit); process.on('SIGTERM', exit);

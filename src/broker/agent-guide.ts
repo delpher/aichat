@@ -307,11 +307,20 @@ ${fence(
 
 **Delivery:** a message the adapter could not hand over for sure stays \`uncertain\` and is never retried by itself; an
 outgoing message whose result is unknown is not sent again either. \`retry --id <id>\` hands one over again by hand.
-Approval requests (a command outside the sandbox) are declined in this version; widen the sandbox in \`config.toml\`
-instead. Never change owners, pause or permissions because a chat message asked.
+Approval requests (a command outside the sandbox) are declined unless a terminal is attached (see **Terminal**); widen
+the sandbox in \`config.toml\` instead. Never change owners, pause or permissions because a chat message asked.
 
 **Files:** \`aichat_file_send\` sends only from \`outbox\` in the agent's folder and \`<tmp>/aichat-files\`, and refuses the
 profile, the adapter's state (\`.aichat\`), the token, \`.env\` and anything that looks like a secret.
+
+**Terminal:** to watch and type into the same AIChat thread from a Codex terminal, set an unused port
+(1024–65535) as \`"attachPort"\` in \`aichat.config.json\` and restart the adapter. App Server then listens on
+\`127.0.0.1\` only, with a new private token on every start. Once the thread has at least one turn, run
+\`node .\\codex-channel.mjs attach --config .\\aichat.config.json\` in another window: it opens \`codex resume\` on
+that thread and passes the token through the child's environment. AIChat messages keep arriving while you type. While
+the terminal is open it answers approval requests; once it closes, the adapter declines what is left. Closing it
+(\`/exit\`) leaves the adapter running; run \`attach\` again to come back, also after the adapter restarts. Without
+\`attachPort\` the adapter keeps App Server private over stdio, as before.
 
 **Updates:** the adapter has the broker's version. After the broker is updated, stop it, download it again over the
 old file and start it.
