@@ -17,6 +17,7 @@ const RETRY_DELAYS = [10, 25, 50, 100, 200, 400, 800];
 const TERMINAL_STATES = new Set(["failed", "delivered"]);
 const AICHAT_TOOL_ALLOWLIST =
   /^mcp_aichat_aichat_(send|read|agents|join|status|brief|intro|thanks|file_get|file_send|note)$/;
+const MODE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 const nowISO = () => new Date().toISOString();
 const enc = encodeURIComponent;
@@ -68,6 +69,12 @@ function validateProfileName(name) {
   }
 }
 
+function validateMode(mode) {
+  if (mode !== null && (typeof mode !== "string" || !MODE_RE.test(mode))) {
+    throw new Error("Invalid mode");
+  }
+}
+
 function loadConfig(file = path.resolve("aichat.config.json")) {
   const raw = readJson(file);
   const agentDir = path.dirname(path.resolve(file));
@@ -115,7 +122,7 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
       .replace(/[^a-z0-9._-]+/g, "-")
       .slice(0, 40) || "google",
     model: raw.model || null,
-    mode: raw.mode || null,
+    mode: raw.mode === undefined ? null : raw.mode,
     maxQueue: raw.maxQueue ?? 1000,
     maxQueueAgeMs: raw.maxQueueAgeMs ?? 3600000,
     maxQueueBytes: raw.maxQueueBytes ?? 4 * 1024 * 1024,
@@ -123,8 +130,12 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     maxBatch: raw.maxBatch ?? 8,
     maxWakesPerMinute: raw.maxWakesPerMinute ?? 12,
     requestTimeoutMs: raw.requestTimeoutMs ?? 20000,
+    permissionDeclineTimeoutMs: raw.permissionDeclineTimeoutMs ?? 20000,
+    permissionCancelGraceMs: raw.permissionCancelGraceMs ?? 5000,
     agy: raw.agy || process.env.AGY_CLI_PATH || (process.platform === "win32" ? "agy.exe" : "agy"),
   };
+
+  validateMode(cfg.mode);
 
   if (within(cfg.agentDir, cfg.profileDir) || within(cfg.profileDir, cfg.agentDir)) {
     throw new Error("Antigravity profile directory must be separate from the agent directory");
@@ -151,6 +162,8 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     "maxBatch",
     "maxWakesPerMinute",
     "requestTimeoutMs",
+    "permissionDeclineTimeoutMs",
+    "permissionCancelGraceMs",
   ]) {
     if (!Number.isSafeInteger(cfg[key]) || cfg[key] < 1) throw new Error(`Invalid ${key}`);
   }
@@ -886,8 +899,8 @@ function isExplicitRejection(error) {
  * - Supports native mid-turn steer: sending a second `session/prompt` causes ACP to resolve
  *   the first `session/prompt` early (`stopReason: "end_turn"`, no `usage`) and hand off the
  *   running turn to the second `session/prompt`.
- * - Early resolution of a superseded prompt confirms acceptance (`delivered`) of the steering
- *   prompt and MUST NOT transition activity to `idle`.
+ * - Early resolution of a superseded prompt does not confirm the steering prompt on its own
+ *   and MUST NOT transition activity to `idle`.
  * - Activity transitions to `idle` and all message IDs in the turn chain become `processed: true`
  *   ONLY when `this.inFlight.size === 0`.
  */
@@ -1016,6 +1029,7 @@ class DeliveryEngine {
       turnId: entry.key,
       ids: entry.ids,
     });
+    if (!this.stopped) this.schedule();
   }
 
   drain() {
@@ -1292,6 +1306,7 @@ class Channel {
     this.notificationChain = Promise.resolve();
     this.replayedUserTexts = [];
     this.capturingReplay = false;
+    this.permissionWatchdog = null;
     this.status = { pid: process.pid, version: VERSION, phase: "starting", connected: false };
   }
 
@@ -1338,6 +1353,68 @@ class Channel {
     };
     if (state === "idle" || Date.now() - this.lastActivity >= 1500) flush();
     else this.activityTimer = setTimeout(flush, 1500 - (Date.now() - this.lastActivity));
+  }
+
+  clearPermissionWatchdog() {
+    if (!this.permissionWatchdog) return;
+    clearTimeout(this.permissionWatchdog.timer);
+    this.permissionWatchdog = null;
+  }
+
+  armPermissionWatchdog(tool, toolCallId) {
+    if (this.stopping || !this.engine || this.engine.inFlight.size === 0) return;
+    this.clearPermissionWatchdog();
+    const state = {
+      stage: "wait_update",
+      tool,
+      toolCallId: toolCallId || null,
+      declinedAt: Date.now(),
+      timer: null,
+    };
+    state.timer = setTimeout(() => this.onPermissionWatchdogTimeout(state), this.cfg.permissionDeclineTimeoutMs);
+    this.permissionWatchdog = state;
+  }
+
+  onPermissionWatchdogTimeout(state) {
+    if (this.permissionWatchdog !== state || this.stopping) return;
+    if (!this.engine || this.engine.inFlight.size === 0) {
+      this.clearPermissionWatchdog();
+      return;
+    }
+    if (state.stage === "wait_update") {
+      state.stage = "wait_cancel";
+      const sessionId = this.store.value.sessionId;
+      this.log("permission_decline_watchdog_cancel", {
+        tool: state.tool,
+        toolCallId: state.toolCallId,
+        activeTurnId: this.engine.active,
+        inFlight: this.engine.inFlight.size,
+        waitedMs: Date.now() - state.declinedAt,
+      });
+      if (sessionId && this.rpc) {
+        try {
+          this.rpc.send({ method: "session/cancel", params: { sessionId } });
+        } catch (error) {
+          this.log("session_cancel_failed", { error: error.message });
+        }
+      }
+      state.timer = setTimeout(() => this.onPermissionWatchdogTimeout(state), this.cfg.permissionCancelGraceMs);
+      return;
+    }
+
+    this.clearPermissionWatchdog();
+    this.log("permission_decline_watchdog_halt", {
+      tool: state.tool,
+      toolCallId: state.toolCallId,
+      activeTurnId: this.engine.active,
+      inFlight: this.engine.inFlight.size,
+      waitedMs: Date.now() - state.declinedAt,
+    });
+    void this.stop(
+      new UncertainError(
+        `ACP session/prompt hung after permission_declined (${state.tool || "unknown"}) and session/cancel`
+      )
+    );
   }
 
   recordContext(update) {
@@ -1439,6 +1516,7 @@ class Channel {
         reason: "Interactive approval flow is not enabled in v1; configure permissions locally or enable --approve-aichat-tools for AIChat tools only.",
       });
       this.activity(this.engine?.active ? "busy" : "idle", this.engine?.activeRoom);
+      this.armPermissionWatchdog(toolName, params.toolCall?.toolCallId);
       return;
     }
 
@@ -1501,6 +1579,19 @@ class Channel {
         .then(async () => {
           if (frame.method === "session/update" && frame.params?.sessionId === this.store.value.sessionId) {
             const update = frame.params.update;
+            if (this.permissionWatchdog?.stage === "wait_update") {
+              const isDeclinedToolStatus =
+                update?.sessionUpdate === "tool_call_update" &&
+                ((this.permissionWatchdog.toolCallId && update.toolCallId === this.permissionWatchdog.toolCallId) ||
+                  ["failed", "cancelled"].includes(update.status));
+              if (isDeclinedToolStatus || update?.sessionUpdate === "usage_update") {
+                const wd = this.permissionWatchdog;
+                clearTimeout(wd.timer);
+                wd.timer = setTimeout(() => this.onPermissionWatchdogTimeout(wd), this.cfg.permissionDeclineTimeoutMs);
+              } else {
+                this.clearPermissionWatchdog();
+              }
+            }
             if (update?.sessionUpdate === "usage_update") this.recordContext(update);
             if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
               if (update.status === "in_progress") {
@@ -1650,10 +1741,12 @@ class Channel {
         this.report(event === "input_capacity_failed" ? { lastInputFailure: detail } : {});
       },
       onTurnStart: (room) => {
+        this.clearPermissionWatchdog();
         this.activity("busy", room);
         this.report({ phase: "working" });
       },
       onTurnComplete: () => {
+        this.clearPermissionWatchdog();
         this.activity("idle");
         this.report({ phase: this.cfg.paused ? "paused" : "waiting" });
       },
@@ -1860,6 +1953,7 @@ class Channel {
       process.exitCode = 1;
     }
     this.stopping = true;
+    this.clearPermissionWatchdog();
     this.engine?.close();
     for (const timer of [this.reconnectTimer, this.activityTimer, this.usageTimer]) clearTimeout(timer);
     clearInterval(this.stopWatcher);
@@ -1892,11 +1986,13 @@ function install({
   approveTools = false,
   sandbox = true,
   model = null,
+  mode = "accept-edits",
   agy = process.env.AGY_CLI_PATH,
 }) {
   if (!agentDir || !appDataDir || !tokenFile || !url) {
     throw new Error("install requires --dir, --profile (appDataDir), --token-file, and --url");
   }
+  validateMode(mode);
   const parsedUrl = new URL(url);
   if (!["http:", "https:", "ws:", "wss:"].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
     throw new Error("Invalid broker URL");
@@ -1930,6 +2026,7 @@ function install({
     rooms,
     ...(agy ? { agy } : {}),
     ...(model ? { model } : {}),
+    ...(mode ? { mode } : {}),
     delivery: "steer",
     wake: "always",
     paused: true,
@@ -1961,7 +2058,7 @@ function install({
     path.join(agentDir, "stop.ps1"),
     'node (Join-Path $PSScriptRoot "agy-channel.mjs") stop --config (Join-Path $PSScriptRoot "aichat.config.json")\n'
   );
-  return { agentDir, appDataDir, profileDir, configFile, paused: true };
+  return { agentDir, appDataDir, profileDir, configFile, mode, paused: true };
 }
 
 function argumentsFor(args) {
@@ -2001,6 +2098,7 @@ async function main(args = process.argv.slice(2)) {
             : undefined,
           agy: options.agy,
           model: options.model,
+          ...(options.mode !== undefined ? { mode: options.mode } : {}),
           sandbox: options["no-sandbox"] !== true,
           approveTools: options["approve-aichat-tools"] === true,
         }),
@@ -2154,6 +2252,7 @@ export {
   main,
   safeUploadPath,
   serveMcp,
+  validateMode,
   validateProfileName,
   within,
 };
