@@ -17,7 +17,9 @@ import {
   callTool,
   install,
   loadConfig,
+  main,
   safeUploadPath,
+  validateMode,
   validateProfileName,
 } from "./agy-channel.mjs";
 
@@ -465,6 +467,7 @@ test("install creates config paused=true and refuses overwrite; callTool appends
     approveTools: true,
   });
   assert.equal(res.paused, true);
+  assert.equal(res.mode, "accept-edits");
   assert.ok(fs.existsSync(path.join(agentDir, "agy-channel.mjs")));
   assert.ok(fs.existsSync(path.join(agentDir, "aichat.config.json")));
   assert.ok(fs.existsSync(path.join(agentDir, "start.ps1")));
@@ -482,8 +485,10 @@ test("install creates config paused=true and refuses overwrite; callTool appends
     /Existing configuration/
   );
 
-  // Paused notice on aichat_send
+  // Paused notice on aichat_send & default mode
   const cfg = loadConfig(path.join(agentDir, "aichat.config.json"));
+  assert.equal(cfg.mode, "accept-edits");
+  assert.equal(cfg.sandbox, true);
   const out = await callTool(cfg, "aichat_send", { room: "lobby", text: "hello" }, new FakeHttp("t0k3n"));
   assert.match(out, /\(пауза: вхідні не приходять\)/);
   assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_aichat_send"));
@@ -808,6 +813,405 @@ test("DeliveryEngine (#2180): early handoff of #1 (no usage) followed by #2 erro
   engine.close();
 });
 
+test("install defaults mode to accept-edits, supports --mode in CLI, validates mode, and Channel applies it (#2290)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-mode-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const tokenFile = path.join(root, "tok");
+  fs.writeFileSync(tokenFile, "t0k3n-mode", "utf8");
 
+  assert.throws(() => validateMode(""), /Invalid mode/);
+  assert.throws(() => validateMode("bad mode"), /Invalid mode/);
+  assert.throws(() => validateMode(true), /Invalid mode/);
+  validateMode("accept-edits");
+  validateMode("default");
+  validateMode(null);
 
+  // 1. Default install -> mode = "accept-edits", sandbox = true
+  const dirDefault = path.join(root, "agent-default");
+  install({
+    agentDir: dirDefault,
+    appDataDir: "antigravity-aichat-mode-1",
+    tokenFile,
+    url: "http://aichat.home",
+    owners: ["alexey"],
+  });
+  const cfgDefault = loadConfig(path.join(dirDefault, "aichat.config.json"));
+  assert.equal(cfgDefault.mode, "accept-edits");
+  assert.equal(cfgDefault.sandbox, true);
 
+  // 2. Explicit CLI --mode default -> mode = "default"
+  const dirCustom = path.join(root, "agent-custom");
+  await main([
+    "install",
+    "--dir",
+    dirCustom,
+    "--profile",
+    "antigravity-aichat-mode-2",
+    "--token-file",
+    tokenFile,
+    "--url",
+    "http://aichat.home",
+    "--mode",
+    "default",
+  ]);
+  const cfgCustom = loadConfig(path.join(dirCustom, "aichat.config.json"));
+  assert.equal(cfgCustom.mode, "default");
+
+  // 3. CLI --mode without value -> rejected
+  const dirBad = path.join(root, "agent-bad");
+  await assert.rejects(
+    () =>
+      main([
+        "install",
+        "--dir",
+        dirBad,
+        "--profile",
+        "antigravity-aichat-mode-3",
+        "--token-file",
+        tokenFile,
+        "--url",
+        "http://aichat.home",
+        "--mode",
+      ]),
+    /Invalid mode/
+  );
+
+  // 4. Channel.start sends session/set_config_option for mode
+  const rpc = new FakeRpc();
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-mode" }));
+  const ch = new Channel(cfgDefault, { rpc, http: new FakeHttp("t0k3n-mode") });
+  await ch.start({ probe: true });
+  const setMode = rpc.requests.find((r) => r.method === "session/set_config_option" && r.params?.configId === "mode");
+  assert.deepEqual(setMode?.params, { sessionId: "sess-mode", configId: "mode", value: "accept-edits" });
+  await ch.stop();
+});
+
+test("DeliveryEngine.markAccepted() calls schedule() so messages queued during unaccepted steer drain automatically (#2290)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-2290-schedule.json"));
+  store.patch({ sessionId: "sess-sched" });
+
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+
+  const engine = new DeliveryEngine({
+    cfg,
+    store,
+    rpc,
+    owners: ["alexey"],
+    agent: "antigravity-alexey",
+    acknowledge: () => true,
+  });
+
+  // 1. Turn #1 (#100) starts and is accepted
+  await engine.receive({ id: 100, from: "alexey", room: "lobby", text: "turn 1" });
+  await waitFor(() => defs.length === 1);
+  await engine.notification({
+    method: "session/update",
+    params: { sessionId: "sess-sched", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "ok" } } },
+  });
+
+  // 2. Steer #2 (#101) sent, still unaccepted
+  await engine.receive({ id: 101, from: "alexey", room: "lobby", text: "steer 2" });
+  await waitFor(() => defs.length === 2);
+
+  // 3. Message #102 arrives while steer #2 is unaccepted -> must stay queued (cannot overlap unaccepted steer)
+  await engine.receive({ id: 102, from: "alexey", room: "lobby", text: "queued behind steer 2" });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(defs.length, 2);
+  assert.equal(store.value.messages["102"].status, "queued");
+
+  // 4. Turn #1 resolves (handoff), steer #2 still unaccepted -> #102 still queued
+  defs[0].resolve({ stopReason: "end_turn" });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(defs.length, 2);
+  assert.equal(store.value.messages["102"].status, "queued");
+
+  // 5. Post-handoff session/update triggers markAccepted(#101) -> MUST schedule drain for #102 with NO new incoming event!
+  await engine.notification({
+    method: "session/update",
+    params: { sessionId: "sess-sched", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "got #101" } } },
+  });
+  await waitFor(() => defs.length === 3);
+  assert.equal(store.value.messages["101"].status, "delivered");
+  assert.equal(store.value.messages["102"].status, "uncertain");
+
+  // Clean finish
+  defs[1].resolve({ stopReason: "end_turn" });
+  defs[2].resolve({ stopReason: "end_turn" });
+  await waitFor(() => store.value.messages["102"].processed === true && engine.active === null);
+  engine.close();
+});
+
+test("Channel permission_declined watchdog: cancels & recovers, disarms on model progress, and halts if prompt stays hung (#2290)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const prevExitCode = process.exitCode;
+  t.after(() => {
+    process.exitCode = prevExitCode;
+  });
+
+  // Sub-case A: After permission_declined (+ declined tool_call_update failed) with no further updates,
+  // watchdog sends session/cancel; when ACP resolves prompt with cancelled, channel stays healthy and drains next message.
+  {
+    const wdCfg = { ...cfg, permissionDeclineTimeoutMs: 60, permissionCancelGraceMs: 150 };
+    const store = new State(path.join(agentDir, ".aichat", "state-wd-a.json"));
+    const rpc = new FakeRpc();
+    const defs = [];
+    rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+    rpc.onRequest("session/new", () => ({ sessionId: "sess-wd-a" }));
+    rpc.onRequest("session/prompt", () => {
+      const d = deferred();
+      defs.push(d);
+      return d.promise;
+    });
+    const origSend = rpc.send.bind(rpc);
+    rpc.send = (frame) => {
+      origSend(frame);
+      if (frame.method === "session/cancel" && defs[0]) {
+        defs[0].resolve({ stopReason: "cancelled" });
+      }
+    };
+
+    const ch = new Channel(wdCfg, { rpc, http: new FakeHttp(), store });
+    await ch.start({ probe: true });
+    await ch.engine.receive({ id: 200, from: "alexey", room: "lobby", text: "write something" });
+    await waitFor(() => defs.length === 1);
+
+    rpc.emit("request", {
+      id: "perm-a",
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-wd-a",
+        toolCall: { name: "write_file", toolCallId: "wc-a" },
+        options: [{ optionId: "deny", kind: "reject_once" }],
+      },
+    });
+    // Declined tool's status update and service updates must NOT disarm the watchdog
+    for (const update of [
+      { sessionUpdate: "tool_call_update", toolCallId: "wc-a", status: "failed" },
+      { sessionUpdate: "available_commands_update", availableCommands: [] },
+      { sessionUpdate: "current_mode_update", currentModeId: "accept-edits" },
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "echo" } },
+    ]) {
+      rpc.emit("notification", {
+        method: "session/update",
+        params: { sessionId: "sess-wd-a", update },
+      });
+    }
+
+    await waitFor(() => rpc.sent.some((f) => f.method === "session/cancel"));
+    await waitFor(() => ch.engine.active === null);
+    assert.equal(ch.halted, false);
+    assert.equal(ch.stopping, false);
+    assert.deepEqual(
+      rpc.sent.find((f) => f.method === "session/cancel"),
+      { method: "session/cancel", params: { sessionId: "sess-wd-a" } }
+    );
+    await ch.stop();
+  }
+
+  // Sub-case B: Genuine post-decline model update disarms watchdog (no session/cancel sent)
+  {
+    const wdCfg = { ...cfg, permissionDeclineTimeoutMs: 60, permissionCancelGraceMs: 60 };
+    const store = new State(path.join(agentDir, ".aichat", "state-wd-b.json"));
+    const rpc = new FakeRpc();
+    const defs = [];
+    rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+    rpc.onRequest("session/new", () => ({ sessionId: "sess-wd-b" }));
+    rpc.onRequest("session/prompt", () => {
+      const d = deferred();
+      defs.push(d);
+      return d.promise;
+    });
+
+    const ch = new Channel(wdCfg, { rpc, http: new FakeHttp(), store });
+    await ch.start({ probe: true });
+    await ch.engine.receive({ id: 205, from: "alexey", room: "lobby", text: "write something" });
+    await waitFor(() => defs.length === 1);
+
+    rpc.emit("request", {
+      id: "perm-b",
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-wd-b",
+        toolCall: { name: "write_file", toolCallId: "wc-b" },
+        options: [{ optionId: "deny", kind: "reject_once" }],
+      },
+    });
+    rpc.emit("notification", {
+      method: "session/update",
+      params: {
+        sessionId: "sess-wd-b",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "continued anyway" } },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(rpc.sent.some((f) => f.method === "session/cancel"), false);
+    assert.equal(ch.halted, false);
+    defs[0].resolve({ stopReason: "end_turn" });
+    await waitFor(() => ch.engine.active === null);
+    await ch.stop();
+  }
+
+  // Sub-case C: session/prompt stays hung even after session/cancel (agy acp prompt.go:319) -> halts with error & exitCode=1
+  {
+    const wdCfg = { ...cfg, permissionDeclineTimeoutMs: 50, permissionCancelGraceMs: 50 };
+    const store = new State(path.join(agentDir, ".aichat", "state-wd-c.json"));
+    const rpc = new FakeRpc();
+    const defs = [];
+    rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+    rpc.onRequest("session/new", () => ({ sessionId: "sess-wd-c" }));
+    rpc.onRequest("session/prompt", () => {
+      const d = deferred();
+      defs.push(d);
+      return d.promise;
+    });
+
+    const ch = new Channel(wdCfg, { rpc, http: new FakeHttp(), store });
+    await ch.start({ probe: true });
+    await ch.engine.receive({ id: 210, from: "alexey", room: "lobby", text: "hung turn" });
+    await waitFor(() => defs.length === 1);
+
+    rpc.emit("request", {
+      id: "perm-c",
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-wd-c",
+        toolCall: { name: "write_file", toolCallId: "wc-c" },
+        options: [{ optionId: "deny", kind: "reject_once" }],
+      },
+    });
+
+    await waitFor(() => ch.halted === true && ch.status.phase === "halted");
+    assert.equal(rpc.sent.some((f) => f.method === "session/cancel"), true);
+    assert.equal(rpc.closed, true);
+    assert.equal(process.exitCode, 1);
+    assert.match(ch.status.error, /hung after permission_declined/);
+  }
+});
+
+test("Watchdog cancel preserves unaccepted steer as uncertain/cancelled and reconciles via session/load (#2302-#2306)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const wdCfg = { ...cfg, permissionDeclineTimeoutMs: 50, permissionCancelGraceMs: 150 };
+  const storePath = path.join(agentDir, ".aichat", "state-wd-cancel.json");
+  const store = new State(storePath);
+
+  const rpc = new FakeRpc();
+  const defs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-wd-cancel" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    defs.push(d);
+    return d.promise;
+  });
+  const origSend = rpc.send.bind(rpc);
+  rpc.send = (frame) => {
+    origSend(frame);
+    if (frame.method === "session/cancel" && defs[1]) {
+      defs[1].resolve({ stopReason: "cancelled" });
+    }
+  };
+
+  const ch = new Channel(wdCfg, { rpc, http: new FakeHttp(), store });
+  await ch.start({ probe: true });
+  const acked = [];
+  ch.acknowledge = (id) => {
+    acked.push(id);
+    return true;
+  };
+
+  // 1. Message #220 starts turn 1 and is accepted
+  await ch.engine.receive({ id: 220, from: "alexey", room: "lobby", text: "first task" });
+  await waitFor(() => defs.length === 1);
+  rpc.emit("notification", {
+    method: "session/update",
+    params: {
+      sessionId: "sess-wd-cancel",
+      update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "working" } },
+    },
+  });
+  await waitFor(() => store.value.messages["220"].status === "delivered");
+
+  // 2. Steer #221 arrives mid-turn (unaccepted), #1 resolves early (handoff without usage)
+  await ch.engine.receive({ id: 221, from: "alexey", room: "lobby", text: "unseen steer" });
+  await waitFor(() => defs.length === 2);
+  defs[0].resolve({ stopReason: "end_turn" });
+  await new Promise((r) => setTimeout(r, 40));
+
+  // 3. Permission declined while #221 is unaccepted -> watchdog cancels -> #221 resolves cancelled
+  rpc.emit("request", {
+    id: "perm-steer",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-wd-cancel",
+      toolCall: { name: "write_file", toolCallId: "wc-steer" },
+      options: [{ optionId: "deny", kind: "reject_once" }],
+    },
+  });
+
+  await waitFor(() => ch.engine.active === null);
+
+  // Already-accepted #220 -> processed with turnStatus "cancelled"
+  assert.equal(store.value.messages["220"].status, "delivered");
+  assert.equal(store.value.messages["220"].processed, true);
+  assert.equal(store.value.messages["220"].turnStatus, "cancelled");
+
+  // Unaccepted steer #221 -> stays uncertain (NOT delivered/processed, NOT auto-requeued)
+  assert.equal(store.value.messages["221"].status, "uncertain");
+  assert.equal(store.value.messages["221"].processed, false);
+  assert.equal(store.value.messages["221"].turnStatus, "cancelled");
+  assert.deepEqual(acked, [220]);
+
+  const steerRequestId = store.value.messages["221"].requestId;
+  assert.ok(steerRequestId);
+  await ch.stop();
+
+  // 4. Add a second cancelled-uncertain message #222 that will NOT appear in replay, then reload session
+  const store2 = new State(storePath);
+  store2.enqueue({ id: 222, from: "alexey", room: "lobby", text: "not in replay" }, wdCfg);
+  store2.update([222], {
+    status: "uncertain",
+    requestId: "aichat-missing-222",
+    processed: false,
+    turnStatus: "cancelled",
+  });
+
+  const rpc2 = new FakeRpc();
+  rpc2.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" }, agentCapabilities: { loadSession: true } }));
+  rpc2.onRequest("session/list", () => ({ sessions: [{ sessionId: "sess-wd-cancel" }] }));
+  rpc2.onRequest("session/load", () => {
+    rpc2.emit("notification", {
+      method: "session/update",
+      params: {
+        sessionId: "sess-wd-cancel",
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: `{"requestId":"${steerRequestId}"}` },
+        },
+      },
+    });
+    return { sessionId: "sess-wd-cancel" };
+  });
+
+  const ch2 = new Channel(wdCfg, { rpc: rpc2, http: new FakeHttp(), store: store2 });
+  await ch2.start({ probe: true });
+
+  // #221 found in replay -> accepted, but still processed: false + turnStatus: "cancelled"
+  assert.equal(store2.value.messages["221"].status, "accepted");
+  assert.equal(store2.value.messages["221"].processed, false);
+  assert.equal(store2.value.messages["221"].turnStatus, "cancelled");
+
+  // #222 NOT in replay -> remains uncertain + cancelled
+  assert.equal(store2.value.messages["222"].status, "uncertain");
+  assert.equal(store2.value.messages["222"].processed, false);
+  assert.equal(store2.value.messages["222"].turnStatus, "cancelled");
+  await ch2.stop();
+});
