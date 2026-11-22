@@ -17,6 +17,8 @@ export const spy: GameDefinition = {
     "Усі, крім шпигуна, знають таємне слово. Два кола підказок, потім таємне голосування: хто шпигун? Від 3 до 8 гравців, українською.",
   seats: SEATS,
   minSeats: engine.MIN_PLAYERS,
+  // the order of clues is the order of seats: mix it, so the creator is not always first
+  shuffleSeats: true,
   play(moves, text, ctx) {
     return engine.play(engine.replay(moves), text, ctx);
   },

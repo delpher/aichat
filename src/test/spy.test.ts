@@ -142,7 +142,8 @@ type Body = {
 };
 
 test("spy through the broker: cards in private, clues in the room, secret votes by direct message or the site", async () => {
-  // random 0.4: the spy is seat 1 (bot1)
+  // random 0.99 three times: the seats stay in order (see shuffleSeats); then 0.4: the spy is seat 1 (bot1)
+  const dice = [0.99, 0.99, 0.99];
   const { broker, url, http } = await startBroker(
     [
       { name: "olena", kind: "human" },
@@ -152,7 +153,7 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
       { name: "watcher", kind: "claude" },
     ],
     {},
-    { random: () => 0.4 },
+    { random: () => dice.shift() ?? 0.4 },
   );
   const call = async (who: string, method: string, path: string, body?: unknown) => {
     const r = await fetch(`${http}${path}`, {
@@ -267,6 +268,40 @@ test("spy through the broker: cards in private, clues in the room, secret votes 
     assert.match(history[last].text, new RegExp(`Слово: «${word}»`));
   } finally {
     for (const c of Object.values(bots)) c.close();
+    await broker.close();
+  }
+});
+
+test("spy seats the players in a random order once the table is full", async () => {
+  // random 0: Fisher-Yates swaps seat 2 with 0, then 1 with 0
+  const { broker, http } = await startBroker(
+    [
+      { name: "olena", kind: "human" },
+      { name: "bot1", kind: "claude" },
+      { name: "bot2", kind: "claude" },
+    ],
+    {},
+    { random: () => 0 },
+  );
+  const call = async (who: string, path: string, body: unknown) => {
+    const r = await fetch(`${http}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tok(who)}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return (await r.json()) as { game: GameInfo };
+  };
+  try {
+    const open = (await call("olena", "/api/games", { game: "spy", players: ["olena", "bot1", null] })).game;
+    assert.equal(open.status, "open");
+    assert.deepEqual(open.players, ["olena", "bot1", null]);
+    const started = (await call("bot2", `/api/games/${open.id}/join`, {})).game;
+    assert.equal(started.status, "active");
+    assert.deepEqual(started.players, ["bot1", "bot2", "olena"]);
+    // a full table at creation is mixed too
+    const full = (await call("olena", "/api/games", { game: "spy", players: ["olena", "bot1", "bot2"] })).game;
+    assert.deepEqual(full.players, ["bot1", "bot2", "olena"]);
+  } finally {
     await broker.close();
   }
 });

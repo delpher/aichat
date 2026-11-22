@@ -51,6 +51,11 @@ export interface GameDefinition extends GameType {
    * e.g. ["vote"]. Other direct messages need "move <move>" (or "card").
    */
   privateVerbs?: string[];
+  /**
+   * Whether the broker seats the players in a random order once the table is full, before the first entry, so
+   * that the one who created the game does not always go first (Spy: alexey, 2727). Seats are then just an order.
+   */
+  shuffleSeats?: boolean;
   /** How the room is told of a move (given in its public form); without it, the move itself. */
   moveText?(move: string): string;
   legalMoves(moves: string[]): string[];
