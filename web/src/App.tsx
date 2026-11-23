@@ -25,7 +25,7 @@ import { ChatContext, type BoardEvent, type ChatContextValue } from "./context";
 import { useSocket } from "./hooks/useSocket";
 import { useTheme } from "./hooks/useTheme";
 import { KEYS, storage } from "./lib/storage";
-import { hashFor, matchesView, messageKey, parseHash, resolveView, viewKey, viewOfMessage, type View } from "./lib/views";
+import { gameIdOfRoom, hashFor, matchesView, messageKey, parseHash, resolveView, type View, viewKey, viewOfMessage } from "./lib/views";
 import { viewTitle } from "./components/Header";
 
 export function toOverview(d: Record<string, unknown>): Overview {
@@ -464,6 +464,9 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
     openMessage,
     openAgent: setProfile,
     openRoom: (room: string) => {
+      // a game room opens as its game page (alexey, AIChat 3135)
+      const game = gameIdOfRoom(room);
+      if (game !== null) return go({ kind: "game", id: game });
       if (session.mode === "admin" || overview.rooms.some((r) => r.name === room)) go({ kind: "room", room });
       else void joinRoom(room);
     },

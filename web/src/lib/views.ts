@@ -144,3 +144,20 @@ export function viewOfMessage(m: ChatMessage): View {
 export function knownRooms(o: Overview): string[] {
   return [...new Set([...o.rooms.map((r) => r.name), ...o.all_rooms])].filter((n) => !isGameRoom(n)).sort();
 }
+
+/**
+ * Whether `target` is where a `[[msg:…]]` link in message `source` points: `place` is a room, "@name" for a direct
+ * conversation with that participant, or none for the conversation `source` itself is in.
+ */
+export function inPlace(target: ChatMessage, place: string | undefined, source: ChatMessage): boolean {
+  if (place?.startsWith("@")) return !target.room && (target.from === place.slice(1) || target.to === place.slice(1));
+  if (place) return target.room === place;
+  if (source.room) return target.room === source.room;
+  const pair = (m: ChatMessage) => [m.from, m.to].sort().join("\n");
+  return !target.room && pair(target) === pair(source);
+}
+
+/** The `[[msg:…]]` link to message `m` as `me` would write it: the room, or "@" and the other side of a direct one. */
+export function msgLink(m: ChatMessage, me?: string): string {
+  return `[[msg:${m.room ?? `@${m.from === me ? m.to : m.from}`}/${m.id}]]`;
+}

@@ -64,45 +64,67 @@ const components: Components = {
 };
 
 /**
- * Highlights @name mentions of known participants, #room references to known rooms and #1234 references to
- * messages inside plain text (not in code or links). A # counts only at the start of a word (not "a#b" or
- * "&#38;"); a room called "12" wins over message 12.
+ * Links inside plain text (not in code or links), by an explicit syntax (alexey, AIChat 3120-3130):
+ * - `@name` a known participant, `#room` a known room (never a bare number: "PR #80" is just text);
+ * - `[[msg:1234]]` message 1234 in this conversation, `[[msg:lobby/1234]]` in a room, `[[msg:@name/1234]]` in a
+ *   direct conversation with that participant;
+ * - `[[user:name]]` and `[[room:name]]`, the explicit forms (a room may be called "12");
+ * - a game room (`#game-21`, `[[room:game-21]]`) links to its game (alexey, 3135).
+ * Anything else stays as written. A @ or # counts only at the start of a word (not "a#b" or "&#38;").
  */
+const REF = /\[\[(msg|room|user):([^\]\s]{1,140})\]\]|([@#])([A-Za-z0-9_-]{1,64})/g;
+const MSG = /^(?:(@?[A-Za-z0-9_-]{1,64})\/)?(\d{1,9})$/;
+const GAME_ROOM = /^game-\d{1,9}$/;
+
 function refPlugin(names: string[], rooms: string[]) {
   const people = new Set(names);
   const roomSet = new Set(rooms);
+  const isRoom = (name: string) => roomSet.has(name) || GAME_ROOM.test(name);
   type Node = { type: string; value?: string; children?: Node[]; data?: Record<string, unknown> };
+  const span = (type: string, props: Record<string, string>, text: string): Node => ({
+    type,
+    data: { hName: "span", hProperties: props },
+    children: [{ type: "text", value: text }],
+  });
+  /** The link for one match, or null to leave the text as it is. */
+  const link = (m: RegExpExecArray, v: string): Node | null => {
+    if (m[1]) {
+      const [kind, arg] = [m[1], m[2]];
+      if (kind === "user") return people.has(arg) ? span("mention", { className: "mention" }, `@${arg}`) : null;
+      if (kind === "room") return isRoom(arg) ? span("roomRef", { className: "room-ref", dataRoom: arg }, `#${arg}`) : null;
+      const ref = MSG.exec(arg);
+      if (!ref) return null;
+      const [, place, id] = ref;
+      const props: Record<string, string> = { className: "msg-ref", dataMsg: id };
+      if (place) props.dataPlace = place;
+      return span("msgRef", props, place ? `${place.startsWith("@") ? "" : "#"}${place}/${id}` : `#${id}`);
+    }
+    // @ or # only at the start of a word: not "a#b", "x@y.z" or "&#38;"
+    if (m.index > 0 && /[\w&#@]/.test(v[m.index - 1])) return null;
+    if (m[3] === "@") return people.has(m[4]) ? span("mention", { className: "mention" }, m[0]) : null;
+    return isRoom(m[4]) && !/^\d+$/.test(m[4]) ? span("roomRef", { className: "room-ref", dataRoom: m[4] }, m[0]) : null;
+  };
   return () => (tree: Node) => {
     const walk = (node: Node) => {
       if (!node.children) return;
       if (node.type === "link" || node.type === "inlineCode" || node.type === "code") return;
       const out: Node[] = [];
       for (const child of node.children) {
-        if (child.type !== "text" || !/[@#]/.test(child.value ?? "")) {
+        if (child.type !== "text" || !/[@#]|\[\[/.test(child.value ?? "")) {
           walk(child);
           out.push(child);
           continue;
         }
-        const re = /([@#])([A-Za-z0-9_-]{1,64})/g;
         const v = child.value!;
         let last = 0;
-        for (let m = re.exec(v); m; m = re.exec(v)) {
-          const hash = m[1] === "#";
-          // # only at the start of a word: not "a#b" or "&#38;"
-          if (hash && m.index > 0 && /[\w&#]/.test(v[m.index - 1])) continue;
-          const room = hash && roomSet.has(m[2]);
-          // a #1234 that is no room's name refers to a message
-          const msg = hash && !room && /^\d{1,9}$/.test(m[2]) && !/[\w-]/.test(v[m.index + m[0].length] ?? "");
-          if (hash ? !room && !msg : !people.has(m[2])) continue;
+        for (let m = REF.exec(v); m; m = REF.exec(v)) {
+          const made = link(m, v);
+          if (!made) continue;
           if (m.index > last) out.push({ type: "text", value: v.slice(last, m.index) });
-          const props = room ? { className: "room-ref", dataRoom: m[2] } : msg ? { className: "msg-ref", dataMsg: m[2] } : { className: "mention" };
-          out.push({
-            type: room ? "roomRef" : msg ? "msgRef" : "mention",
-            data: { hName: "span", hProperties: props },
-            children: [{ type: "text", value: m[0] }],
-          });
+          out.push(made);
           last = m.index + m[0].length;
         }
+        REF.lastIndex = 0;
         if (last < v.length) out.push({ type: "text", value: v.slice(last) });
       }
       node.children = out;

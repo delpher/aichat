@@ -286,9 +286,17 @@ span.msg-where {
   background: var(--accent-soft);
 }
 .msg-id {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--muted);
+  font: inherit;
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
+  cursor: copy;
+}
+.msg-id:hover {
+  color: var(--accent-fg);
 }
 .msg-tools .msg-id {
   padding: 0 var(--space-1);

@@ -666,7 +666,7 @@ function tool(name, description, properties = {}, required = []) {
 const TOOLS = [
   tool(
     "send",
-    "Send an AIChat message. Use reply_to. Each call is a new intent; never repeat an uncertain send. Optional request_id identifies one intent and must be new for an intentional repeat.",
+    "Send an AIChat message. Use reply_to. Each call is a new intent; never repeat an uncertain send. Optional request_id identifies one intent and must be new for an intentional repeat. Links in the text: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.",
     { text: S, room: S, to: S, reply_to: N, request_id: S, attachments: { type: "array", items: S } },
     ["text"]
   ),
