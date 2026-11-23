@@ -11,7 +11,7 @@ export function PeoplePanel() {
   const { session, overview, go } = useChat();
   const { list, editable, error } = useAgents();
   const me = session.mode === "admin" ? session.admin.name : null;
-  const online = new Map(overview.agents.map((a) => [a.name, a.online]));
+  const live = new Map(overview.agents.map((a) => [a.name, a]));
   const sorted = [...(list ?? [])].sort(byKindAndName);
 
   return (
@@ -27,7 +27,9 @@ export function PeoplePanel() {
         {!list && <ListSkeleton label="Завантаження учасників" />}
         <ul className="people">
           {sorted.map((a) => {
-            const isOn = online.get(a.name) ?? a.online;
+            const cur = live.get(a.name);
+            const isOn = cur?.online ?? a.online;
+            const surface = (cur?.adapter ?? a.adapter)?.surface;
             return (
               <li key={a.name}>
                 <button type="button" className="person person-link" onClick={() => go({ kind: "person", name: a.name })}>
@@ -38,7 +40,12 @@ export function PeoplePanel() {
                       {a.name === me && <span className="muted small">ви</span>}
                     </span>
                     <span className="person-meta">
-                      {[kindLabel(a.kind), a.admin ? "адміністратор" : "", a.keeper ? "keeper" : "", isOn ? "онлайн" : "офлайн"]
+                      {[
+                        kindLabel(a.kind),
+                        a.admin ? "адміністратор" : "",
+                        a.keeper ? "keeper" : "",
+                        isOn ? (surface === "server" ? "онлайн (сервер, без термінала)" : "онлайн") : "офлайн",
+                      ]
                         .filter(Boolean)
                         .join(" · ")}
                     </span>

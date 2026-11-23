@@ -1932,3 +1932,154 @@ test("Channel ignores live reaction frames and forwards reactions_since on incom
   await waitFor(() => ch.engine.active === null);
   await ch.stop();
 });
+
+test("Lifecycle contract: session policy, .aichat/fresh, previousSessionIds, delivery journal separation, and auth surface/start", async (t) => {
+  const { agentDir, configFile, cfg } = makeTempEnv(t);
+  assert.equal(cfg.session, "resume");
+
+  // Invalid session policy is rejected by loadConfig
+  const badCfgFile = path.join(agentDir, "bad-session.config.json");
+  fs.writeFileSync(badCfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(configFile, "utf8")), session: "always" }));
+  assert.throws(() => loadConfig(badCfgFile), /Invalid session policy/);
+
+  // 1. Resume existing session -> auth.client reports surface="terminal", start="resumed" (preserved across WS reconnect)
+  const storeRes = new State(path.join(agentDir, ".aichat", "state-res.json"));
+  storeRes.patch({ sessionId: "sess-old-1" });
+  const rpcRes = new FakeRpc();
+  rpcRes.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcRes.onRequest("session/list", () => ({ sessions: [{ sessionId: "sess-old-1" }] }));
+  rpcRes.onRequest("session/load", (p) => ({ sessionId: p.sessionId }));
+
+  const sockets = [];
+  const origWs = globalThis.WebSocket;
+  class FakeWS extends EventEmitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.readyState = 1;
+      this.sent = [];
+      this.closed = false;
+      sockets.push(this);
+    }
+    addEventListener(ev, fn) {
+      this.on(ev, fn);
+    }
+    send(data) {
+      this.sent.push(JSON.parse(data));
+    }
+    close() {
+      this.readyState = 3;
+      this.closed = true;
+    }
+  }
+  FakeWS.OPEN = 1;
+  globalThis.WebSocket = FakeWS;
+  t.after(() => {
+    globalThis.WebSocket = origWs;
+  });
+
+  const chRes = new Channel({ ...cfg, paused: false }, { rpc: rpcRes, http: new FakeHttp(), store: storeRes });
+  await chRes.start({ probe: true });
+  assert.equal(chRes.sessionStart, "resumed");
+  chRes.connect();
+  sockets[0].emit("open");
+  assert.equal(sockets[0].sent[0].type, "auth");
+  assert.equal(sockets[0].sent[0].client.surface, "terminal");
+  assert.equal(sockets[0].sent[0].client.start, "resumed");
+  // Reconnect preserves start="resumed"
+  chRes.reconnectDelay = 20;
+  sockets[0].emit("close", { code: 1006 });
+  await waitFor(() => sockets.length === 2);
+  sockets[1].emit("open");
+  assert.equal(sockets[1].sent[0].client.surface, "terminal");
+  assert.equal(sockets[1].sent[0].client.start, "resumed");
+  await chRes.stop();
+
+  // 2. .aichat/fresh failure safety: if session/new fails, marker and old sessionId MUST remain intact
+  const freshFile = path.join(cfg.runtime, "fresh");
+  fs.writeFileSync(freshFile, "fresh", "utf8");
+  const storeFail = new State(path.join(agentDir, ".aichat", "state-fresh-fail.json"));
+  storeFail.patch({ sessionId: "sess-before-fail" });
+  const rpcFail = new FakeRpc();
+  rpcFail.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcFail.onRequest("session/new", () => Promise.reject(new RpcError({ code: -32603, message: "acp down" })));
+  const chFail = new Channel(cfg, { rpc: rpcFail, http: new FakeHttp(), store: storeFail });
+  await assert.rejects(() => chFail.start({ probe: true }), /acp down/);
+  assert.equal(storeFail.value.sessionId, "sess-before-fail");
+  assert.equal(fs.existsSync(freshFile), true);
+  await chFail.stop();
+
+  // 3. .aichat/fresh success: archives old sessionId in previousSessionIds, removes marker, skips session/load,
+  //    keeps queued (undelivered) inputs for the new session, never re-delivers already accepted inputs, reports start="new"
+  const storeFresh = new State(path.join(agentDir, ".aichat", "state-fresh-ok.json"));
+  storeFresh.patch({ sessionId: "sess-old-2", sessionUsage: { tokensIn: 500, tokensOut: 100 } });
+  storeFresh.enqueue({ id: 501, from: "alexey", room: "lobby", text: "already accepted in old session" }, cfg);
+  storeFresh.update([501], { status: "delivered", processed: false });
+  storeFresh.enqueue({ id: 502, from: "alexey", room: "lobby", text: "undelivered waits for new session" }, cfg);
+
+  const rpcFresh = new FakeRpc();
+  rpcFresh.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcFresh.onRequest("session/new", () => ({ sessionId: "sess-fresh-2" }));
+
+  const chFresh = new Channel({ ...cfg, paused: false }, { rpc: rpcFresh, http: new FakeHttp(), store: storeFresh });
+  await chFresh.start({ probe: true });
+  assert.equal(chFresh.sessionStart, "new");
+  assert.equal(storeFresh.value.sessionId, "sess-fresh-2");
+  assert.deepEqual(storeFresh.value.previousSessionIds, ["sess-old-2"]);
+  assert.deepEqual(storeFresh.value.sessionUsage, { tokensIn: 0, tokensOut: 0 });
+  assert.equal(fs.existsSync(freshFile), false);
+  assert.ok(!rpcFresh.requests.some((r) => r.method === "session/load"));
+  assert.equal(storeFresh.value.messages["501"].processed, true);
+  assert.equal(storeFresh.value.messages["501"].turnStatus, "interrupted");
+  assert.equal(storeFresh.value.messages["502"].status, "queued");
+  assert.equal(storeFresh.value.messages["502"].processed, false);
+
+  chFresh.connect();
+  sockets.at(-1).emit("open");
+  assert.equal(sockets.at(-1).sent[0].client.surface, "terminal");
+  assert.equal(sockets.at(-1).sent[0].client.start, "new");
+  await chFresh.stop();
+
+  // 4. cfg.session="new" and fresh=true option both start a fresh session and archive previousSessionIds
+  const storeOpt = new State(path.join(agentDir, ".aichat", "state-opt-new.json"));
+  storeOpt.patch({ sessionId: "sess-old-3" });
+  const rpcOpt = new FakeRpc();
+  rpcOpt.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcOpt.onRequest("session/new", () => ({ sessionId: "sess-opt-3" }));
+  const chOpt = new Channel({ ...cfg, session: "new" }, { rpc: rpcOpt, http: new FakeHttp(), store: storeOpt });
+  await chOpt.start({ probe: true });
+  assert.equal(chOpt.sessionStart, "new");
+  assert.equal(storeOpt.value.sessionId, "sess-opt-3");
+  assert.deepEqual(storeOpt.value.previousSessionIds, ["sess-old-3"]);
+  await chOpt.stop();
+});
+
+test("Channel.stop sends idle before closing WebSocket and removes .aichat/stop file", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-stop.json"));
+  const rpc = new FakeRpc();
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-stop" }));
+
+  const events = [];
+  const http = new FakeHttp();
+  const origReq = http.request.bind(http);
+  http.request = async (route, opts) => {
+    if (route === "/api/activity" && opts?.body?.state === "idle") events.push("idle");
+    return origReq(route, opts);
+  };
+
+  const ch = new Channel(cfg, { rpc, http, store });
+  await ch.start({ probe: true });
+  ch.socket = {
+    close() {
+      events.push("ws_close");
+    },
+  };
+  const stopFile = path.join(cfg.runtime, "stop");
+  fs.writeFileSync(stopFile, "stop", "utf8");
+
+  await ch.stop();
+  assert.equal(fs.existsSync(stopFile), false);
+  assert.deepEqual(events, ["idle", "ws_close"]);
+});

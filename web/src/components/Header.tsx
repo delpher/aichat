@@ -77,7 +77,8 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
       card = a.name;
       icon = <Avatar name={a.name} kind={a.kind} online={a.online} activity={a.activity} size="sm" />;
       const doing = a.online && a.activity && a.activity.state !== "idle" ? activityText(a.name, a.activity) : null;
-      sub = [doing ?? (a.online ? "онлайн" : "офлайн"), a.description].filter(Boolean).join(" · ");
+      const online = a.adapter?.surface === "server" ? "онлайн · сервер, без термінала" : "онлайн";
+      sub = [doing ?? (a.online ? online : "офлайн"), a.description].filter(Boolean).join(" · ");
     }
   }
 

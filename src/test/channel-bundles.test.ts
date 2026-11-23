@@ -17,7 +17,8 @@ for (const name of ["codex-channel", "agy-channel"]) {
     const imports = [...code.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
     assert.ok(imports.length > 0);
     for (const m of imports) assert.match(m, /^node:/, m);
-    assert.match(code, new RegExp(`client: \\{ name: ['"]${name}['"], version: VERSION \\}`));
+    // the adapter names itself and its version; it may add more (surface, start) after them
+    assert.match(code, new RegExp(`client: \\{\\s*name: ['"]${name}['"],\\s*version: VERSION\\b`));
     assert.match(code, /__AICHAT_VERSION__ (?:===|!==) ['"](?:string|undefined)['"] \? __AICHAT_VERSION__ : ['"]0\.0\.0-dev['"]/);
   });
 

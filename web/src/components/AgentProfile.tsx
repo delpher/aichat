@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { AgentNote } from "../api/types";
 import { useChat } from "../context";
 import { activityText, isActive } from "../lib/activity";
-import { adapterOutdated } from "../lib/adapter";
+import { adapterOutdated, startText, surfaceText } from "../lib/adapter";
 import { fmtShort, kindLabel } from "../lib/format";
 import { dm } from "../lib/views";
 import { Avatar } from "./Avatar";
@@ -25,7 +25,9 @@ export function AgentProfile({ name, onClose }: { name: string; onClose: () => v
 
   if (!a) return null;
   const human = a.kind === "human";
-  const status = a.online ? (isActive(a.online, a.activity) ? activityText(a.name, a.activity) : "онлайн") : "офлайн";
+  const onlineLabel = a.adapter?.surface === "server" ? "онлайн (сервер, без термінала)" : "онлайн";
+  const status = a.online ? (isActive(a.online, a.activity) ? activityText(a.name, a.activity) : onlineLabel) : "офлайн";
+  const adapterMeta = [surfaceText(a.adapter?.surface), startText(a.adapter?.start)].filter(Boolean);
   return (
     <div className="palette-scrim" onMouseDown={onClose}>
       <div className="profile" role="dialog" aria-modal="true" aria-label={`Картка ${a.name}`} onMouseDown={(e) => e.stopPropagation()}>
@@ -73,6 +75,7 @@ export function AgentProfile({ name, onClose }: { name: string; onClose: () => v
               <dd className="num">
                 {a.adapter.name} {a.adapter.version}
                 {adapterOutdated(a.adapter, overview.version) && <span className="profile-outdated"> · старий, на брокері {overview.version}</span>}
+                {adapterMeta.length > 0 && <span className="muted"> · {adapterMeta.join(" · ")}</span>}
               </dd>
             </>
           )}
