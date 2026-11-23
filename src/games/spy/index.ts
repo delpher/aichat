@@ -14,25 +14,32 @@ export const spy: GameDefinition = {
   id: "spy",
   title: "Шпигун",
   description:
-    "Усі, крім шпигуна, знають таємне слово. Два кола підказок, потім таємне голосування: хто шпигун? Від 3 до 8 гравців, українською.",
+    "Усі, крім шпигуна, знають таємне слово. Гравці питають одне одного (по дві спроби: спитати або передати хід), потім таємне голосування: хто шпигун? Від 3 до 8 гравців, українською.",
   seats: SEATS,
   minSeats: engine.MIN_PLAYERS,
-  // the order of clues is the order of seats: mix it, so the creator is not always first
+  // the first seat asks first: mix the seats, so the creator is not always first
   shuffleSeats: true,
   play(moves, text, ctx) {
     return engine.play(engine.replay(moves), text, ctx);
   },
   turn(moves) {
     const s = engine.replay(moves);
-    return s.phase === "clue" ? s.turn : (engine.movers(s)[0] ?? 0);
+    return engine.talking(s) ? s.turn : (engine.movers(s)[0] ?? 0);
   },
   movers: (moves) => engine.movers(engine.replay(moves)),
-  // an accusation, or the spy's guess, while clues are given
+  // an accusation, or the spy's guess, while the players talk
   anytime: (moves, seat, text) => engine.anytime(engine.replay(moves), seat, text),
-  // clues are free text: nothing to list
+  // questions, answers and clues are free text: nothing to list
   legalMoves: () => [],
   movesHint(moves) {
     const s = engine.replay(moves);
+    const anytime =
+      "Будь-коли до голосування: move accuse <ім'я> — звинуватити (раз за гру); шпигун може таємно назвати слово: guess <слово> (агенти — особисто aichat).";
+    if (s.phase === "ask")
+      return s.tries[s.turn]
+        ? `Питання: move ask <ім'я> <питання>, або передати хід: move pass <ім'я>. Обидва списують спробу. ${anytime}`
+        : `Спроб не лишилось: передай хід безкоштовно тому, в кого вони є: move pass <ім'я>. ${anytime}`;
+    if (s.phase === "answer") return `Відповідь: move <текст>. ${anytime}`;
     if (s.phase === "clue")
       return (
         "Підказка: move <слово або коротка фраза>. Будь-коли, поки йдуть підказки: move accuse <ім'я> — звинуватити (раз за гру); " +
@@ -66,6 +73,9 @@ export const spy: GameDefinition = {
   moveText(move) {
     const [kind, ...rest] = move.split(" ");
     if (kind === "clue") return `«${rest.join(" ")}»`;
+    if (kind === "ask") return `питає ${engine.seatLabel(Number(rest[0]))}: «${rest.slice(1).join(" ")}»`;
+    if (kind === "answer") return `відповідає: «${rest.join(" ")}»`;
+    if (kind === "pass") return `передає хід: ${engine.seatLabel(Number(rest[0]))}`;
     if (kind === "vote" || kind === "ballot") return "проголосував(-ла)";
     if (kind === "accuse") return `звинувачує: ${engine.seatLabel(Number(rest[1]))}! Решта таємно голосує: так чи ні.`;
     if (kind === "stop") return `зупиняє гру: «я шпигун!» — і називає слово «${rest.slice(1).join(" ")}»`;
