@@ -17,6 +17,8 @@ jobs:
   test:
     name: Build and test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    # a stuck test used to hold the job for GitHub's six hours
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
