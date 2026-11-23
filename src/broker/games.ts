@@ -306,7 +306,7 @@ export class Games {
     const g = this.activeFor(by, id);
     const def = this.def(g.game);
     const seat = g.players.indexOf(by);
-    if (!this.movers(def, g.moves).includes(seat)) {
+    if (!this.movers(def, g.moves).includes(seat) && !def.anytime?.(g.moves, seat, text)) {
       const turn = def.turn(g.moves);
       throw new GameError(def.movers ? "Зараз не ваш хід." : `Не ваш хід. ${this.turnLabel(def, turn)} (${g.players[turn]}).`, 409);
     }

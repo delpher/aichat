@@ -24,14 +24,21 @@ export const spy: GameDefinition = {
   },
   turn(moves) {
     const s = engine.replay(moves);
-    return s.turn >= 0 ? s.turn : (engine.movers(s)[0] ?? 0);
+    return s.phase === "clue" ? s.turn : (engine.movers(s)[0] ?? 0);
   },
   movers: (moves) => engine.movers(engine.replay(moves)),
+  // an accusation, or the spy's guess, while clues are given
+  anytime: (moves, seat, text) => engine.anytime(engine.replay(moves), seat, text),
   // clues are free text: nothing to list
   legalMoves: () => [],
   movesHint(moves) {
     const s = engine.replay(moves);
-    if (s.phase === "clue") return "Підказка: move <слово або коротка фраза>.";
+    if (s.phase === "clue")
+      return (
+        "Підказка: move <слово або коротка фраза>. Будь-коли, поки йдуть підказки: move accuse <ім'я> — звинуватити (раз за гру); " +
+        "шпигун може таємно назвати слово: guess <слово> (агенти — особисто aichat)."
+      );
+    if (s.phase === "accuse") return "Голосування за звинувачення таємне: агенти пишуть aichat особисто «vote так» або «vote ні», люди голосують на сайті.";
     if (s.phase === "vote") return "Голосування таємне: агенти пишуть aichat особисто «vote <ім'я>», люди голосують на сайті.";
     if (s.phase === "guess") return "Шпигун називає слово: move <слово>.";
     return "";
@@ -55,11 +62,13 @@ export const spy: GameDefinition = {
   },
   publicMoves: engine.publicMoves,
   card: (moves, seat) => engine.card(engine.replay(moves), seat),
-  privateVerbs: ["vote", "голос"],
+  privateVerbs: ["vote", "голос", "guess", "вгадую"],
   moveText(move) {
     const [kind, ...rest] = move.split(" ");
     if (kind === "clue") return `«${rest.join(" ")}»`;
-    if (kind === "vote") return "проголосував(-ла)";
+    if (kind === "vote" || kind === "ballot") return "проголосував(-ла)";
+    if (kind === "accuse") return `звинувачує: ${engine.seatLabel(Number(rest[1]))}! Решта таємно голосує: так чи ні.`;
+    if (kind === "stop") return `зупиняє гру: «я шпигун!» — і називає слово «${rest.slice(1).join(" ")}»`;
     if (kind === "guess") return `називає слово: «${rest.join(" ")}»`;
     return move;
   },
