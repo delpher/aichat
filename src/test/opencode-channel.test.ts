@@ -3,7 +3,7 @@
 // the broker's version like the other adapters.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -134,5 +134,107 @@ test("aichat_react posts/deletes a fixed emoji and aichat_read renders reactions
   } finally {
     globalThis.fetch = realFetch;
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it otherwise", async () => {
+  const buildBundle = async (dir: string) => {
+    const out = await build({
+      entryPoints: [source],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node22",
+      write: false,
+      logLevel: "silent",
+      define: { __AICHAT_VERSION__: JSON.stringify(VERSION) },
+    });
+    const file = join(dir, "index.js");
+    writeFileSync(file, out.outputFiles[0].text);
+    writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+    return (await import(pathToFileURL(file).href)).default as {
+      setup: (ctx: unknown) => Promise<() => Promise<void> | void>;
+    };
+  };
+
+  const makeCtx = (dir: string, storage: Record<string, unknown>) => {
+    const created: string[] = [];
+    const got: string[] = [];
+    const saved: Record<string, unknown> = {};
+    const ctx = {
+      location: { directory: dir },
+      options: { paused: true, token: "test-token", url: "ws://127.0.0.1:9/ws", sessionTitle: "T" },
+      storage: {
+        get: async (key: string) => storage[key],
+        set: async (key: string, value: unknown) => {
+          storage[key] = value;
+          saved[key] = value;
+        },
+      },
+      session: {
+        create: async () => {
+          created.push("new");
+          return { id: "ses_new", title: "T" };
+        },
+        get: async ({ sessionID }: { sessionID: string }) => {
+          got.push(sessionID);
+          return { id: sessionID, title: "T", model: null, location: { directory: dir } };
+        },
+        switchModel: async () => {},
+      },
+      tool: {
+        transform: (cb: (editor: unknown) => void) => {
+          cb({ namespace: () => {}, add: () => {} });
+          return Promise.resolve({ dispose() {} });
+        },
+      },
+      model: { list: async () => [] },
+    };
+    return { ctx, created, got, saved };
+  };
+
+  // A fresh start: the marker forces a new session, the old id is kept in previousSessionIds, and the marker
+  // is spent only after the new session exists.
+  const freshDir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
+  try {
+    const plugin = await buildBundle(freshDir);
+    mkdirSync(join(freshDir, ".aichat"), { recursive: true });
+    writeFileSync(join(freshDir, ".aichat", "fresh"), "");
+    const { ctx, created, got, saved } = makeCtx(freshDir, {
+      "aichat/session": { id: "ses_old" },
+    });
+    const dispose = await plugin.setup(ctx);
+    try {
+      assert.equal(created.length, 1, "created a new session");
+      assert.equal(got.length, 0, "did not resume the old one");
+      assert.deepEqual(saved["aichat/session:".concat(String(freshDir).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())], {
+        id: "ses_new",
+        title: "T",
+      });
+      assert.ok((saved["aichat/previousSessionIds"] as string[]).includes("ses_old"));
+      assert.equal(existsSync(join(freshDir, ".aichat", "fresh")), false, "marker spent");
+    } finally {
+      await dispose();
+    }
+  } finally {
+    rmSync(freshDir, { recursive: true, force: true });
+  }
+
+  // A normal start resumes the saved session.
+  const resumeDir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
+  try {
+    const plugin = await buildBundle(resumeDir);
+    const { ctx, created, got } = makeCtx(resumeDir, {
+      "aichat/session": { id: "ses_old" },
+    });
+    const dispose = await plugin.setup(ctx);
+    try {
+      assert.deepEqual(got, ["ses_old"], "resumed the saved session");
+      assert.equal(created.length, 0, "did not create a session");
+    } finally {
+      await dispose();
+    }
+  } finally {
+    rmSync(resumeDir, { recursive: true, force: true });
   }
 });

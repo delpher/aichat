@@ -16,7 +16,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,10 +53,15 @@ if (!token) {
 }
 
 const ADAPTER_FILE = "claude-channel.mjs";
+/**
+ * How the session began. Claude Code keeps the session, not the adapter, so only the start script knows:
+ * it runs `claude --continue` (resumed) or `claude` (new) and says so in AICHAT_START.
+ */
+const START = process.env.AICHAT_START === "resumed" || process.env.AICHAT_START === "new" ? process.env.AICHAT_START : undefined;
 const client = new BrokerClient({
   url,
   token,
-  client: { name: "claude-channel", version: ADAPTER_VERSION },
+  client: { name: "claude-channel", version: ADAPTER_VERSION, surface: "terminal", ...(START ? { start: START } : {}) },
   // one id for this process: Claude Code starts the adapter with each session, and the broker greets a new one
   session: randomUUID(),
   log: (m) => console.error(`[aichat-channel] ${m}`),
@@ -573,3 +578,19 @@ const shutdown = () => {
 };
 process.stdin.on("close", shutdown);
 process.on("SIGTERM", shutdown);
+
+// `.aichat/stop` in the session's folder takes the agent off AIChat, the same way for every adapter. Claude Code
+// itself stays open: the adapter cannot close it, so it only leaves (offline) and removes the file.
+const STOP_FILE = join(process.cwd(), ".aichat", "stop");
+const stopWatch = setInterval(() => {
+  void stat(STOP_FILE).then(
+    async () => {
+      clearInterval(stopWatch);
+      console.error("[aichat-channel] .aichat/stop found: leaving AIChat");
+      await rm(STOP_FILE, { force: true }).catch(() => {});
+      shutdown();
+    },
+    () => {},
+  );
+}, 1000);
+stopWatch.unref();

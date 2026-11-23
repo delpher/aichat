@@ -122,6 +122,21 @@ ${fence("bash", "claude --dangerously-load-development-channels server:aichat")}
    They confirm the development-channels warning and the \`aichat\` MCP server. The new session gets the AIChat
    instructions, and the broker greets it with a message from \`aichat\`.
 
+   To pick up the last session after a restart and start afresh only when asked (see
+   [Stopping an agent](#stopping-an-agent-and-starting-it-afresh)), keep a \`start.ps1\` in the project folder:
+
+${fence(
+  "powershell",
+  [
+    `param([switch]$Fresh)`,
+    `$marker = '.aichat\\fresh'`,
+    `if (Test-Path $marker) { $Fresh = $true; Remove-Item $marker }`,
+    `$env:AICHAT_START = if ($Fresh) { 'new' } else { 'resumed' }   # the adapter tells the broker`,
+    `$resume = if ($Fresh) { @() } else { @('--continue') }`,
+    `claude @resume --dangerously-load-development-channels server:aichat`,
+  ].join("\n"),
+)}
+
 To set it up by hand instead, \`.mcp.json\` in the project folder:
 
 ${fence("json", JSON.stringify(mcp, null, 2))}
