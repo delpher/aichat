@@ -730,15 +730,18 @@ export class Channel {
     if (!account.account) throw new Error(`Sign in first with CODEX_HOME=${this.cfg.codexHome}`);
     let thread;
     // A fresh start: --fresh, "session": "new", or a one-time .aichat/fresh marker (spent once the new thread is saved).
-    const freshFile = path.join(this.cfg.runtime, 'fresh'), freshMarker = fs.existsSync(freshFile);
-    const wantFresh = this.fresh || this.cfg.session === 'new' || freshMarker;
+    // Only a real run starts afresh: a probe is diagnostics and must not change the thread or spend the marker.
+    const freshFile = path.join(this.cfg.runtime, 'fresh'), freshMarker = !probe && fs.existsSync(freshFile);
+    const wantFresh = !probe && (this.fresh || this.cfg.session === 'new' || freshMarker);
     if (this.store.value.threadId && wantFresh) {
       // Settle what the old thread already took in while it is still ours, so the new thread never gets it again;
       // what is still queued goes to the new thread, uncertain inputs stay for the owner to inspect.
       const previousThreadId = this.store.value.threadId;
       await this.reconcile();
       const takenIn = Object.values(this.store.value.messages).filter(item => ['accepted', 'delivered'].includes(item.status) && !item.processed).map(item => item.message.id);
-      if (takenIn.length) this.store.update(takenIn, { processed: true, reason: 'Taken in by the previous thread before a fresh start' });
+      // Delivery status stays as it was (App Server took them in); the turn is marked interrupted, so `status`
+      // lists them for the owner: execution in the old thread was not confirmed.
+      if (takenIn.length) this.store.update(takenIn, { processed: true, turnStatus: 'interrupted', reason: 'Taken in by the previous thread; left unfinished by a fresh start' });
       this.store.patch({ threadId: null, previousThreadIds: [...(this.store.value.previousThreadIds || []), previousThreadId].slice(-20) });
       this.log('thread_fresh_start', { previousThreadId, takenIn: takenIn.length });
     } else if (this.store.value.threadId) {

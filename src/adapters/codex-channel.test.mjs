@@ -51,7 +51,7 @@ function mockChannel(f, responder, options = {}) {
 }
 
 test('a fresh start keeps the old thread, does not hand its inputs to the new one and spends the marker', async () => {
-  const f = fixture();
+  const f = fixture(); f.cfg.paused = true; // a real run, but without a broker connection
   const x = mockChannel(f, async method => {
     if (method === 'thread/start') return { thread: { id: 'fresh-thread', modelProvider: 'openai' } };
     if (method === 'thread/turns/list') return { data: [] }; // the old turn is not listed: it stays unsettled until the switch
@@ -61,29 +61,42 @@ test('a fresh start keeps the old thread, does not hand its inputs to the new on
     f.store.enqueue(message(1), f.cfg); f.store.update([1], { status: 'accepted', turnId: 'old-turn' });
     f.store.enqueue(message(2), f.cfg);
     fs.writeFileSync(path.join(f.cfg.runtime, 'fresh'), '');
-    await x.channel.start({ probe: true });
+    await x.channel.start();
     assert.ok(!x.calls.includes('thread/resume'));
     assert.equal(f.store.value.threadId, 'fresh-thread'); assert.deepEqual(f.store.value.previousThreadIds, ['our-thread']);
-    assert.equal(f.store.value.messages[1].processed, true); // taken in by the old thread: never again
+    // taken in by the old thread: never again, still accepted, and listed for the owner as interrupted
+    assert.equal(f.store.value.messages[1].processed, true); assert.equal(f.store.value.messages[1].status, 'accepted');
+    assert.equal(f.store.value.messages[1].turnStatus, 'interrupted');
     assert.equal(f.store.value.messages[2].status, 'queued'); // not delivered yet: goes to the new thread
     assert.equal(x.channel.sessionStart, 'new');
     assert.ok(!fs.existsSync(path.join(f.cfg.runtime, 'fresh')));
     assert.ok(x.events.includes('thread_fresh_start'));
   } finally { await x.channel.stop(); f.close(); }
 });
+test('a probe never starts afresh: the marker, the thread and the old records stay', async () => {
+  const f = fixture(); f.cfg.session = 'new';
+  const x = mockChannel(f, async method => (method === 'thread/resume' ? { thread: { id: 'our-thread', modelProvider: 'openai' } } : { data: [] }), { fresh: true });
+  try {
+    f.store.enqueue(message(1), f.cfg); f.store.update([1], { status: 'accepted', turnId: 'old-turn' });
+    fs.writeFileSync(path.join(f.cfg.runtime, 'fresh'), '');
+    await x.channel.start({ probe: true });
+    assert.ok(!x.calls.includes('thread/start')); assert.equal(f.store.value.threadId, 'our-thread');
+    assert.ok(fs.existsSync(path.join(f.cfg.runtime, 'fresh'))); assert.ok(!f.store.value.messages[1].processed);
+  } finally { await x.channel.stop(); f.close(); }
+});
 test('the fresh marker stays when the new thread could not be made; --fresh and "session": "new" need no marker', async () => {
-  const f = fixture();
+  const f = fixture(); f.cfg.paused = true;
   const failing = mockChannel(f, async method => { if (method === 'thread/start') throw new UncertainError('no new thread'); return { data: [] }; });
   try {
     fs.writeFileSync(path.join(f.cfg.runtime, 'fresh'), '');
-    await assert.rejects(failing.channel.start({ probe: true }), /no new thread/);
+    await assert.rejects(failing.channel.start(), /no new thread/);
     assert.ok(fs.existsSync(path.join(f.cfg.runtime, 'fresh')));
   } finally { await failing.channel.stop(); f.close(); }
   for (const [cfg, options] of [[{}, { fresh: true }], [{ session: 'new' }, {}]]) {
-    const g = fixture(); Object.assign(g.cfg, cfg);
+    const g = fixture(); Object.assign(g.cfg, { paused: true }, cfg);
     const x = mockChannel(g, async method => (method === 'thread/start' ? { thread: { id: 'fresh-thread' } } : { data: [] }), options);
     try {
-      await x.channel.start({ probe: true });
+      await x.channel.start();
       assert.equal(g.store.value.threadId, 'fresh-thread'); assert.equal(x.channel.sessionStart, 'new');
     } finally { await x.channel.stop(); g.close(); }
   }
