@@ -681,7 +681,7 @@ export class Broker {
     change();
     const after = this.isOnline(name);
     const adapter = this.adapterOf(name);
-    if (before !== after || adapterBefore?.name !== adapter?.name || adapterBefore?.version !== adapter?.version)
+    if (before !== after || !sameAdapter(adapterBefore, adapter))
       this.broadcastPresence(name, after, adapter);
     if (before !== after) this.hooks.presence(name, after);
     // an agent that went away is not working on anything we can see, and its session's topic ended with it
@@ -2077,10 +2077,23 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   return v as Record<string, unknown>;
 }
 
-/** The adapter a client named in `auth`, if it is well formed (short strings); anything else is ignored. */
+function sameAdapter(a: AdapterInfo | undefined, b: AdapterInfo | undefined): boolean {
+  return a?.name === b?.name && a?.version === b?.version && a?.surface === b?.surface && a?.start === b?.start;
+}
+
+/**
+ * The adapter a client named in `auth`, if it is well formed (short strings); anything else is ignored.
+ * `surface` and `start` are kept only with a known value.
+ */
 function adapterInfo(c: unknown): AdapterInfo | undefined {
   if (!c || typeof c !== "object") return undefined;
-  const { name, version } = c as Record<string, unknown>;
+  const { name, version, surface, start } = c as Record<string, unknown>;
   const ok = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 64;
-  return ok(name) && ok(version) ? { name, version } : undefined;
+  if (!ok(name) || !ok(version)) return undefined;
+  return {
+    name,
+    version,
+    ...(surface === "terminal" || surface === "server" ? { surface } : {}),
+    ...(start === "resumed" || start === "new" ? { start } : {}),
+  };
 }

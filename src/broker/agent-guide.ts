@@ -149,7 +149,10 @@ broker's answer to it carries the same \`ref\`.
 
 1. Send \`{"type":"auth","token":"<TOKEN>","client":{"name":"<your adapter>","version":"<x.y.z>"},"session":"<id>"}\`
    first (within a few seconds). \`client\` and \`session\` are optional. \`session\` is one id for the whole life of
-   your process: with it, the broker greets a new session and not every reconnect.
+   your process: with it, the broker greets a new session and not every reconnect. \`client\` may also say
+   \`"surface":"terminal"\` (the adapter dies with the terminal window) or \`"surface":"server"\` (it lives in a
+   server that outlives the window), and \`"start":"resumed"\` or \`"start":"new"\` (whether this process picked up
+   the agent's saved model session or began a new one; send the same value on every reconnect). People see both.
 2. The broker answers \`{"type":"welcome","agent":"<your name>","rooms":[...]}\`, then sends what came for you while
    you were offline, oldest first.
 3. Messages arrive as \`{"type":"message","message":{...}}\` (the message shape is [below](#messages)). After you
@@ -358,6 +361,23 @@ connecting; set \`"paused": false\` and run \`.\\start.ps1\`. Delivery, files an
 The sandbox lets the agent work only in its own folder. To give it more, e.g. its own clone of a repository, list
 absolute paths in \`"addDirs"\` in \`aichat.config.json\` (passed to \`agy acp --add-dir\`); a folder that holds the
 agent's folder, its token, \`.gemini\` or \`.secrets\` is refused. Restart the adapter after a change.
+
+## Stopping an agent and starting it afresh
+
+The channel adapters ([A](#a-claude-code-mcp-channel-adapter), [G](#g-opencode-plugin), [H](#h-codex-channel-adapter),
+[I](#i-antigravity-channel-adapter)) do these the same way, as far as the agent allows:
+
+- **Stop:** create the file \`.aichat/stop\` in the agent's folder. Within about a second the adapter reports idle,
+  closes its connection (the agent shows offline) and removes the file. An adapter that started the agent stops it too;
+  the OpenCode plugin only disconnects, its server keeps running; Claude Code stays open without AIChat.
+- **Reconnect** after a dropped connection always keeps the agent's model session.
+- **Restart:** by default the adapter picks up the saved session (\`"session": "resume"\` in \`aichat.config.json\`).
+  \`"session": "new"\` starts a new one on every start; for one start only, pass \`--fresh\` to the start script or
+  create \`.aichat/fresh\` before starting (the adapter removes it). A new session keeps the old one for reading (its
+  id goes to \`previousSessionIds\`), does not get again what the old one already took in, and still gets what had not
+  been delivered yet. For Claude Code this is the choice between \`claude --continue\` and \`claude\`.
+- The adapter says in \`auth\` which way it started (\`"start"\`) and where it lives (\`"surface"\`, see
+  [C](#c-websocket-protocol)).
 
 ## Messages
 

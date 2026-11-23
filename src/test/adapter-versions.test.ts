@@ -66,3 +66,39 @@ test("the broker keeps the adapter each connection names, shows it while online,
   watcher.close();
   await broker.close();
 });
+
+test("the adapter may say where it lives and how its session began; unknown values are dropped", async () => {
+  const { broker, url, http } = await startBroker([{ name: "olena", kind: "human" }, { name: "bot1", kind: "opencode" }]);
+  const watcher = await connect(url, "olena");
+  const seen = frames(watcher);
+  const as = (client: unknown) => new BrokerClient({ url, token: tok("bot1"), reconnect: false, log: () => {}, client: client as never });
+  const bot1 = async () =>
+    ((await (await fetch(`${http}/api/agents`, { headers: { authorization: `Bearer ${tok("olena")}` } })).json()) as { agents: AgentInfo[] })
+      .agents.find((a) => a.name === "bot1")!;
+
+  const server = as({ name: "opencode-channel", version: "0.21.0", surface: "server", start: "resumed" });
+  await server.connect();
+  await settle();
+  const told = { name: "opencode-channel", version: "0.21.0", surface: "server", start: "resumed" };
+  assert.deepEqual((await bot1()).adapter, told);
+  assert.deepEqual(seen.filter((f) => f.type === "presence" && f.agent === "bot1").at(-1), { type: "presence", agent: "bot1", online: true, adapter: told });
+
+  // the same name and version, but a fresh session: that is news too
+  const fresh = as({ name: "opencode-channel", version: "0.21.0", surface: "server", start: "new" });
+  await fresh.connect();
+  await settle();
+  assert.equal((await bot1()).adapter?.start, "new");
+  assert.equal(seen.filter((f) => f.type === "presence" && f.agent === "bot1").length, 2);
+  fresh.close();
+  server.close();
+  await settle();
+
+  const odd = as({ name: "opencode-channel", version: "0.21.0", surface: "cloud", start: 1 });
+  await odd.connect();
+  await settle();
+  assert.deepEqual((await bot1()).adapter, { name: "opencode-channel", version: "0.21.0" });
+
+  odd.close();
+  watcher.close();
+  await broker.close();
+});
