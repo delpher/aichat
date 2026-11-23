@@ -28,6 +28,7 @@ import {
   summarizeToolCall,
   validateMode,
   validateProfileName,
+  acpArgs,
 } from "./agy-channel.mjs";
 
 function makeTempEnv(t) {
@@ -143,6 +144,31 @@ test("validateProfileName & loadConfig enforce isolated profile", (t) => {
   assert.equal(cfg.wsUrl, "ws://aichat.home/ws");
   assert.equal(cfg.sandbox, true);
   assert.equal(cfg.approveAichatTools, true);
+});
+
+test("addDirs: extra workspace folders go to agy acp as --add-dir, never ones holding secrets", (t) => {
+  const { root, agentDir, configFile, cfg } = makeTempEnv(t);
+  assert.deepEqual(cfg.addDirs, []);
+  assert.ok(!acpArgs(cfg).includes("--add-dir"));
+  const write = (extra) => {
+    const raw = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    fs.writeFileSync(configFile, JSON.stringify({ ...raw, ...extra }));
+    return () => loadConfig(configFile);
+  };
+  const repo = path.join(root, "repo");
+  const withRepo = write({ addDirs: [repo] })();
+  assert.deepEqual(withRepo.addDirs, [repo]);
+  const args = acpArgs(withRepo);
+  assert.deepEqual(args.slice(args.indexOf("--add-dir"), args.indexOf("--add-dir") + 2), ["--add-dir", repo]);
+  assert.equal(args.at(-1), "--sandbox", "the sandbox stays on");
+
+  assert.throws(write({ addDirs: "repo" }), /array of absolute paths/);
+  assert.throws(write({ addDirs: ["repo"] }), /array of absolute paths/);
+  // the agent folder's parent holds .aichat and the token; .gemini holds the profile and MCP secrets
+  assert.throws(write({ addDirs: [root] }), /must not contain/);
+  assert.throws(write({ addDirs: [path.dirname(agentDir)] }), /must not contain/);
+  assert.throws(write({ addDirs: [os.homedir()] }), /must not contain/);
+  assert.throws(write({ addDirs: [path.join(os.homedir(), ".gemini", "config")] }), /must not contain/);
 });
 
 test("safeUploadPath permits outbox and blocks secrets/profile/escapes", (t) => {

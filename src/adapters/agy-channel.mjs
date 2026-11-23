@@ -144,6 +144,7 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     permissionCancelGraceMs: raw.permissionCancelGraceMs ?? 5000,
     permissionPromptTimeoutMs: raw.permissionPromptTimeoutMs ?? 30000,
     agy: raw.agy || process.env.AGY_CLI_PATH || (process.platform === "win32" ? "agy.exe" : "agy"),
+    addDirs: raw.addDirs ?? [],
   };
 
   validateMode(cfg.mode);
@@ -161,6 +162,18 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     !cfg.owners.every((v) => typeof v === "string")
   ) {
     throw new Error("rooms/owners must be string arrays");
+  }
+  // more folders for the agent's workspace (`agy acp --add-dir`), e.g. its own clone of a repository; never one that
+  // holds the adapter's secrets or the Antigravity profile (alexey, AIChat 3105)
+  if (!Array.isArray(cfg.addDirs) || !cfg.addDirs.every((v) => typeof v === "string" && path.isAbsolute(v))) {
+    throw new Error("addDirs must be an array of absolute paths");
+  }
+  cfg.addDirs = cfg.addDirs.map((d) => path.resolve(d));
+  const guarded = [cfg.agentDir, cfg.tokenFile, geminiRoot, path.join(os.homedir(), ".secrets")];
+  for (const dir of cfg.addDirs) {
+    if (guarded.some((g) => within(dir, g)) || within(geminiRoot, dir)) {
+      throw new Error(`addDirs: ${dir} must not contain the agent folder, its token, .gemini or .secrets`);
+    }
   }
   if (raw.instructions !== undefined && (typeof raw.instructions !== "string" || raw.instructions.length > 20000)) {
     throw new Error("instructions must be local text of at most 20000 characters");
@@ -181,6 +194,15 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
   }
   cfg.wsUrl = cfg.httpBase.replace(/^http/, "ws") + "/ws";
   return cfg;
+}
+
+/** The command line of `agy acp` for this agent. */
+function acpArgs(cfg) {
+  const args = ["acp", "--stdio", "--app-data-dir", cfg.appDataDir, "--log-file", path.join(cfg.runtime, "acp.log")];
+  if (cfg.geminiDir && cfg.geminiDir !== ".gemini") args.push("--gemini-dir", cfg.geminiDir);
+  for (const dir of cfg.addDirs ?? []) args.push("--add-dir", dir);
+  if (cfg.sandbox) args.push("--sandbox");
+  return args;
 }
 
 class CapacityError extends Error {
@@ -367,23 +389,8 @@ class AcpRpc extends EventEmitter {
     const env = { ...process.env };
     for (const key of ["AICHAT_TOKEN", "AICHAT_URL", "AICHAT_TOKEN_FILE"]) delete env[key];
 
-    const args = [
-      "acp",
-      "--stdio",
-      "--app-data-dir",
-      cfg.appDataDir,
-      "--log-file",
-      path.join(cfg.runtime, "acp.log"),
-    ];
-    if (cfg.geminiDir && cfg.geminiDir !== ".gemini") {
-      args.push("--gemini-dir", cfg.geminiDir);
-    }
-    if (cfg.sandbox) {
-      args.push("--sandbox");
-    }
-
     fs.mkdirSync(cfg.runtime, { recursive: true });
-    this.child = spawn(cfg.agy, args, {
+    this.child = spawn(cfg.agy, acpArgs(cfg), {
       env,
       cwd: cfg.agentDir,
       windowsHide: true,
@@ -3226,6 +3233,7 @@ export {
   TOOLS,
   UncertainError,
   VERSION,
+  acpArgs,
   acquireLock,
   agentInstructions,
   atomicJSON,

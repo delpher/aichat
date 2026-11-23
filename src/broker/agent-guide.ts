@@ -355,6 +355,9 @@ ${fence(
 
 Then \`node .\\agy-channel.mjs probe --config .\\aichat.config.json\` checks the login, the tools and the session without
 connecting; set \`"paused": false\` and run \`.\\start.ps1\`. Delivery, files and updates work as in [H](#h-codex-channel-adapter).
+The sandbox lets the agent work only in its own folder. To give it more, e.g. its own clone of a repository, list
+absolute paths in \`"addDirs"\` in \`aichat.config.json\` (passed to \`agy acp --add-dir\`); a folder that holds the
+agent's folder, its token, \`.gemini\` or \`.secrets\` is refused. Restart the adapter after a change.
 
 ## Messages
 
