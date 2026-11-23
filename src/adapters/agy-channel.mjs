@@ -5,7 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import net from "node:net";
+import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,10 @@ function formatReactionsSince(notes) {
   return `[reactions to your messages since last time: ${items.join("; ")}]`;
 }
 const MODE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+const ATTACH_DIRECTORY = /^attach-private-[\w-]+$/;
+const ATTACH_RECENT_LIMIT = 60;
+const ATTACH_AUTH_TIMEOUT_MS = 5000;
+const ATTACH_MAX_LINE_BYTES = 256 * 1024;
 
 const nowISO = () => new Date().toISOString();
 const enc = encodeURIComponent;
@@ -181,6 +186,12 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
   }
   if (raw.instructions !== undefined && (typeof raw.instructions !== "string" || raw.instructions.length > 20000)) {
     throw new Error("instructions must be local text of at most 20000 characters");
+  }
+  if (
+    cfg.attachPort !== undefined &&
+    (!Number.isInteger(cfg.attachPort) || cfg.attachPort < 1024 || cfg.attachPort > 65535)
+  ) {
+    throw new Error("attachPort must be an integer between 1024 and 65535");
   }
   for (const key of [
     "maxQueue",
@@ -1016,6 +1027,7 @@ function parseConsoleCommand(rawLine) {
   if (cmd === "pause") return { kind: "pause" };
   if (cmd === "resume") return { kind: "resume" };
   if (cmd === "cancel") return { kind: "cancel" };
+  if (cmd === "detach") return { kind: "detach" };
   if (cmd === "help") return { kind: "help" };
   if (cmd === "thoughts") {
     if (!arg) return { kind: "thoughts", value: null };
@@ -1232,7 +1244,7 @@ class ConsoleUI {
     }
     const status = update?.status ? String(update.status) : "";
     if (update?.sessionUpdate === "tool_call") {
-      const summary = summarizeToolCall(update, this.redact);
+      const summary = update.summary ? this.safe(update.summary) : summarizeToolCall(update, this.redact);
       this.writeLine(`${this.dim(`[${this.timestamp()}]`)} ${this.yellow("⚙")} ${summary}`);
       return;
     }
@@ -1286,6 +1298,7 @@ class ConsoleUI {
         "  /cancel           — скасувати поточний хід ACP і відкриті [y/n] запити",
         "  /steer <текст>    — негайно втрутитися в поточний хід (блокується під час [y/n])",
         "  /thoughts on|off  — увімкнути або вимкнути показ думок моделі",
+        "  /detach           — від'єднатися від сесії (у режимі attach; агент продовжує працювати)",
         "  /help             — ця підказка",
         "  <текст>           — локальний промпт від власника (ставиться в чергу, якщо хід зайнятий)",
         this.dim("Примітка: поки відкрито [y/n], консоль очікує y/n або /cancel; локальні промпти живуть лише в пам'яті й зникають після рестарту."),
@@ -1463,6 +1476,561 @@ class ConsoleUI {
       } catch {}
       this.atLineStart = true;
     }
+  }
+}
+
+function removeAttachToken(directory) {
+  if (!directory) return;
+  try {
+    fs.unlinkSync(path.join(directory, "token"));
+  } catch {}
+  try {
+    fs.rmdirSync(directory);
+  } catch {}
+}
+
+function cleanOldAttachFiles(runtime) {
+  if (!fs.existsSync(runtime)) return;
+  for (const entry of fs.readdirSync(runtime, { withFileTypes: true })) {
+    const file = path.join(runtime, entry.name);
+    if (entry.isDirectory() && ATTACH_DIRECTORY.test(entry.name)) {
+      removeAttachToken(file);
+      continue;
+    }
+    if (entry.isFile() && /^attach-[0-9a-f-]{36}\.lock$/i.test(entry.name)) {
+      try {
+        const pid = Number(fs.readFileSync(file, "utf8"));
+        let dead = !Number.isInteger(pid) || pid < 1;
+        if (!dead) {
+          try {
+            process.kill(pid, 0);
+          } catch (check) {
+            if (check.code === "ESRCH") dead = true;
+          }
+        }
+        if (dead) fs.unlinkSync(file);
+      } catch {}
+    }
+  }
+  try {
+    fs.unlinkSync(path.join(runtime, "attach.json"));
+  } catch {}
+}
+
+function createAttachToken(cfg) {
+  fs.mkdirSync(cfg.runtime, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(cfg.runtime, "attach-private-"));
+  try {
+    if (process.platform === "win32") {
+      // Full paths: under Git Bash or MSYS a GNU whoami can come first in PATH.
+      const system32 = path.join(process.env.SystemRoot || "C:\Windows", "System32");
+      const user = execFileSync(path.join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      const sid = user.match(/S-1-(?:\d+-)+\d+/)?.[0];
+      if (!sid) throw new Error("Cannot identify the Windows account");
+      execFileSync(path.join(system32, "icacls.exe"), [directory, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    }
+    const tokenFile = path.join(directory, "token");
+    const token = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(tokenFile, token, { mode: 0o600, flag: "wx" });
+    return { tokenFile, token, directory };
+  } catch {
+    removeAttachToken(directory);
+    throw new Error("Could not create a private attach token");
+  }
+}
+
+function timingSafeTokenEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
+}
+
+class AttachServer {
+  constructor({
+    cfg,
+    instance,
+    port = cfg.attachPort,
+    redact = (v) => String(v),
+    getHello = () => ({}),
+    onCommand = () => {},
+    onPrompt = () => {},
+    onCancel = () => {},
+    log = () => {},
+  }) {
+    Object.assign(this, { cfg, instance, port, redact, getHello, onCommand, onPrompt, onCancel, log });
+    this.token = null;
+    this.directory = null;
+    this.server = null;
+    this.client = null;
+    this.sockets = new Set();
+    this.recent = [];
+    this.pendingPermissions = new Map();
+    this.permSeq = 0;
+    this.closed = false;
+  }
+
+  async start() {
+    const { token, directory } = createAttachToken(this.cfg);
+    this.token = token;
+    this.directory = directory;
+    const server = net.createServer((socket) => this.handleConnection(socket));
+    this.server = server;
+    try {
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(this.port, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const addr = server.address();
+      this.port = typeof addr === "object" && addr ? addr.port : this.port;
+      atomicJSON(path.join(this.cfg.runtime, "attach.json"), {
+        instance: this.instance,
+        host: "127.0.0.1",
+        port: this.port,
+        tokenDirectory: path.basename(directory),
+      });
+      this.log("attach_listening", { host: "127.0.0.1", port: this.port });
+    } catch (error) {
+      try {
+        server.close();
+      } catch {}
+      this.server = null;
+      removeAttachToken(directory);
+      this.directory = null;
+      this.token = null;
+      throw error;
+    }
+  }
+
+  hasAttachedClient() {
+    return Boolean(this.client && !this.client.destroyed);
+  }
+
+  hasPendingPermission() {
+    return this.pendingPermissions.size > 0;
+  }
+
+  sendFrame(socket, frame) {
+    if (!socket || socket.destroyed || !socket.writable) return false;
+    try {
+      socket.write(JSON.stringify(frame) + "\n");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  sendLive(frame) {
+    if (this.hasAttachedClient()) this.sendFrame(this.client, frame);
+  }
+
+  emitEvent(event) {
+    this.recent.push(event);
+    if (this.recent.length > ATTACH_RECENT_LIMIT) {
+      this.recent.splice(0, this.recent.length - ATTACH_RECENT_LIMIT);
+    }
+    this.sendLive(event);
+  }
+
+  requestPermission({ rpcId, toolName, summary, timeoutMs }) {
+    if (!this.hasAttachedClient()) {
+      return Promise.resolve({ decision: "deny" });
+    }
+    return new Promise((resolve) => {
+      const token = ++this.permSeq;
+      const entry = {
+        token,
+        rpcId,
+        settled: false,
+        timer: setTimeout(() => {
+          this.resolvePermission(token, rpcId, "timeout");
+        }, Math.max(1000, timeoutMs) + 2000),
+        resolve,
+      };
+      this.pendingPermissions.set(token, entry);
+      const sent = this.sendFrame(this.client, {
+        type: "permission_request",
+        token,
+        rpcId,
+        toolName,
+        summary,
+        timeoutMs,
+      });
+      if (!sent) this.resolvePermission(token, rpcId, "closed");
+    });
+  }
+
+  resolvePermission(token, rpcId, decision) {
+    const entry = this.pendingPermissions.get(token);
+    if (!entry || entry.settled || entry.rpcId !== rpcId) return false;
+    entry.settled = true;
+    clearTimeout(entry.timer);
+    this.pendingPermissions.delete(token);
+    entry.resolve({ decision });
+    return true;
+  }
+
+  cancelPendingPermissions(reason = "turn_ended") {
+    const had = this.pendingPermissions.size > 0;
+    for (const entry of this.pendingPermissions.values()) {
+      if (!entry.settled) {
+        entry.settled = true;
+        clearTimeout(entry.timer);
+        entry.resolve({ decision: reason });
+      }
+    }
+    this.pendingPermissions.clear();
+    if (had) this.sendLive({ type: "permission_cancel", reason });
+  }
+
+  handleConnection(socket) {
+    this.sockets.add(socket);
+    let authed = false;
+    let buf = "";
+    const closeAfterFlush = () => {
+      try {
+        socket.end();
+      } catch {}
+      setTimeout(() => {
+        if (!socket.destroyed) socket.destroy();
+      }, 100).unref();
+    };
+    const authTimer = setTimeout(() => {
+      if (!authed && !socket.destroyed) {
+        this.sendFrame(socket, { type: "error", error: "Attach authentication timeout" });
+        closeAfterFlush();
+      }
+    }, ATTACH_AUTH_TIMEOUT_MS);
+
+    const processLine = (line) => {
+      if (!line.trim()) return;
+      let frame;
+      try {
+        frame = JSON.parse(line);
+      } catch {
+        this.sendFrame(socket, { type: "error", error: "Invalid JSON frame" });
+        closeAfterFlush();
+        return;
+      }
+      if (!frame || typeof frame !== "object") {
+        closeAfterFlush();
+        return;
+      }
+      if (!authed) {
+        if (frame.type !== "auth" || !timingSafeTokenEqual(frame.token, this.token)) {
+          this.sendFrame(socket, { type: "error", error: "Unauthorized" });
+          closeAfterFlush();
+          return;
+        }
+        clearTimeout(authTimer);
+        if (this.hasAttachedClient()) {
+          this.sendFrame(socket, { type: "error", error: "Another attach session is already connected" });
+          closeAfterFlush();
+          return;
+        }
+        authed = true;
+        this.client = socket;
+        this.log("attach_connected", { port: this.port });
+        this.sendFrame(socket, { type: "hello", ...this.getHello(), recent: this.recent });
+        return;
+      }
+      if (frame.type === "command" && frame.cmd && typeof frame.cmd === "object") {
+        this.onCommand(frame.cmd);
+      } else if (frame.type === "prompt" && typeof frame.text === "string") {
+        this.onPrompt(frame.text, { steer: Boolean(frame.steer) });
+      } else if (frame.type === "cancel") {
+        this.onCancel();
+      } else if (frame.type === "permission_decision") {
+        const decision = ["allow", "deny", "timeout", "cancelled", "closed"].includes(frame.decision)
+          ? frame.decision
+          : "deny";
+        this.resolvePermission(frame.token, frame.rpcId, decision);
+      }
+    };
+
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buf += chunk;
+      if (Buffer.byteLength(buf, "utf8") > ATTACH_MAX_LINE_BYTES) {
+        this.sendFrame(socket, { type: "error", error: "Frame too large" });
+        closeAfterFlush();
+        return;
+      }
+      let idx;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        processLine(line);
+        if (socket.destroyed) return;
+      }
+    });
+
+    const cleanup = () => {
+      clearTimeout(authTimer);
+      this.sockets.delete(socket);
+      if (this.client === socket) {
+        this.client = null;
+        this.log("attach_disconnected", { port: this.port });
+        this.cancelPendingPermissions("closed");
+      }
+    };
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.cancelPendingPermissions("closed");
+    if (this.hasAttachedClient()) {
+      this.sendFrame(this.client, { type: "info", text: "Адаптер зупиняється." });
+      try {
+        this.client.end();
+      } catch {}
+      this.client = null;
+    }
+    for (const socket of this.sockets) {
+      try {
+        if (!socket.destroyed) socket.destroy();
+      } catch {}
+    }
+    this.sockets.clear();
+    const server = this.server;
+    this.server = null;
+    if (server) {
+      server.unref?.();
+      await new Promise((resolve) => {
+        try {
+          server.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
+    }
+    try {
+      fs.unlinkSync(path.join(this.cfg.runtime, "attach.json"));
+    } catch {}
+    removeAttachToken(this.directory);
+    this.directory = null;
+    this.token = null;
+  }
+}
+
+function applyAttachEvent(ui, frame) {
+  if (!frame || typeof frame !== "object") return;
+  if (frame.type === "chunk") {
+    ui.writeChunk(frame.mode === "thought" ? "thought" : "message", frame.text);
+  } else if (frame.type === "tool") {
+    ui.showToolCall(frame.update);
+  } else if (frame.type === "broker" && frame.message) {
+    ui.showBrokerMessage(frame.message, Boolean(frame.verifiedOwner));
+    if (Array.isArray(frame.reactionsSince) && frame.reactionsSince.length) {
+      ui.showInfo(formatReactionsSince(frame.reactionsSince));
+    }
+  } else if (frame.type === "turn") {
+    ui.showTurnSummary(frame.summary || {});
+  } else if (frame.type === "info") {
+    ui.showInfo(frame.text);
+  } else if (frame.type === "warn") {
+    ui.showWarn(frame.text);
+  } else if (frame.type === "error") {
+    ui.showError(frame.text);
+  } else if (frame.type === "status") {
+    ui.showStatus(frame.snapshot || {});
+  }
+}
+
+async function attachTerminal(
+  cfg,
+  {
+    input = process.stdin,
+    output = process.stdout,
+    isTTY,
+    showThoughts = true,
+    promptPermissions = true,
+    permissionTimeoutMs = cfg.permissionPromptTimeoutMs,
+    onReady = null,
+  } = {}
+) {
+  if (!cfg.attachPort) {
+    throw new Error("Set attachPort in aichat.config.json and restart the adapter before attaching a terminal");
+  }
+  const metadataFile = path.join(cfg.runtime, "attach.json");
+  if (!fs.existsSync(metadataFile)) {
+    throw new Error("Start agy-channel with attachPort before attaching a terminal");
+  }
+  const info = readJson(metadataFile);
+  if (
+    info.host !== "127.0.0.1" ||
+    info.port !== cfg.attachPort ||
+    !/^[0-9a-f-]{36}$/i.test(String(info.instance || "")) ||
+    !ATTACH_DIRECTORY.test(String(info.tokenDirectory || ""))
+  ) {
+    throw new Error("Invalid attach metadata");
+  }
+  const tokenPath = path.join(cfg.runtime, info.tokenDirectory, "token");
+  if (!fs.existsSync(tokenPath)) throw new Error("Missing attach token");
+  const token = fs.readFileSync(tokenPath, "utf8").trim();
+  if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("Invalid attach token");
+
+  const release = acquireLock(path.join(cfg.runtime, `attach-${info.instance}.lock`));
+  let socket = null;
+  let ui = null;
+  let detached = false;
+
+  const send = (frame) => {
+    if (!socket || socket.destroyed || !socket.writable) return false;
+    try {
+      socket.write(JSON.stringify(frame) + "\n");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let greeted = false;
+      let buf = "";
+
+      const finish = (err = null) => {
+        if (settled) return;
+        settled = true;
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+        ui?.close();
+        if (socket && !socket.destroyed) {
+          try {
+            socket.end();
+          } catch {}
+        }
+        if (err) reject(err);
+        else resolve();
+      };
+
+      const detach = () => {
+        if (detached) return;
+        detached = true;
+        ui?.showInfo("Від'єднано. Фоновий агент agy-channel продовжує працювати.");
+        finish(null);
+      };
+
+      const onSignal = () => detach();
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
+
+      socket = net.createConnection({ host: "127.0.0.1", port: info.port });
+      socket.setEncoding("utf8");
+
+      const handleFrame = (frame) => {
+        if (!greeted) {
+          if (frame.type === "error") {
+            finish(new Error(frame.error || "Attach rejected"));
+            return;
+          }
+          if (frame.type !== "hello") return;
+          greeted = true;
+          ui = new ConsoleUI({
+            input,
+            output,
+            isTTY,
+            showThoughts,
+            promptPermissions,
+            permissionTimeoutMs,
+            redact: (v) => String(v ?? "").split(token).join("[REDACTED]"),
+            onCommand: (cmd) => {
+              if (cmd.kind === "detach") {
+                detach();
+                return;
+              }
+              send({ type: "command", cmd });
+            },
+            onLocalPrompt: (text, opts) => {
+              send({ type: "prompt", text, steer: Boolean(opts?.steer) });
+            },
+            onCancel: () => {
+              send({ type: "cancel" });
+            },
+            onSigint: () => detach(),
+          });
+          ui.start();
+          ui.showInfo(
+            `Підключено до agy-channel ${frame.version || VERSION} · agent=${frame.agent || "-"} · start=${frame.start || "-"} · mode=${frame.mode || "default"} (Ctrl+C або /detach — закрити без зупинки агента; /help — команди)`
+          );
+          if (Array.isArray(frame.recent)) {
+            for (const ev of frame.recent) applyAttachEvent(ui, ev);
+          }
+          onReady?.({ ui, detach, socket });
+          return;
+        }
+        if (frame.type === "permission_request") {
+          void ui
+            .requestPermission({
+              rpcId: frame.rpcId,
+              toolName: frame.toolName,
+              summary: frame.summary,
+              timeoutMs: frame.timeoutMs,
+            })
+            .then(({ decision }) => {
+              send({
+                type: "permission_decision",
+                token: frame.token,
+                rpcId: frame.rpcId,
+                decision,
+              });
+            });
+          return;
+        }
+        if (frame.type === "permission_cancel") {
+          ui.cancelPendingPermissions(frame.reason || "turn_ended");
+          return;
+        }
+        applyAttachEvent(ui, frame);
+      };
+
+      socket.once("connect", () => {
+        send({ type: "auth", token });
+      });
+
+      socket.on("data", (chunk) => {
+        buf += chunk;
+        let idx;
+        while ((idx = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          if (!line.trim()) continue;
+          let frame;
+          try {
+            frame = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          handleFrame(frame);
+        }
+      });
+
+      socket.once("error", (error) => {
+        if (!greeted) finish(error);
+        else finish(null);
+      });
+
+      socket.once("close", () => {
+        if (!greeted && !detached) finish(new Error("Attach connection closed before handshake"));
+        else finish(null);
+      });
+    });
+  } finally {
+    release();
   }
 }
 
@@ -2074,18 +2642,145 @@ class Channel {
     this.replayedUserTexts = [];
     this.capturingReplay = false;
     this.permissionWatchdog = null;
+    this.attachServer = null;
     this.status = { pid: process.pid, version: VERSION, phase: "starting", connected: false };
     if (this.consoleUI) {
-      const httpRef = this.http;
-      this.consoleUI.redact = (v) =>
-        httpRef.redact(String(v ?? "")).replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
+      this.consoleUI.redact = (v) => this.redact(v);
+    }
+  }
+
+  redact(value) {
+    let out = this.http.redact(String(value ?? ""));
+    if (this.attachServer?.token) {
+      out = out.split(this.attachServer.token).join("[REDACTED]");
+    }
+    return out.replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
+  }
+
+  emitInfo(text) {
+    const safe = this.redact(text);
+    this.consoleUI?.showInfo(safe);
+    this.attachServer?.emitEvent({ type: "info", text: safe });
+  }
+
+  emitWarn(text) {
+    const safe = this.redact(text);
+    this.consoleUI?.showWarn(safe);
+    this.attachServer?.emitEvent({ type: "warn", text: safe });
+  }
+
+  emitError(text) {
+    const safe = this.redact(text);
+    this.consoleUI?.showError(safe);
+    this.attachServer?.emitEvent({ type: "error", text: safe });
+  }
+
+  emitChunk(mode, text) {
+    if (!text) return;
+    this.consoleUI?.writeChunk(mode, text);
+    this.attachServer?.sendLive({ type: "chunk", mode, text: this.redact(text) });
+  }
+
+  emitTool(update) {
+    if (!update) return;
+    this.consoleUI?.showToolCall(update);
+    if (!this.attachServer) return;
+    if (update.sessionUpdate === "tool_call") {
+      this.attachServer.emitEvent({
+        type: "tool",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: update.toolCallId,
+          name: update.name ? this.redact(update.name) : undefined,
+          status: update.status,
+          summary: summarizeToolCall(update, (v) => this.redact(v)),
+        },
+      });
+    } else if (
+      update.sessionUpdate === "tool_call_update" &&
+      ["completed", "failed", "cancelled"].includes(String(update.status || ""))
+    ) {
+      this.attachServer.emitEvent({
+        type: "tool",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: update.toolCallId,
+          name: update.name ? this.redact(update.name) : undefined,
+          status: update.status,
+        },
+      });
+    }
+  }
+
+  emitBrokerMessage(message, verifiedOwner, reactionsSince) {
+    if (this.consoleUI) {
+      this.consoleUI.showBrokerMessage(message, verifiedOwner);
+      if (Array.isArray(reactionsSince) && reactionsSince.length) {
+        this.consoleUI.showInfo(formatReactionsSince(reactionsSince));
+      }
+    }
+    if (this.attachServer) {
+      this.attachServer.emitEvent({
+        type: "broker",
+        message: {
+          id: message.id,
+          from: this.redact(message.from),
+          ...(message.room ? { room: this.redact(message.room) } : {}),
+          ...(message.to ? { to: this.redact(message.to) } : {}),
+          text: compactText(this.redact(message.text), 240),
+        },
+        verifiedOwner,
+        ...(Array.isArray(reactionsSince) && reactionsSince.length ? { reactionsSince } : {}),
+      });
+    }
+  }
+
+  emitTurnSummary(summary) {
+    this.consoleUI?.showTurnSummary(summary);
+    this.attachServer?.emitEvent({ type: "turn", summary });
+  }
+
+  hasPendingPermission() {
+    return Boolean(this.consoleUI?.hasPendingPermission() || this.attachServer?.hasPendingPermission());
+  }
+
+  cancelPendingPermissions(reason = "turn_ended") {
+    this.consoleUI?.cancelPendingPermissions(reason);
+    this.attachServer?.cancelPendingPermissions(reason);
+  }
+
+  handleConsoleCommand(cmd) {
+    if (cmd.kind === "status") {
+      const snap = this.consoleStatusSnapshot();
+      this.consoleUI?.showStatus(snap);
+      this.attachServer?.sendLive({ type: "status", snapshot: snap });
+    } else if (cmd.kind === "pause") {
+      this.setRuntimePaused(true);
+    } else if (cmd.kind === "resume") {
+      this.setRuntimePaused(false);
+    }
+  }
+
+  handleLocalPrompt(text, opts) {
+    if (!this.engine) return;
+    const res = this.engine.enqueueLocal(text, opts);
+    if (!res.ok) {
+      if (res.reason === "permission_pending") {
+        this.emitWarn(
+          "Не можна виконати /steer, поки очікується відповідь [y/n]. Спершу підтвердіть/відхиліть або виконайте /cancel."
+        );
+      }
+      return;
+    }
+    if (res.steer) {
+      this.emitInfo(`Локальний steer ${res.id} заплановано для поточного ходу.`);
+    } else if (res.queued) {
+      this.emitInfo(`Локальний промпт ${res.id} додано в чергу (після поточного ходу; /cancel щоб перервати).`);
     }
   }
 
   log(event, detail = {}) {
-    const record = this.http
-      .redact(JSON.stringify({ time: nowISO(), event, ...detail }))
-      .replace(/Bearer\s+[^\s"\\]+/gi, "Bearer [REDACTED]");
+    const record = this.redact(JSON.stringify({ time: nowISO(), event, ...detail }));
     if (!this.consoleUI) {
       console.log(record);
     }
@@ -2275,7 +2970,7 @@ class Channel {
     this.report({
       phase: this.runtimePaused ? "paused" : this.engine?.active ? "working" : this.connected ? "waiting" : "connecting",
     });
-    this.consoleUI?.showInfo(
+    this.emitInfo(
       this.runtimePaused
         ? "Пауза: вхідні від брокера ставляться в чергу (WS лишається онлайн, локальні промпти працюють)."
         : "Відновлено: обробка черги брокера активна."
@@ -2283,12 +2978,12 @@ class Channel {
   }
 
   cancelActive(source = "console") {
-    const hadPerm = Boolean(this.consoleUI?.hasPendingPermission());
+    const hadPerm = this.hasPendingPermission();
     if (hadPerm) {
-      this.consoleUI.cancelPendingPermissions("cancelled");
+      this.cancelPendingPermissions("cancelled");
     }
     if (!this.engine || this.engine.inFlight.size === 0) {
-      if (!hadPerm) this.consoleUI?.showInfo("Активного ходу немає.");
+      if (!hadPerm) this.emitInfo("Активного ходу немає.");
       return false;
     }
     for (const entry of this.engine.inFlight.values()) {
@@ -2307,7 +3002,7 @@ class Channel {
         this.log("session_cancel_failed", { error: error.message });
       }
     }
-    this.consoleUI?.showWarn("Надіслано session/cancel для поточного ходу.");
+    this.emitWarn("Надіслано session/cancel для поточного ходу.");
     return true;
   }
 
@@ -2321,7 +3016,9 @@ class Channel {
       activeTurnId: this.engine?.active || null,
       localQueue: this.engine?.localQueue.length || 0,
       pendingPermissions:
-        (this.consoleUI?.activePermission ? 1 : 0) + (this.consoleUI?.permissionQueue.length || 0),
+        (this.consoleUI?.activePermission ? 1 : 0) +
+        (this.consoleUI?.permissionQueue.length || 0) +
+        (this.attachServer?.pendingPermissions.size || 0),
       counts: this.status.counts || {},
       rooms: this.status.rooms || this.cfg.rooms,
       sessionUsage: this.store.value.sessionUsage || { tokensIn: 0, tokensOut: 0 },
@@ -2350,10 +3047,15 @@ class Channel {
         return;
       }
 
-      if (this.consoleUI?.promptPermissionsEnabled) {
+      const interactive = this.consoleUI?.promptPermissionsEnabled
+        ? this.consoleUI
+        : this.attachServer?.hasAttachedClient()
+        ? this.attachServer
+        : null;
+      if (interactive) {
         this.activity("waiting", this.engine?.activeRoom);
-        const summary = summarizeToolCall(params.toolCall || { name: toolName }, (v) => this.http.redact(v));
-        void this.consoleUI
+        const summary = summarizeToolCall(params.toolCall || { name: toolName }, (v) => this.redact(v));
+        void interactive
           .requestPermission({
             rpcId: frame.id,
             toolName,
@@ -2382,6 +3084,7 @@ class Channel {
               this.log("permission_approved_console", {
                 tool: toolName,
                 toolCallId: params.toolCall?.toolCallId,
+                ...(interactive === this.attachServer ? { source: "attach" } : {}),
               });
             } else {
               this.log("permission_declined", {
@@ -2392,7 +3095,7 @@ class Channel {
               });
             }
 
-            if (!this.stopping && !this.consoleUI?.hasPendingPermission()) {
+            if (!this.stopping && !this.hasPendingPermission()) {
               this.activity(this.engine?.active ? "busy" : "idle", this.engine?.activeRoom);
               this.engine?.schedule();
             }
@@ -2490,14 +3193,12 @@ class Channel {
               }
             }
             if (update?.sessionUpdate === "usage_update") this.recordContext(update);
-            if (this.consoleUI) {
-              if (update?.sessionUpdate === "agent_thought_chunk") {
-                this.consoleUI.writeChunk("thought", update.content?.text);
-              } else if (update?.sessionUpdate === "agent_message_chunk") {
-                this.consoleUI.writeChunk("message", update.content?.text);
-              } else if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
-                this.consoleUI.showToolCall(update);
-              }
+            if (update?.sessionUpdate === "agent_thought_chunk") {
+              this.emitChunk("thought", update.content?.text);
+            } else if (update?.sessionUpdate === "agent_message_chunk") {
+              this.emitChunk("message", update.content?.text);
+            } else if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
+              this.emitTool(update);
             }
             if (update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") {
               if (update.status === "in_progress") {
@@ -2665,15 +3366,14 @@ class Channel {
         this.log(event, detail);
         this.report(event === "input_capacity_failed" ? { lastInputFailure: detail } : {});
       },
-      hasPendingPermission: () => Boolean(this.consoleUI?.hasPendingPermission()),
+      hasPendingPermission: () => this.hasPendingPermission(),
       onLocalComplete: (info) => {
-        if (!this.consoleUI) return;
         if (info.status === "cancelled") {
-          this.consoleUI.showWarn(`Локальний промпт ${info.id} скасовано.`);
+          this.emitWarn(`Локальний промпт ${info.id} скасовано.`);
         } else if (info.status === "error") {
-          this.consoleUI.showError(`Локальний промпт ${info.id} завершився помилкою: ${info.error || "error"}`);
+          this.emitError(`Локальний промпт ${info.id} завершився помилкою: ${info.error || "error"}`);
         } else if (info.status === "deferred") {
-          this.consoleUI.showWarn(`Локальний /steer ${info.id} переведено в чергу (хід уже змінився).`);
+          this.emitWarn(`Локальний /steer ${info.id} переведено в чергу (хід уже змінився).`);
         }
       },
       onTurnStart: (room) => {
@@ -2683,10 +3383,10 @@ class Channel {
       },
       onTurnComplete: (stopReason, meta = {}) => {
         this.clearPermissionWatchdog();
-        this.consoleUI?.cancelPendingPermissions("turn_ended");
+        this.cancelPendingPermissions("turn_ended");
         this.activity("idle");
         this.report({ phase: this.runtimePaused ? "paused" : "waiting" });
-        this.consoleUI?.showTurnSummary({
+        this.emitTurnSummary({
           stopReason,
           usage: meta.usage || null,
           sessionUsage: this.store.value.sessionUsage || null,
@@ -2699,25 +3399,8 @@ class Channel {
     });
 
     if (this.consoleUI) {
-      this.consoleUI.onCommand = (cmd) => {
-        if (cmd.kind === "status") this.consoleUI.showStatus(this.consoleStatusSnapshot());
-        else if (cmd.kind === "pause") this.setRuntimePaused(true);
-        else if (cmd.kind === "resume") this.setRuntimePaused(false);
-      };
-      this.consoleUI.onLocalPrompt = (text, opts) => {
-        const res = this.engine.enqueueLocal(text, opts);
-        if (!res.ok) {
-          if (res.reason === "permission_pending") {
-            this.consoleUI.showWarn("Не можна виконати /steer, поки очікується відповідь [y/n]. Спершу підтвердіть/відхиліть або виконайте /cancel.");
-          }
-          return;
-        }
-        if (res.steer) {
-          this.consoleUI.showInfo(`Локальний steer ${res.id} заплановано для поточного ходу.`);
-        } else if (res.queued) {
-          this.consoleUI.showInfo(`Локальний промпт ${res.id} додано в чергу (після поточного ходу; /cancel щоб перервати).`);
-        }
-      };
+      this.consoleUI.onCommand = (cmd) => this.handleConsoleCommand(cmd);
+      this.consoleUI.onLocalPrompt = (text, opts) => this.handleLocalPrompt(text, opts);
       this.consoleUI.onCancel = () => {
         this.cancelActive("console");
       };
@@ -2732,6 +3415,28 @@ class Channel {
     });
 
     if (probe) return;
+
+    cleanOldAttachFiles(this.cfg.runtime);
+    if (this.cfg.attachPort !== undefined) {
+      this.attachServer = new AttachServer({
+        cfg: this.cfg,
+        instance: this.session,
+        port: this.cfg.attachPort,
+        redact: (v) => this.redact(v),
+        getHello: () => ({
+          version: VERSION,
+          agent: this.me,
+          mode: this.cfg.mode,
+          start: this.sessionStart,
+          status: this.consoleStatusSnapshot(),
+        }),
+        onCommand: (cmd) => this.handleConsoleCommand(cmd),
+        onPrompt: (text, opts) => this.handleLocalPrompt(text, opts),
+        onCancel: () => this.cancelActive("attach"),
+        log: (event, detail) => this.log(event, detail),
+      });
+      await this.attachServer.start();
+    }
 
     if (this.consoleUI) {
       this.consoleUI.start();
@@ -2813,11 +3518,8 @@ class Channel {
       this.checkUpdate().catch((error) => this.log("update_check_failed", { error: error.message }));
       this.activity("idle");
     } else if (frame.type === "message") {
-      if (this.consoleUI && frame.message && frame.message.from !== this.me) {
-        this.consoleUI.showBrokerMessage(frame.message, this.humanOwners.includes(frame.message.from));
-        if (Array.isArray(frame.reactions_since) && frame.reactions_since.length) {
-          this.consoleUI.showInfo(formatReactionsSince(frame.reactions_since));
-        }
+      if (frame.message && frame.message.from !== this.me) {
+        this.emitBrokerMessage(frame.message, this.humanOwners.includes(frame.message.from), frame.reactions_since);
       }
       await this.engine.receive(frame.message, frame.reactions_since);
     } else if (frame.type === "reaction") {
@@ -2954,7 +3656,7 @@ class Channel {
     }
     this.stopping = true;
     this.clearPermissionWatchdog();
-    this.consoleUI?.cancelPendingPermissions("closed");
+    this.cancelPendingPermissions("closed");
     this.engine?.close();
     for (const timer of [this.reconnectTimer, this.activityTimer, this.usageTimer]) clearTimeout(timer);
     clearInterval(this.stopWatcher);
@@ -2972,6 +3674,8 @@ class Channel {
     } catch {}
     this.rpc?.close();
     this.consoleUI?.close();
+    await this.attachServer?.close();
+    this.attachServer = null;
     this.report({
       phase: error ? "halted" : "stopped",
       ...(error ? { error: this.http.redact(error.message) } : {}),
@@ -3121,6 +3825,22 @@ async function main(args = process.argv.slice(2)) {
 
   const cfg = loadConfig(configFile);
 
+  if (command === "attach") {
+    if (options["permission-timeout"] !== undefined) {
+      const sec = Number(options["permission-timeout"]);
+      if (!Number.isSafeInteger(sec) || sec < 1 || sec > 600) {
+        throw new Error("Invalid --permission-timeout (expected integer seconds 1..600)");
+      }
+      cfg.permissionPromptTimeoutMs = sec * 1000;
+    }
+    await attachTerminal(cfg, {
+      showThoughts: options["no-thoughts"] !== true,
+      promptPermissions: options["no-prompt-permissions"] !== true,
+      permissionTimeoutMs: cfg.permissionPromptTimeoutMs,
+    });
+    return;
+  }
+
   if (command === "stop") {
     fs.mkdirSync(cfg.runtime, { recursive: true });
     fs.writeFileSync(path.join(cfg.runtime, "stop"), "stop");
@@ -3212,7 +3932,7 @@ async function main(args = process.argv.slice(2)) {
   }
 
   if (!["run", "probe"].includes(command)) {
-    throw new Error("Commands: install, run, mcp, probe, status, stop, retry, tool");
+    throw new Error("Commands: install, run, attach, mcp, probe, status, stop, retry, tool");
   }
 
   let consoleUI = null;
@@ -3263,6 +3983,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(SELF)) {
 export {
   AICHAT_TOOL_ALLOWLIST,
   AcpRpc,
+  AttachServer,
   BrokerHttp,
   CapacityError,
   Channel,
@@ -3277,9 +3998,12 @@ export {
   acpArgs,
   acquireLock,
   agentInstructions,
+  attachTerminal,
   atomicJSON,
   callTool,
+  cleanOldAttachFiles,
   compactText,
+  createAttachToken,
   formatReactionsSince,
   install,
   loadConfig,

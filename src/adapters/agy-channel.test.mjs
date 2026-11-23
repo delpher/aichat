@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import net from "node:net";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
 import {
   AICHAT_TOOL_ALLOWLIST,
+  AttachServer,
   BrokerHttp,
   CapacityError,
   Channel,
@@ -17,7 +19,9 @@ import {
   RpcError,
   State,
   UncertainError,
+  attachTerminal,
   callTool,
+  cleanOldAttachFiles,
   formatReactionsSince,
   install,
   loadConfig,
@@ -2099,4 +2103,178 @@ test("Channel.stop sends idle before closing WebSocket and removes .aichat/stop 
   await ch.stop();
   assert.equal(fs.existsSync(stopFile), false);
   assert.deepEqual(events, ["idle", "ws_close"]);
+});
+
+test("attachPort config validation and parseConsoleCommand /detach", (t) => {
+  const { agentDir, configFile } = makeTempEnv(t);
+  const raw = JSON.parse(fs.readFileSync(configFile, "utf8"));
+
+  const okFile = path.join(agentDir, "attach-ok.config.json");
+  fs.writeFileSync(okFile, JSON.stringify({ ...raw, attachPort: 60611 }));
+  assert.equal(loadConfig(okFile).attachPort, 60611);
+
+  for (const bad of [80, 70000, "60611", 1023.5]) {
+    const badFile = path.join(agentDir, `attach-bad-${String(bad)}.config.json`);
+    fs.writeFileSync(badFile, JSON.stringify({ ...raw, attachPort: bad }));
+    assert.throws(() => loadConfig(badFile), /attachPort must be an integer/);
+  }
+  assert.deepEqual(parseConsoleCommand("/detach"), { kind: "detach" });
+});
+
+test("AttachServer enforces loopback capability token auth and single client, and Channel.stop cleans attach files", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-attach-auth.json"));
+  const rpcProbe = new FakeRpc();
+  rpcProbe.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcProbe.onRequest("session/new", () => ({ sessionId: "sess-attach-probe" }));
+
+  // 1. probe MUST NOT start AttachServer or write attach.json
+  const storeProbe = new State(path.join(agentDir, ".aichat", "state-attach-probe.json"));
+  const chProbe = new Channel({ ...cfg, attachPort: 0 }, { rpc: rpcProbe, http: new FakeHttp(), store: storeProbe });
+  t.after(() => chProbe.stop());
+  await chProbe.start({ probe: true });
+  assert.equal(chProbe.attachServer, null);
+  assert.equal(fs.existsSync(path.join(cfg.runtime, "attach.json")), false);
+  await chProbe.stop();
+
+  // 2. Real start writes attach.json + private token and rejects bad token
+  const rpc = new FakeRpc();
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-attach-auth" }));
+  const ch = new Channel({ ...cfg, attachPort: 0 }, { rpc, http: new FakeHttp(), store });
+  t.after(() => ch.stop());
+  await ch.start();
+  assert.ok(ch.attachServer && ch.attachServer.port > 0);
+  const metaPath = path.join(cfg.runtime, "attach.json");
+  assert.equal(fs.existsSync(metaPath), true);
+  const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+  assert.equal(meta.host, "127.0.0.1");
+  assert.equal(meta.port, ch.attachServer.port);
+  const tokenDir = path.join(cfg.runtime, meta.tokenDirectory);
+  assert.equal(fs.existsSync(path.join(tokenDir, "token")), true);
+
+  // Raw client with wrong token is rejected with Unauthorized
+  const badReply = await new Promise((resolve, reject) => {
+    const sock = net.createConnection({ host: "127.0.0.1", port: meta.port });
+    let data = "";
+    sock.setEncoding("utf8");
+    sock.on("data", (c) => {
+      data += c;
+      if (data.includes("\n")) {
+        resolve(JSON.parse(data.split("\n")[0]));
+        sock.destroy();
+      }
+    });
+    sock.on("error", reject);
+    sock.once("connect", () => sock.write(JSON.stringify({ type: "auth", token: "0".repeat(64) }) + "\n"));
+  });
+  assert.equal(badReply.type, "error");
+  assert.match(badReply.error, /Unauthorized/);
+
+  // 3. Channel.stop cleans up attach.json and private token dir
+  await ch.stop();
+  assert.equal(fs.existsSync(metaPath), false);
+  assert.equal(fs.existsSync(tokenDir), false);
+});
+
+test("attachTerminal bridges live stream, /status, local prompts, [y/N] permissions, and detaches without stopping background Channel", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+  const store = new State(path.join(agentDir, ".aichat", "state-attach-e2e.json"));
+  const rpc = new FakeRpc();
+  const promptDefs = [];
+  rpc.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpc.onRequest("session/new", () => ({ sessionId: "sess-attach-e2e" }));
+  rpc.onRequest("session/prompt", () => {
+    const d = deferred();
+    promptDefs.push(d);
+    return d.promise;
+  });
+
+  const ch = new Channel({ ...cfg, attachPort: 0 }, { rpc, http: new FakeHttp(), store });
+  let handle = null;
+  t.after(async () => {
+    handle?.detach();
+    await ch.stop();
+  });
+  await ch.start();
+  ch.setRuntimePaused(true);
+  const port = ch.attachServer.port;
+  const attachCfg = { ...cfg, attachPort: port };
+
+  // Emit a broker message BEFORE attaching so recent ring buffer replays on connect (broker drain is paused)
+  await ch.handleFrame(
+    { type: "message", message: { id: 701, from: "alexey", room: "lobby", text: "queued before attach" } },
+    {}
+  );
+
+  const chunks = [];
+  const out = new PassThrough();
+  out.on("data", (d) => chunks.push(String(d)));
+  const rendered = () => chunks.join("");
+  const input = new PassThrough();
+
+  const sessionDone = attachTerminal(attachCfg, {
+    input,
+    output: out,
+    isTTY: true,
+    onReady: (h) => {
+      handle = h;
+    },
+  });
+
+  await waitFor(() => handle !== null && rendered().includes("queued before attach"));
+  assert.ok(rendered().includes("Підключено до agy-channel"));
+  assert.equal(ch.attachServer.hasAttachedClient(), true);
+
+  // 1. /status command returns live snapshot
+  handle.ui.handleLine("/status");
+  await waitFor(() => rendered().includes("agy-channel status"));
+
+  // 2. Local prompt from attached terminal starts a turn on background Channel and streams assistant chunk back
+  handle.ui.handleLine("привіт із attach");
+  await waitFor(() => promptDefs.length === 1);
+  const sentText = rpc.requests.find((r) => r.method === "session/prompt").params.prompt[0].text;
+  assert.ok(sentText.includes("привіт із attach"));
+
+  rpc.emit("notification", {
+    method: "session/update",
+    params: {
+      sessionId: "sess-attach-e2e",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "відповідь у attach\n" } },
+    },
+  });
+  await waitFor(() => rendered().includes("відповідь у attach"));
+
+  // 3. Interactive [y/N] permission prompt routes to attached terminal and approves once
+  rpc.emit("request", {
+    id: "perm-attach-1",
+    method: "session/request_permission",
+    params: {
+      sessionId: "sess-attach-e2e",
+      toolCall: { name: "run_command", toolCallId: "tc-a1", rawInput: { CommandLine: "npm test" } },
+      options: [
+        { optionId: "allow", kind: "allow_once" },
+        { optionId: "deny", kind: "reject_once" },
+      ],
+    },
+  });
+  await waitFor(() => rendered().includes("permission #perm-attach-1") && handle.ui.hasPendingPermission());
+  handle.ui.handleLine("y");
+  await waitFor(() => rpc.sent.some((f) => f.id === "perm-attach-1"));
+  assert.deepEqual(
+    rpc.sent.find((f) => f.id === "perm-attach-1"),
+    { id: "perm-attach-1", result: { outcome: { outcome: "selected", optionId: "allow" } } }
+  );
+
+  promptDefs[0].resolve({ stopReason: "end_turn" });
+  await waitFor(() => ch.engine.active === null);
+
+  // 4. /detach exits attachTerminal WITHOUT stopping background Channel!
+  handle.ui.handleLine("/detach");
+  await sessionDone;
+  await waitFor(() => !ch.attachServer.hasAttachedClient());
+  assert.equal(ch.stopping, false);
+  assert.equal(rpc.closed, false);
+
+  await ch.stop();
 });

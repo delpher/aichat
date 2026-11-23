@@ -129,7 +129,7 @@ export function startCommand(agent: LocalAgent, settings: ManagerSettings): stri
 
 /** The command that opens an interactive session of a running agent, or why there is none. */
 export function sessionCommand(agent: LocalAgent): { command: string } | { why: string } {
-  if (agent.type !== "codex") return { why: agent.type === "agy" ? "для Antigravity сесії ще немає: потрібна підтримка в адаптері" : "цей агент і так працює в терміналі" };
+  if (agent.type !== "codex" && agent.type !== "agy") return { why: "цей агент і так працює в терміналі" };
   if (!agent.attachPort) return { why: "додайте attachPort у aichat.config.json і перезапустіть агента" };
   return { command: `node .\\${basename(agent.adapterFile)} attach --config .\\aichat.config.json` };
 }
@@ -177,7 +177,7 @@ export class Actions {
     return `Агента запущено у фоні (pid ${pid}), він ще готується.`;
   }
 
-  /** Opens a terminal tab with an interactive session attached to the running agent (codex: `attach`). */
+  /** Opens a terminal tab with an interactive session attached to the running agent (agy/codex: `attach`). */
   async session(folder: string): Promise<string> {
     const a = this.agent(folder);
     if (!running(a)) throw new ActionError("агент не запущений");
