@@ -21,7 +21,7 @@
 //
 // Підключення: файл у <профіль>/.opencode/plugins/ — OpenCode вантажить звідти сам.
 
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -30,6 +30,7 @@ const DEFAULTS = {
   tokenFile: "~/.secrets/aichat-token",
   wake: "always", // always | mention | never
   paused: false, // true — не підключатися до брокера (пауза), тули працюють
+  session: "resume", // resume | new — підхопити збережену сесію чи почати нову (як .aichat/fresh)
   sessionTitle: "AIChat",
   rooms: [],
   maxWakesPerMinute: 12,
@@ -47,6 +48,7 @@ const DEFAULTS = {
 const PLUGIN_NAME = "opencode-channel";
 const PLUGIN_VERSION = typeof __AICHAT_VERSION__ === "string" ? __AICHAT_VERSION__ : "0.0.0-dev";
 const SESSION_KEY = "aichat/session";
+const PREVIOUS_KEY = "aichat/previousSessionIds";
 // Той самий набір, що REACTIONS у брокері (src/protocol.ts) — інше брокер відхилить.
 const REACTIONS = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "✅", "🙏"];
 
@@ -79,6 +81,7 @@ function loadSettings(ctx) {
   cfg.token = String(cfg.token || readTextSafe(cfg.tokenFile) || process.env.AICHAT_TOKEN || "").trim();
   cfg.wake = ["always", "mention", "never"].includes(cfg.wake) ? cfg.wake : DEFAULTS.wake;
   cfg.paused = cfg.paused === true;
+  cfg.session = cfg.session === "new" ? "new" : "resume";
   cfg.delivery = cfg.delivery === "queue" ? "queue" : "steer";
   cfg.rooms = Array.isArray(cfg.rooms) ? cfg.rooms.map((r) => String(r).replace(/^#/, "")).filter(Boolean) : [];
   // ws://host/ws → http://host
@@ -316,12 +319,22 @@ async function ensureSession(ctx, cfg, state) {
     { id: stored?.id, explicit: false },
     { id: legacy?.id, explicit: false },
   ];
-  for (const { id, explicit } of candidates) {
+  // A fresh start (session: "new" or the .aichat/fresh marker): keep the old session for reading, but do not
+  // reuse it. The old ids go to previousSessionIds, so nothing is lost.
+  const fresh = state.forceNew === true;
+  if (fresh) {
+    const previous = (await ctx.storage.get(PREVIOUS_KEY).catch(() => undefined)) || [];
+    const old = [stored?.id, legacy?.id, cfg.sessionID].filter((id) => typeof id === "string" && id);
+    const merged = [...new Set([...old, ...(Array.isArray(previous) ? previous : [])])].slice(0, 10);
+    if (merged.length) await ctx.storage.set(PREVIOUS_KEY, merged).catch(() => {});
+  }
+  for (const { id, explicit } of fresh ? [] : candidates) {
     if (!id) continue;
     try {
       const info = await ctx.session.get({ sessionID: id });
       if (!explicit && !matchesWhere(info)) continue; // інша тека — не наша сесія
       state.sessionID = info.id;
+      state.start = "resumed";
       state.lastModel = info.model;
       // сесію могли створити з іншою моделлю — повертаємо профільну
       if (model && !sameModel(info.model, model)) {
@@ -345,6 +358,7 @@ async function ensureSession(ctx, cfg, state) {
     ...(model ? { model } : {}),
   });
   state.sessionID = created.id;
+  state.start = "new";
   state.lastModel = created.model ?? model;
   await ctx.storage.set(sessionKey, { id: created.id, title: created.title ?? cfg.sessionTitle });
   return state.sessionID;
@@ -856,7 +870,7 @@ function startChannel(ctx, cfg, state) {
         JSON.stringify({
           type: "auth",
           token: cfg.token,
-          client: { name: PLUGIN_NAME, version: PLUGIN_VERSION },
+          client: { name: PLUGIN_NAME, version: PLUGIN_VERSION, surface: "server", start: state.start || "new" },
           session,
         }),
       );
@@ -1411,8 +1425,19 @@ export default {
       },
       ws: null,
       sessionID: undefined,
+      start: "new",
       processSession: `opencode-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     };
+
+    // Where the agent drops .aichat/stop (stop the channel) and .aichat/fresh (start a new model session).
+    const runtimeDir = path.join(ctx.location?.directory || process.cwd(), ".aichat");
+    const freshFile = path.join(runtimeDir, "fresh");
+    const stopFile = path.join(runtimeDir, "stop");
+    try {
+      mkdirSync(runtimeDir, { recursive: true });
+    } catch {}
+    state.forceNew = cfg.session === "new" || existsSync(freshFile);
+    state.freshMarker = existsSync(freshFile);
 
     if (!cfg.token) {
       console.warn(`[aichat] немає токена (${cfg.tokenFile}) — плагін не підключається`);
@@ -1422,12 +1447,20 @@ export default {
     const tools = await registerTools(ctx, cfg, state);
     // Сесія має існувати до першого повідомлення: тоді її видно у списку, і в ній
     // одразу стоїть профільна модель.
-    await ensureSession(ctx, cfg, state).catch((error) =>
-      console.warn(`[aichat] не вдалось підготувати сесію: ${error.message}`),
-    );
+    await ensureSession(ctx, cfg, state)
+      .then(() => {
+        // The marker is spent only after the new session really exists (and its id is saved).
+        if (state.freshMarker) {
+          try {
+            unlinkSync(freshFile);
+          } catch {}
+        }
+      })
+      .catch((error) => console.warn(`[aichat] не вдалось підготувати сесію: ${error.message}`));
     let stop;
     let stopActivity;
     let stopUsage;
+    let stopWatcher;
     if (cfg.paused) {
       // пауза: до брокера не підключаємось, повідомлення не приходять і модель не будиться;
       // тули aichat_* лишаються робочими для ручної роботи в сесії.
@@ -1438,9 +1471,25 @@ export default {
       stopActivity = followActivity(ctx, cfg, state);
       // Звіт про токени/вартість/контекст для сторінки «Використання».
       stopUsage = followUsage(ctx, cfg, state);
+      // .aichat/stop: the owner asked to disconnect the channel. The OpenCode server keeps running (and the
+      // aichat tools stay), but AIChat sees the agent go offline, like the other adapters' stop.ps1.
+      stopWatcher = setInterval(() => {
+        if (!existsSync(stopFile)) return;
+        clearInterval(stopWatcher);
+        try {
+          unlinkSync(stopFile);
+        } catch {}
+        console.warn("[aichat] .aichat/stop — відключаю канал (сервер OpenCode лишається)");
+        stopActivity?.();
+        stopUsage?.();
+        stop?.();
+        void postActivity(cfg, { state: "idle" }).catch(() => {});
+      }, 1000);
+      stopWatcher.unref?.();
     }
 
     return async () => {
+      clearInterval(stopWatcher);
       stopUsage?.();
       stopActivity?.();
       stop?.();
