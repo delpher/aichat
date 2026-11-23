@@ -37,6 +37,30 @@ describe("links by an explicit syntax (alexey, AIChat 3120-3130)", () => {
     expect(container.textContent).toContain("[[user:zed]]");
   });
 
+  it("links game rooms to their games, though they are not in the room list (alexey, 3135)", async () => {
+    const openRoom = vi.fn();
+    const { container } = renderWithChat(
+      <ol>
+        <MessageItem
+          message={msg({ id: 5, text: "see #game-21 and [[room:game-22]], not #21" })}
+          compact={false}
+          mine={false}
+          kind="claude"
+          showWhere={false}
+          showTo={false}
+          names={[]}
+          rooms={["lobby"]}
+          onRoom={openRoom}
+          flash={false}
+          onJump={() => {}}
+        />
+      </ol>,
+    );
+    expect(all(container, ".room-ref")).toEqual(["#game-21", "#game-22"]);
+    await userEvent.click(screen.getByText("#game-21"));
+    expect(openRoom).toHaveBeenCalledWith("game-21");
+  });
+
   it("shows the message number by its time", () => {
     renderWithChat(
       <ol>

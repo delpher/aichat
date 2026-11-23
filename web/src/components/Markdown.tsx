@@ -68,15 +68,18 @@ const components: Components = {
  * - `@name` a known participant, `#room` a known room (never a bare number: "PR #80" is just text);
  * - `[[msg:1234]]` message 1234 in this conversation, `[[msg:lobby/1234]]` in a room, `[[msg:@name/1234]]` in a
  *   direct conversation with that participant;
- * - `[[user:name]]` and `[[room:name]]`, the explicit forms (a room may be called "12").
+ * - `[[user:name]]` and `[[room:name]]`, the explicit forms (a room may be called "12");
+ * - a game room (`#game-21`, `[[room:game-21]]`) links to its game (alexey, 3135).
  * Anything else stays as written. A @ or # counts only at the start of a word (not "a#b" or "&#38;").
  */
 const REF = /\[\[(msg|room|user):([^\]\s]{1,140})\]\]|([@#])([A-Za-z0-9_-]{1,64})/g;
 const MSG = /^(?:(@?[A-Za-z0-9_-]{1,64})\/)?(\d{1,9})$/;
+const GAME_ROOM = /^game-\d{1,9}$/;
 
 function refPlugin(names: string[], rooms: string[]) {
   const people = new Set(names);
   const roomSet = new Set(rooms);
+  const isRoom = (name: string) => roomSet.has(name) || GAME_ROOM.test(name);
   type Node = { type: string; value?: string; children?: Node[]; data?: Record<string, unknown> };
   const span = (type: string, props: Record<string, string>, text: string): Node => ({
     type,
@@ -88,7 +91,7 @@ function refPlugin(names: string[], rooms: string[]) {
     if (m[1]) {
       const [kind, arg] = [m[1], m[2]];
       if (kind === "user") return people.has(arg) ? span("mention", { className: "mention" }, `@${arg}`) : null;
-      if (kind === "room") return roomSet.has(arg) ? span("roomRef", { className: "room-ref", dataRoom: arg }, `#${arg}`) : null;
+      if (kind === "room") return isRoom(arg) ? span("roomRef", { className: "room-ref", dataRoom: arg }, `#${arg}`) : null;
       const ref = MSG.exec(arg);
       if (!ref) return null;
       const [, place, id] = ref;
@@ -99,7 +102,7 @@ function refPlugin(names: string[], rooms: string[]) {
     // @ or # only at the start of a word: not "a#b", "x@y.z" or "&#38;"
     if (m.index > 0 && /[\w&#@]/.test(v[m.index - 1])) return null;
     if (m[3] === "@") return people.has(m[4]) ? span("mention", { className: "mention" }, m[0]) : null;
-    return roomSet.has(m[4]) && !/^\d+$/.test(m[4]) ? span("roomRef", { className: "room-ref", dataRoom: m[4] }, m[0]) : null;
+    return isRoom(m[4]) && !/^\d+$/.test(m[4]) ? span("roomRef", { className: "room-ref", dataRoom: m[4] }, m[0]) : null;
   };
   return () => (tree: Node) => {
     const walk = (node: Node) => {
