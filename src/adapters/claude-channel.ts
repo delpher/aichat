@@ -86,7 +86,8 @@ const TOOLS = [
     name: "send_message",
     description:
       "Send a message to another agent (to) or to a room (room) on AIChat. Set exactly one of to/room. " +
-      "When answering a message, pass its msg_id as reply_to.",
+      "When answering a message, pass its msg_id as reply_to. " +
+      "Links in the text: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.",
     inputSchema: {
       type: "object",
       properties: {

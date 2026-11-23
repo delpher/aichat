@@ -2,7 +2,7 @@ import { CheckCheck, CornerUpLeft, HandHeart, MessagesSquare, Reply } from "luci
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { isSystemSender, type ChatMessage } from "../api/types";
 import { fmtFull, fmtShort, fmtTime, plural } from "../lib/format";
-import { dm, hashFor } from "../lib/views";
+import { dm, hashFor, inPlace, msgLink } from "../lib/views";
 import { Attachments } from "./Attachments";
 import { Avatar } from "./Avatar";
 import { Markdown } from "./Markdown";
@@ -32,7 +32,8 @@ export interface MessageItemProps {
   enter?: boolean;
   onReply?: (m: ChatMessage) => void;
   onMention?: (name: string) => void;
-  onJump: (id: number) => void;
+  /** Goes to message `id`; `accept` tells whether the message found is the one meant (a [[msg:…]] link names where it is). */
+  onJump: (id: number, accept?: (target: ChatMessage) => boolean) => void;
   /** The quoted parent is the message right above (in a thread): skip the quote. */
   hideQuote?: boolean;
   /** This message is the root of a folded thread: show its summary. */
@@ -54,6 +55,27 @@ export interface ThreadSummaryInfo {
   limit: boolean;
   /** The thread panel shows this thread now. */
   open: boolean;
+}
+
+/** The message number; a click copies a link to the message to paste into a message (alexey, AIChat 3120-3130). */
+function MessageId({ m, me }: { m: ChatMessage; me?: string }) {
+  const { toast } = useChat();
+  const link = msgLink(m, me);
+  return (
+    <button
+      type="button"
+      className="msg-id"
+      title={`Скопіювати посилання на повідомлення: ${link}`}
+      onClick={() =>
+        navigator.clipboard
+          ?.writeText(link)
+          .then(() => toast(`Скопійовано ${link}`))
+          .catch(() => toast(`Не вдалося скопіювати: ${link}`))
+      }
+    >
+      #{m.id}
+    </button>
+  );
 }
 
 /** Thanks the author of message `id`; the socket brings the result back to every viewer. */
@@ -209,9 +231,7 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             <time dateTime={m.ts} title={`#${m.id} · ${fmtFull(m.ts)}`}>
               {fmtTime(m.ts)}
             </time>
-            <span className="msg-id" title="Номер повідомлення: на нього можна послатися як #номер">
-              #{m.id}
-            </span>
+            <MessageId m={m} me={p.me} />
           </div>
         )}
         {m.reply_to != null && !p.hideQuote && (
@@ -232,11 +252,11 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
             className={`msg-text${p.onMention ? " can-mention" : ""}`}
             onClick={(e) => {
               const target = e.target as HTMLElement;
-              // a #room opens that room, a #1234 goes to that message; a highlighted @name mentions that person
+              // a #room opens that room, a [[msg:…]] goes to that message; a highlighted @name mentions that person
               const room = target.closest<HTMLElement>(".room-ref")?.dataset.room;
               if (room) return p.onRoom?.(room);
-              const ref = target.closest<HTMLElement>(".msg-ref")?.dataset.msg;
-              if (ref) return p.onJump(Number(ref));
+              const ref = target.closest<HTMLElement>(".msg-ref")?.dataset;
+              if (ref?.msg) return p.onJump(Number(ref.msg), (t) => inPlace(t, ref.place, m));
               const el = target.closest(".mention");
               if (el?.textContent && p.onMention) p.onMention(el.textContent.replace(/^@/, ""));
             }}
@@ -260,9 +280,7 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
       </div>
       <div className="msg-tools">
         {p.compact && (
-          <span className="msg-id" title="Номер повідомлення: на нього можна послатися як #номер">
-            #{m.id}
-          </span>
+          <MessageId m={m} me={p.me} />
         )}
         {p.mine && m.delivered_to && m.delivered_to.length > 0 && (
           <span

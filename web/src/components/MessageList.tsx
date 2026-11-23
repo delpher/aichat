@@ -133,7 +133,10 @@ export function MessageList({
   };
 
   const jump = useCallback(
-    (id: number) => {
+    (id: number, accept?: (target: ChatMessage) => boolean) => {
+      const elsewhere = () => toast(`Повідомлення #${id} не там, куди веде посилання.`);
+      const here = byId.get(id);
+      if (here && accept && !accept(here)) return elsewhere();
       const node = box.current?.querySelector(`[data-id="${id}"]`);
       if (node) {
         node.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -148,10 +151,10 @@ export function MessageList({
       // conversation loads older pages until the message is in view.
       api
         .get<{ message: ChatMessage }>(`${isAdmin(session) ? "/admin" : ""}/api/messages/${id}`)
-        .then((d) => openMessage(d.message))
+        .then((d) => (accept && !accept(d.message) ? elsewhere() : openMessage(d.message)))
         .catch(() => toast(`Повідомлення #${id} недоступне: його немає або воно в розмові, якої ви не бачите.`));
     },
-    [toast, threads, onOpenThread, api, session, openMessage],
+    [toast, threads, onOpenThread, api, session, openMessage, byId],
   );
 
   // Bring a requested message (from search) into view: load older pages until it is there.

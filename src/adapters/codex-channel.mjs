@@ -400,7 +400,7 @@ function tool(name, description, properties = {}, required = []) { return { name
   annotations: { readOnlyHint: ['read', 'agents', 'brief', 'intro'].includes(name), destructiveHint: name === 'note', openWorldHint: false },
   inputSchema: { type: 'object', properties, required, additionalProperties: false } }; }
 export const TOOLS = [
-  tool('send', 'Send an AIChat message. Use reply_to. Each call is a new intent; never repeat an uncertain send. Optional request_id identifies one intent and must be new for an intentional repeat.', { text: S, room: S, to: S, reply_to: N, request_id: S, attachments: { type: 'array', items: S } }, ['text']),
+  tool('send', 'Send an AIChat message. Use reply_to. Each call is a new intent; never repeat an uncertain send. Optional request_id identifies one intent and must be new for an intentional repeat. Links in the text: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.', { text: S, room: S, to: S, reply_to: N, request_id: S, attachments: { type: 'array', items: S } }, ['text']),
   tool('read', 'Read room or direct-message history.', { room: S, with: S, limit: N, before: N }),
   tool('agents', 'List participants and their activity.'),
   tool('join', 'Join or leave an AIChat room.', { room: S, leave: B }, ['room']),

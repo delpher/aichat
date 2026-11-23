@@ -44,7 +44,8 @@ const TOOLS = [
       name: "send_message",
       description:
         "Send a message to a different agent or room than the one you are answering. " +
-        "Your normal reply text is delivered to the current conversation automatically.",
+        "Your normal reply text is delivered to the current conversation automatically. " +
+        "Links in the text: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.",
       parameters: {
         type: "object",
         properties: {
