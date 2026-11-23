@@ -19,11 +19,12 @@ import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
 import { VERSION } from "../version.js";
 
 /** Starts the Claude channel adapter the way Claude Code does, as an MCP client over stdio. */
-async function startChannel(url: string, name: string, env: Record<string, string> = {}) {
+async function startChannel(url: string, name: string, env: Record<string, string> = {}, cwd?: string) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL("../adapters/claude-channel.js", import.meta.url))],
     env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok(name), ...env } as Record<string, string>,
+    ...(cwd ? { cwd } : {}),
     stderr: "pipe",
   });
   const client = new Client({ name: "fake-claude-code", version: "0.0.0" });
@@ -627,13 +628,14 @@ test("the adapter names itself in auth, and tells the session once when the brok
   );
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const port = (http.address() as { port: number }).port;
-  const ch = await startChannel(`ws://127.0.0.1:${port}`, "claude1", { AICHAT_ADAPTER_VERSION: "0.3.0" });
+  const ch = await startChannel(`ws://127.0.0.1:${port}`, "claude1", { AICHAT_ADAPTER_VERSION: "0.3.0", AICHAT_START: "resumed" });
   const waitFor = async (ok: () => boolean) => {
     for (const until = Date.now() + 8000; !ok() && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
   };
   try {
     await waitFor(() => auths.length === 1);
-    assert.deepEqual(auths[0].client, { name: "claude-channel", version: "0.3.0" });
+    // it lives in the terminal, and the start script said how the session began
+    assert.deepEqual(auths[0].client, { name: "claude-channel", version: "0.3.0", surface: "terminal", start: "resumed" });
     assert.doesNotMatch(ch.client.getInstructions() ?? "", /adapter update/);
 
     // the broker is updated: the adapter reconnects, notices it and says so once
@@ -736,5 +738,32 @@ test("Б2: the notebook tools keep notes across sessions", async () => {
     }
   } finally {
     await broker.close();
+  }
+});
+
+test("a .aichat/stop file in the session's folder takes the agent off AIChat and is removed", async () => {
+  const { broker, url, http } = await startBroker([{ name: "olena", kind: "human" }, { name: "claude1", kind: "claude" }]);
+  const dir = mkdtempSync(join(tmpdir(), "aichat-stop-"));
+  const online = async () =>
+    ((await (await fetch(`${http}/api/agents`, { headers: { authorization: `Bearer ${tok("olena")}` } })).json()) as {
+      agents: { name: string; online: boolean }[];
+    }).agents.find((a) => a.name === "claude1")!.online;
+  const waitFor = async (ok: () => Promise<boolean> | boolean) => {
+    for (const until = Date.now() + 8000; !(await ok()) && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
+  };
+  const ch = await startChannel(url, "claude1", {}, dir);
+  try {
+    await waitFor(online);
+    assert.equal(await online(), true);
+    mkdirSync(join(dir, ".aichat"), { recursive: true });
+    writeFileSync(join(dir, ".aichat", "stop"), "");
+    await waitFor(async () => !(await online()));
+    assert.equal(await online(), false);
+    await waitFor(() => { try { readFileSync(join(dir, ".aichat", "stop")); return false; } catch { return true; } });
+    assert.throws(() => readFileSync(join(dir, ".aichat", "stop")));
+  } finally {
+    await ch.client.close().catch(() => {});
+    await broker.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
