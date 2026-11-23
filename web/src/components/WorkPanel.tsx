@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { Agent } from "../api/types";
 import { useChat } from "../context";
 import { isActive, since, toolText, waitingText, whereText } from "../lib/activity";
+import { surfaceText } from "../lib/adapter";
 import { kindLabel, plural } from "../lib/format";
 import { dm } from "../lib/views";
 import { Avatar } from "./Avatar";
@@ -34,7 +35,10 @@ function AgentCard({ agent: a, room }: { agent: Agent; room: string }) {
           <span className="agent-card-name">{a.name}</span>
           <span className={`state-chip ${state}`}>{STATE_LABEL[state]}</span>
         </div>
-        <span className="muted small">{kindLabel(a.kind)}</span>
+        <span className="muted small">
+          {kindLabel(a.kind)}
+          {a.online && a.adapter?.surface === "server" ? ` · ${surfaceText("server")}` : ""}
+        </span>
         {act?.topic && <span className="agent-card-topic">{act.topic}</span>}
         {(doing || where) && (
           <span className="agent-card-doing small">

@@ -623,6 +623,9 @@ kbd {
 .nav-status.outdated {
   color: var(--warn);
 }
+.nav-status.server {
+  color: var(--text-2);
+}
 .nav-hint {
   margin-left: auto;
   color: var(--muted);

@@ -28,7 +28,7 @@ import { enableNotify, notifyOn, notifyPermission, setNotifyPref } from "../lib/
 import { KEYS, storage } from "../lib/storage";
 import { dm, isGameRoom, viewKey, type View } from "../lib/views";
 import { activityText, isActive, statusText } from "../lib/activity";
-import { adapterOutdated, adapterText } from "../lib/adapter";
+import { adapterOutdated, adapterText, surfaceText } from "../lib/adapter";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -101,9 +101,16 @@ function Item({
 function AgentSub({ a, me, broker }: { a: Agent; me: string; broker?: string }) {
   const status = a.online ? statusText(a.activity, me) : "";
   const old = a.online && adapterOutdated(a.adapter, broker);
+  const server = a.online && a.adapter?.surface === "server";
   return (
     <>
       {kindLabel(a.kind)}
+      {server && (
+        <>
+          {" · "}
+          <span className="nav-status server">{surfaceText("server", true)}</span>
+        </>
+      )}
       {old && (
         <>
           {" · "}

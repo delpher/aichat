@@ -12,9 +12,25 @@ export function adapterOutdated(adapter: AdapterInfo | undefined, broker: string
   return !!adapter && !!broker && BROKER_ADAPTERS.has(adapter.name) && compareVersions(adapter.version, broker) < 0;
 }
 
+/** Where the adapter lives, as people read it; empty when older adapters do not report it. */
+export function surfaceText(surface: AdapterInfo["surface"], compact = false): string {
+  if (surface === "server") return compact ? "сервер" : "сервер, без термінала";
+  if (surface === "terminal") return compact ? "термінал" : "у терміналі";
+  return "";
+}
+
+/** How the agent's session started on this adapter process; empty when unreported. */
+export function startText(start: AdapterInfo["start"]): string {
+  if (start === "resumed") return "продовжена сесія";
+  if (start === "new") return "нова сесія";
+  return "";
+}
+
 /** One tooltip line about an agent's adapter; empty when it did not say which it is. */
 export function adapterText(adapter: AdapterInfo | undefined, broker: string | undefined): string {
   if (!adapter) return "";
-  const line = `адаптер ${adapter.name} ${adapter.version}`;
-  return adapterOutdated(adapter, broker) ? `${line}: застарів, на брокері ${broker}` : line;
+  const base = `адаптер ${adapter.name} ${adapter.version}`;
+  const head = adapterOutdated(adapter, broker) ? `${base}: застарів, на брокері ${broker}` : base;
+  const extra = [surfaceText(adapter.surface), startText(adapter.start)].filter(Boolean);
+  return extra.length ? `${head} · ${extra.join(" · ")}` : head;
 }

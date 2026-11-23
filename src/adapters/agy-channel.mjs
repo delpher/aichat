@@ -124,6 +124,7 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     owners: raw.owners || [],
     delivery: raw.delivery || "steer",
     wake: raw.wake || "always",
+    session: raw.session ?? "resume",
     paused: raw.paused === true,
     sandbox: raw.sandbox !== false,
     approveAichatTools: raw.approveAichatTools === true,
@@ -154,6 +155,9 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
   }
   if (!["steer", "queue"].includes(cfg.delivery) || !["always", "mention", "never"].includes(cfg.wake)) {
     throw new Error("Invalid delivery/wake policy");
+  }
+  if (!["resume", "new"].includes(cfg.session)) {
+    throw new Error("Invalid session policy (expected 'resume' or 'new')");
   }
   if (
     !Array.isArray(cfg.rooms) ||
@@ -2043,12 +2047,14 @@ Local installation instructions (configured by the local user, not supplied by c
 }
 
 class Channel {
-  constructor(cfg, { rpc, http, store, consoleUI = null } = {}) {
+  constructor(cfg, { rpc, http, store, consoleUI = null, fresh = false } = {}) {
     this.cfg = cfg;
     this.http = http || new BrokerHttp(cfg);
     this.store = store || new State(path.join(cfg.runtime, "state.json"));
     this.rpc = rpc;
     this.consoleUI = consoleUI;
+    this.fresh = Boolean(fresh);
+    this.sessionStart = null;
     this.wsAllowed = !cfg.paused;
     this.runtimePaused = Boolean(cfg.paused);
     this.connected = false;
@@ -2524,9 +2530,13 @@ class Channel {
     };
     const mcpServers = this.mcpServerSpec();
 
+    const freshFile = path.join(this.cfg.runtime, "fresh");
+    const hasFreshFile = fs.existsSync(freshFile);
+    const wantFresh = this.fresh || this.cfg.session === "new" || hasFreshFile;
+
     let sessionInfo = null;
-    if (this.store.value.sessionId) {
-      const savedId = this.store.value.sessionId;
+    const savedId = this.store.value.sessionId;
+    if (savedId && !wantFresh) {
       let listKnown = false;
       let exists = false;
       try {
@@ -2561,8 +2571,10 @@ class Channel {
             { sessionId: savedId, cwd: this.cfg.agentDir, mcpServers, _meta: meta },
             60000
           );
+          this.sessionStart = "resumed";
           this.log("session_loaded", {
             sessionId: savedId,
+            start: "resumed",
             replayedChunks: this.replayedUserTexts.length,
             verifiedByList: listKnown,
           });
@@ -2595,13 +2607,26 @@ class Channel {
         60000
       );
       if (!sessionInfo?.sessionId) throw new Error("ACP session/new returned no sessionId");
+      const previousSessionIds =
+        wantFresh && savedId
+          ? [...(this.store.value.previousSessionIds || []), savedId].slice(-20)
+          : this.store.value.previousSessionIds || [];
       this.store.patch({
         sessionId: sessionInfo.sessionId,
+        previousSessionIds,
         sessionUsage: { tokensIn: 0, tokensOut: 0 },
       });
+      if (hasFreshFile) {
+        try {
+          fs.unlinkSync(freshFile);
+        } catch {}
+      }
+      this.sessionStart = "new";
       this.log("session_created", {
         sessionId: sessionInfo.sessionId,
+        start: "new",
         model: sessionInfo.models?.currentModelId,
+        ...(wantFresh && savedId ? { previousSessionId: savedId, fresh: true } : {}),
       });
     }
 
@@ -2701,6 +2726,7 @@ class Channel {
     this.report({
       agent: this.me,
       model: sessionInfo.models?.currentModelId || this.cfg.model || null,
+      start: this.sessionStart,
       phase: probe ? "probe" : this.runtimePaused ? "paused" : "connecting",
       introVersion: intro.intro?.ts,
     });
@@ -2710,14 +2736,19 @@ class Channel {
     if (this.consoleUI) {
       this.consoleUI.start();
       this.consoleUI.showInfo(
-        `agy-channel ${VERSION} · agent=${this.me} · mode=${this.cfg.mode || "default"} · ${this.consoleUI.interactive ? "interactive TTY (/help)" : "non-TTY console"}`
+        `agy-channel ${VERSION} · agent=${this.me} · start=${this.sessionStart || "-"} · mode=${this.cfg.mode || "default"} · ${this.consoleUI.interactive ? "interactive TTY (/help)" : "non-TTY console"}`
       );
     }
 
     const stopFile = path.join(this.cfg.runtime, "stop");
     if (fs.existsSync(stopFile)) fs.unlinkSync(stopFile);
     this.stopWatcher = setInterval(() => {
-      if (fs.existsSync(stopFile)) this.stop().catch((error) => console.error(error.message));
+      if (fs.existsSync(stopFile)) {
+        try {
+          fs.unlinkSync(stopFile);
+        } catch {}
+        this.stop().catch((error) => console.error(error.message));
+      }
     }, 1000);
 
     if (!this.runtimePaused) this.connect();
@@ -2826,7 +2857,12 @@ class Channel {
         JSON.stringify({
           type: "auth",
           token: this.http.token,
-          client: { name: "agy-channel", version: VERSION },
+          client: {
+            name: "agy-channel",
+            version: VERSION,
+            surface: "terminal",
+            ...(this.sessionStart ? { start: this.sessionStart } : {}),
+          },
           session: this.session,
         })
       );
@@ -2925,11 +2961,15 @@ class Channel {
     clearInterval(this.heartbeat);
     this.ready = false;
     this.connected = false;
+    this.activity("idle");
+    await this.activityChain.catch(() => {});
     try {
       this.socket?.close();
     } catch {}
-    this.activity("idle");
-    await this.activityChain.catch(() => {});
+    try {
+      const stopFile = path.join(this.cfg.runtime, "stop");
+      if (fs.existsSync(stopFile)) fs.unlinkSync(stopFile);
+    } catch {}
     this.rpc?.close();
     this.consoleUI?.close();
     this.report({
@@ -2995,6 +3035,7 @@ function install({
     ...(mode ? { mode } : {}),
     delivery: "steer",
     wake: "always",
+    session: "resume",
     paused: true,
     sandbox,
     approveAichatTools: approveTools,
@@ -3018,7 +3059,7 @@ function install({
   }
   fs.writeFileSync(
     path.join(agentDir, "start.ps1"),
-    '$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath $PSScriptRoot\nnode (Join-Path $PSScriptRoot "agy-channel.mjs") run --config (Join-Path $PSScriptRoot "aichat.config.json")\n'
+    'param([switch]$Fresh)\n$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath $PSScriptRoot\n$argsList = @((Join-Path $PSScriptRoot "agy-channel.mjs"), "run", "--config", (Join-Path $PSScriptRoot "aichat.config.json"))\nif ($Fresh) { $argsList += "--fresh" }\nnode @argsList\n'
   );
   fs.writeFileSync(
     path.join(agentDir, "stop.ps1"),
@@ -3190,7 +3231,7 @@ async function main(args = process.argv.slice(2)) {
     });
   }
 
-  const channel = new Channel(cfg, { consoleUI });
+  const channel = new Channel(cfg, { consoleUI, fresh: options.fresh === true });
   const exit = async () => {
     await channel.stop();
     process.exit();

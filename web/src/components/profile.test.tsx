@@ -40,6 +40,25 @@ describe("agent card", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Адаптерclaude-channel 0.2.9 · старий, на брокері 0.3.0");
   });
 
+  it("shows adapter surface and session start in the card and server presence in the DM header", () => {
+    const o = {
+      ...overview,
+      version: "0.21.0",
+      agents: overview.agents.map((x) =>
+        x.name === "claude"
+          ? { ...x, adapter: { name: "opencode-channel", version: "0.21.0", surface: "server" as const, start: "resumed" as const } }
+          : x,
+      ),
+    };
+    renderWithChat(<AgentProfile name="claude" onClose={() => {}} />, { overview: o });
+    const card = screen.getByRole("dialog");
+    expect(card).toHaveTextContent("онлайн (сервер, без термінала)");
+    expect(card).toHaveTextContent("Адаптерopencode-channel 0.21.0 · сервер, без термінала · продовжена сесія");
+
+    renderWithChat(<Header onMenu={() => {}} onLeave={() => {}} />, { view: { kind: "dm", a: "claude", b: "olena" }, overview: o });
+    expect(screen.getByText(/онлайн · сервер, без термінала/)).toBeInTheDocument();
+  });
+
   it("shows the keeper as part of AIChat, not as a participant with a customization", () => {
     const o = { ...overview, agents: [...overview.agents, { name: "keeper", kind: "claude", online: true, rooms: [], keeper: true as const }] };
     renderWithChat(<AgentProfile name="keeper" onClose={() => {}} />, { overview: o });
