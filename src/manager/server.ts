@@ -1,5 +1,5 @@
 // The local agent manager's web page (alexey, AIChat 3145-3149). Listens only on 127.0.0.1 and asks for a key that
-// it prints at start, so other sites open in the same browser cannot read it. Actions (update, start, stop, remove)
+// it prints at start, so other sites open in the same browser cannot read it. Actions (update, start, stop, session, remove)
 // are POSTs that also need the header x-aichat-manager, which a page on another site cannot send here.
 //   npm run manager -- [--root <folder of agents>] [--port 8790]
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -131,7 +131,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
         // a page on another site may post a form here, but cannot add this header without our consent (CORS)
         if (req.headers["x-aichat-manager"] !== "1") return send(403, { error: "missing x-aichat-manager header" });
         const body = await readBody(req);
-        const act = /^\/api\/agents\/([^/]+)\/(start|stop|update|remove)$/.exec(url.pathname);
+        const act = /^\/api\/agents\/([^/]+)\/(start|stop|session|update|remove)$/.exec(url.pathname);
         if (act) {
           const folder = decodeURIComponent(act[1]);
           const view = (await overview(opts.root, timeout)).find((a) => a.folder === folder);
@@ -142,7 +142,9 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
               ? await actions.start(folder, online)
               : act[2] === "stop"
                 ? await actions.stop(folder)
-                : act[2] === "update"
+                : act[2] === "session"
+                  ? await actions.session(folder)
+                  : act[2] === "update"
                   ? await actions.update(folder, view.broker?.version)
                   : actions.remove(folder, String(body.confirm ?? ""), online);
           return send(200, { ok: true, message: done });

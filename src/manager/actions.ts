@@ -2,7 +2,7 @@
 // broker, start and stop it, move a stale one out of the way and bring it back. Nothing is deleted for good: that
 // stays with the user (alexey, AIChat 3158).
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { adapterVersion, readAgent, type LocalAgent } from "./agents.js";
 
@@ -31,6 +31,14 @@ export interface Runner {
   node(dir: string, args: string[]): Promise<void>;
   /** Waits until process `pid` is gone, up to `ms`; true when it went. */
   waitExit(pid: number, ms: number): Promise<boolean>;
+  /**
+   * Starts `node <args>` in `dir` with no window and lets it outlive the manager; its output goes to `logFile`.
+   * Returns its pid.
+   */
+  background(dir: string, args: string[], logFile: string): Promise<number>;
+  /** Whether process `pid` is there. */
+  alive(pid: number): boolean;
+  sleep(ms: number): Promise<void>;
 }
 
 const alive = (pid: number) => {
@@ -74,6 +82,24 @@ export const systemRunner: Runner = {
     }
     return !alive(pid);
   },
+  background: (dir, args, logFile) =>
+    new Promise((resolve, reject) => {
+      mkdirSync(dirname(logFile), { recursive: true });
+      const out = openSync(logFile, "a");
+      try {
+        // detached + windowsHide: no console window, and closing the manager does not take the agent with it
+        const child = spawn(process.execPath, args, { cwd: dir, detached: true, stdio: ["ignore", out, out], windowsHide: true });
+        child.once("error", reject);
+        child.once("spawn", () => {
+          child.unref();
+          resolve(child.pid!);
+        });
+      } finally {
+        closeSync(out);
+      }
+    }),
+  alive,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
 /** Extra settings from `<root>/.manager.json`: the command that starts an agent, by folder. */
@@ -89,19 +115,30 @@ export function readSettings(root: string): ManagerSettings {
   }
 }
 
-/** The command that starts the agent in its folder. */
-export function startCommand(agent: LocalAgent, settings: ManagerSettings): string {
+/**
+ * The terminal command that starts the agent in its folder, or null when the manager runs it in the background
+ * itself: agy and codex adapters are console programs (alexey, AIChat 3165), unless `.manager.json` says otherwise.
+ */
+export function startCommand(agent: LocalAgent, settings: ManagerSettings): string | null {
   const own = settings.start?.[agent.folder];
   if (own) return own;
   if (agent.type === "claude") return "claude --dangerously-load-development-channels server:aichat";
   if (agent.type === "opencode") return "opencode";
-  if (existsSync(join(agent.dir, "start.ps1"))) return ".\\start.ps1";
-  return `node .\\${basename(agent.adapterFile)} run --config .\\aichat.config.json`;
+  return null;
+}
+
+/** The command that opens an interactive session of a running agent, or why there is none. */
+export function sessionCommand(agent: LocalAgent): { command: string } | { why: string } {
+  if (agent.type !== "codex") return { why: agent.type === "agy" ? "для Antigravity сесії ще немає: потрібна підтримка в адаптері" : "цей агент і так працює в терміналі" };
+  if (!agent.attachPort) return { why: "додайте attachPort у aichat.config.json і перезапустіть агента" };
+  return { command: `node .\\${basename(agent.adapterFile)} attach --config .\\aichat.config.json` };
 }
 
 /** agy and codex run as adapters of their own, which can be stopped; Claude Code and OpenCode live in a terminal. */
 const stoppable = (a: LocalAgent) => a.type === "agy" || a.type === "codex";
 const running = (a: LocalAgent) => a.status?.alive === true;
+/** Where the output of an agent started in the background goes (a .log, so the page lists it). */
+export const BACKGROUND_LOG = "background.log";
 
 export class Actions {
   constructor(
@@ -125,8 +162,29 @@ export class Actions {
   async start(folder: string, online?: boolean): Promise<string> {
     const a = this.agent(folder);
     if (running(a) || online) throw new ActionError("агент уже працює");
-    await this.runner.openTerminal(a.dir, folder, startCommand(a, readSettings(this.root)));
-    return "Відкрито термінал з агентом.";
+    const command = startCommand(a, readSettings(this.root));
+    if (command) {
+      await this.runner.openTerminal(a.dir, folder, command);
+      return "Відкрито термінал з агентом.";
+    }
+    const pid = await this.runner.background(a.dir, [a.adapterFile, "run", "--config", join(a.dir, "aichat.config.json")], join(a.dir, ".aichat", BACKGROUND_LOG));
+    // the adapter writes its pid to .aichat/status.json once it is up; an early exit means it could not start
+    for (let waited = 0; waited < 15000; waited += 250) {
+      if (readAgent(a.dir)?.agent.status?.pid === pid) return `Агента запущено у фоні (pid ${pid}).`;
+      if (!this.runner.alive(pid)) throw new ActionError(`агент одразу завершився: дивіться лог ${BACKGROUND_LOG}`, 502);
+      await this.runner.sleep(250);
+    }
+    return `Агента запущено у фоні (pid ${pid}), він ще готується.`;
+  }
+
+  /** Opens a terminal tab with an interactive session attached to the running agent (codex: `attach`). */
+  async session(folder: string): Promise<string> {
+    const a = this.agent(folder);
+    if (!running(a)) throw new ActionError("агент не запущений");
+    const how = sessionCommand(a);
+    if ("why" in how) throw new ActionError(how.why, 400);
+    await this.runner.openTerminal(a.dir, `${folder}: сесія`, how.command);
+    return "Відкрито сесію в терміналі. Закриття вкладки агента не зупиняє.";
   }
 
   async stop(folder: string): Promise<string> {
