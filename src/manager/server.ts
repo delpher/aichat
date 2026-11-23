@@ -1,11 +1,13 @@
 // The local agent manager's web page (alexey, AIChat 3145-3149). Listens only on 127.0.0.1 and asks for a key that
-// it prints at start, so other sites open in the same browser cannot read it. Stage 1: read-only overview.
+// it prints at start, so other sites open in the same browser cannot read it. Actions (update, start, stop, remove)
+// are POSTs that also need the header x-aichat-manager, which a page on another site cannot send here.
 //   npm run manager -- [--root <folder of agents>] [--port 8790]
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
 
@@ -16,6 +18,9 @@ export interface ManagerOptions {
   key?: string;
   /** Time limit for each request to a broker. */
   brokerTimeoutMs?: number;
+  /** For tests: how terminals and adapter commands run, and how adapters are downloaded. */
+  runner?: Runner;
+  fetchText?: (url: string) => Promise<string>;
 }
 
 /** What the broker says about one agent (GET /api/agents), by its AIChat name. */
@@ -86,6 +91,23 @@ const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(
 export function startManager(opts: ManagerOptions): Promise<{ server: Server; url: string; key: string }> {
   const key = opts.key ?? randomBytes(16).toString("hex");
   const timeout = opts.brokerTimeoutMs ?? 3000;
+  const actions = new Actions(opts.root, opts.runner, opts.fetchText);
+  const readBody = (req: IncomingMessage) =>
+    new Promise<Record<string, unknown>>((resolve, reject) => {
+      let raw = "";
+      req.on("data", (c) => {
+        raw += c;
+        if (raw.length > 4096) req.destroy(new Error("body too large"));
+      });
+      req.on("end", () => {
+        try {
+          resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
+        } catch {
+          reject(new ActionError("bad JSON", 400));
+        }
+      });
+      req.on("error", reject);
+    });
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const send = (status: number, body: unknown, type = "application/json; charset=utf-8", headers: Record<string, string> = {}) => {
       res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
@@ -105,7 +127,32 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
           "set-cookie": `aichat_manager=${key}; HttpOnly; SameSite=Strict; Path=/`,
         });
       if (!same(cookie, key)) return send(401, "Відкрийте посилання з ключем, яке менеджер надрукував при запуску.", "text/plain; charset=utf-8");
-      if (req.method !== "GET") return send(405, { error: "read-only for now" });
+      if (req.method === "POST") {
+        // a page on another site may post a form here, but cannot add this header without our consent (CORS)
+        if (req.headers["x-aichat-manager"] !== "1") return send(403, { error: "missing x-aichat-manager header" });
+        const body = await readBody(req);
+        const act = /^\/api\/agents\/([^/]+)\/(start|stop|update|remove)$/.exec(url.pathname);
+        if (act) {
+          const folder = decodeURIComponent(act[1]);
+          const view = (await overview(opts.root, timeout)).find((a) => a.folder === folder);
+          if (!view) return send(404, { error: "немає такого агента" });
+          const online = view.broker?.online;
+          const done =
+            act[2] === "start"
+              ? await actions.start(folder, online)
+              : act[2] === "stop"
+                ? await actions.stop(folder)
+                : act[2] === "update"
+                  ? await actions.update(folder, view.broker?.version)
+                  : actions.remove(folder, String(body.confirm ?? ""), online);
+          return send(200, { ok: true, message: done });
+        }
+        const restore = /^\/api\/removed\/([^/]+)\/restore$/.exec(url.pathname);
+        if (restore) return send(200, { ok: true, message: actions.restore(decodeURIComponent(restore[1])) });
+        return send(404, { error: "not found" });
+      }
+      if (req.method !== "GET") return send(405, { error: "method not allowed" });
+      if (url.pathname === "/api/removed") return send(200, { removed: actions.removed() });
       if (url.pathname === "/") return send(200, PAGE, "text/html; charset=utf-8", { "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" });
       if (url.pathname === "/api/agents") return send(200, { root: opts.root, agents: await overview(opts.root, timeout) });
       const log = /^\/api\/agents\/([^/]+)\/logs\/([^/]+)$/.exec(url.pathname);
@@ -119,7 +166,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
       }
       return send(404, { error: "not found" });
     } catch (e) {
-      return send(500, { error: (e as Error).message });
+      return send(e instanceof ActionError ? e.status : 500, { error: (e as Error).message });
     }
   });
   return new Promise((resolve, reject) => {
