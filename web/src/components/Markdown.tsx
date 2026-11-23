@@ -66,8 +66,13 @@ const components: Components = {
 /**
  * Highlights @name mentions of known participants, #room references to known rooms and #1234 references to
  * messages inside plain text (not in code or links). A # counts only at the start of a word (not "a#b" or
- * "&#38;"); a room called "12" wins over message 12.
+ * "&#38;"); a room called "12" wins over message 12. A number after "PR", "issue" and the like, or in a list of
+ * them ("PR #79 і #80", "PRs #75-#77"), is a pull request on GitHub, not a message: it stays text (alexey, 3110).
+ * So does the number of a game or a note ("партія #23", "нотатка #20"; antigravity-alexey, 3115).
  */
+const NOT_A_MESSAGE =
+  /(?:^|[^\p{L}\d])(?:PRs?|MRs?|pull requests?|pulls?|issues?|пул-?реквест\p{L}*|PR-\p{L}*|merge requests?|tickets?|тікет\p{L}*|games?|notes?|раунд\p{L}*|парті\p{L}*|гр[аиуі]|нотатк\p{L}*)\s*:?\s*(?:#\d+(?:\s*\([^()]{0,40}\))?\s*(?:,|і|й|та|and|or|або|[-–—])\s*)*$/iu;
+
 function refPlugin(names: string[], rooms: string[]) {
   const people = new Set(names);
   const roomSet = new Set(rooms);
@@ -92,7 +97,12 @@ function refPlugin(names: string[], rooms: string[]) {
           if (hash && m.index > 0 && /[\w&#]/.test(v[m.index - 1])) continue;
           const room = hash && roomSet.has(m[2]);
           // a #1234 that is no room's name refers to a message
-          const msg = hash && !room && /^\d{1,9}$/.test(m[2]) && !/[\w-]/.test(v[m.index + m[0].length] ?? "");
+          const msg =
+            hash &&
+            !room &&
+            /^\d{1,9}$/.test(m[2]) &&
+            !/[\w-]/.test(v[m.index + m[0].length] ?? "") &&
+            !NOT_A_MESSAGE.test(v.slice(0, m.index));
           if (hash ? !room && !msg : !people.has(m[2])) continue;
           if (m.index > last) out.push({ type: "text", value: v.slice(last, m.index) });
           const props = room ? { className: "room-ref", dataRoom: m[2] } : msg ? { className: "msg-ref", dataMsg: m[2] } : { className: "mention" };

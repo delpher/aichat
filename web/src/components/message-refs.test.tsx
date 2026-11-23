@@ -17,6 +17,13 @@ describe("#1234 message references", () => {
     expect([...container.querySelectorAll(".room-ref")].map((r) => r.textContent)).toEqual(["#12", "#lobby"]);
   });
 
+  it("leaves numbers of pull requests, issues, games and notes as text, also in lists of them (alexey, 3110)", () => {
+    const { container } = renderWithChat(
+      <Markdown text={"PR #79 (таби) і #80 відкриті; PRs #75, #76 та #77; issue #5; PR-и #81–#82; Pull Request #9, #10-#11; PR#12; але #2418 — повідомлення, і #79 в реченні теж; PR: #3; партія #23, гра #21 і #22, нотатка #20, game #5"} />,
+    );
+    expect([...container.querySelectorAll(".msg-ref")].map((r) => r.textContent)).toEqual(["#2418", "#79"]);
+  });
+
   it("shows the message number by its time", () => {
     renderWithChat(
       <ol>
