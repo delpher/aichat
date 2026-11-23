@@ -452,13 +452,18 @@ test("spy through the broker: cards in private, questions and answers in the roo
       room,
       limit: 200,
     });
-    const last = history.findIndex((m: ChatMessage) => m.from === "aichat" && /завершено/.test(m.text));
-    const allVoted = history.findIndex((m: ChatMessage) => m.from === "aichat" && /^bot1: проголосував/.test(m.text) && /Голоси:/.test(m.text));
+    const last = history.findIndex((m: ChatMessage) => m.from === "gamemaster" && /завершено/.test(m.text));
+    const allVoted = history.findIndex((m: ChatMessage) => m.from === "gamemaster" && /^bot1: проголосував/.test(m.text) && /Голоси:/.test(m.text));
     assert.ok(allVoted > 0 && last >= allVoted);
     for (const m of history.slice(0, last)) assert.doesNotMatch(m.text, new RegExp(word), m.text);
     for (const m of history.slice(0, allVoted)) assert.doesNotMatch(m.text, /гравець \d → /, m.text);
     assert.match(history[allVoted].text, /Голоси: гравець 1 → гравець 2, гравець 2 → гравець 1/);
-    assert.ok(history.some((m: ChatMessage) => m.from === "aichat" && /голосують таємно/.test(m.text)));
+    assert.ok(history.some((m: ChatMessage) => m.from === "gamemaster" && /голосують таємно/.test(m.text)));
+    // the broker speaks in the game room as "gamemaster", and in private (cards, secret moves) as "aichat"
+    assert.ok(!history.some((m: ChatMessage) => m.from === "aichat"), "no game-room post from aichat");
+    assert.ok(Object.values(dms).every((got) => got.length > 0), "every player got a card from aichat");
+    const board = history.find((m: ChatMessage) => m.from === "gamemaster")!;
+    assert.equal((await call("bot2", "POST", `/api/messages/${board.id}/thanks`)).status, 400, "the broker is not thanked");
     assert.ok(history.some((m: ChatMessage) => /bot2: проголосував/.test(m.text)));
     assert.ok(history.some((m: ChatMessage) => /^bot3: звинувачує: гравець 3!/.test(m.text)));
     assert.ok(history.some((m: ChatMessage) => /^bot1: слово шпигун називає таємно/.test(m.text)));

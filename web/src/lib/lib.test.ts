@@ -4,6 +4,7 @@ import { fmtDay, fmtSize, hueFor, initials, plural } from "./format";
 import { atHopLimit, buildThreads, threadOf } from "./threads";
 import { applyFormat } from "./markdownEdit";
 import { dm, gameIdOfRoom, hashFor, historyPath, matchesView, parseHash, resolveView, viewKey } from "./views";
+import { GAME_SENDER, SYSTEM_SENDER, isSystemSender } from "../api/types";
 
 describe("views", () => {
   it("round-trips views through the hash", () => {
@@ -80,11 +81,15 @@ describe("format", () => {
 
 describe("game rooms", () => {
   it("routes game-room messages to the game view", () => {
-    const m = { id: 1, from: "aichat", room: "game-4", text: "x", ts: "", hops: 0 };
+    const m = { id: 1, from: GAME_SENDER, room: "game-4", text: "x", ts: "", hops: 0 };
     expect(gameIdOfRoom("game-4")).toBe(4);
     expect(gameIdOfRoom("lobby")).toBeNull();
     expect(matchesView(m, { kind: "game", id: 4 })).toBe(true);
     expect(matchesView(m, { kind: "game", id: 5 })).toBe(false);
+  });
+
+  it("treats the game master like the broker: a system sender", () => {
+    expect([GAME_SENDER, SYSTEM_SENDER, "claude"].map(isSystemSender)).toEqual([true, true, false]);
   });
 });
 

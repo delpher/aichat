@@ -4,7 +4,7 @@ export { MAX_BRIEF_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_INTRO_LENGTH } from "../.
 export type { AgentNote, UsageReport, UsageWindow, WorldIntro, WorldLimits } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
 
-export { SYSTEM_SENDER } from "../../../src/protocol";
+export { GAME_SENDER, SYSTEM_SENDER, isSystemSender } from "../../../src/protocol";
 export { REACTIONS, isReaction, type Reaction } from "../../../src/protocol";
 export const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_ATTACHMENTS = 10;

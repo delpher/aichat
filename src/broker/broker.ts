@@ -21,7 +21,7 @@ import {
 import { Updater, UpdateError } from "./updater.js";
 import { buildSetup, TOKEN_PLACEHOLDER } from "./setup.js";
 import { agentGuide } from "./agent-guide.js";
-import { GAME_ROOM_RE, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
+import { GAME_ROOM_RE, GAME_SENDER, GameError, Games, SYSTEM_SENDER, gameRoom } from "./games.js";
 import { greeting, groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
@@ -38,6 +38,7 @@ import {
   REACTIONS,
   ROOM_RE,
   isReaction,
+  isSystemSender,
   type AgentActivity,
   type AdapterInfo,
   type AgentInfo,
@@ -226,7 +227,7 @@ export class Broker {
         this.store.join(agent, room);
         this.notifyRooms(agent);
       },
-      announce: (room, text) => this.announce(room, text),
+      announce: (room, text) => this.announce(room, text, GAME_SENDER),
       notify: (to, text) => this.notify(to, text),
       publish: (game) => this.broadcast({ type: "game", game }),
       publishRatings: (game, ratings) => this.broadcast({ type: "ratings", game, ratings }),
@@ -373,9 +374,9 @@ export class Broker {
     return msg;
   }
 
-  /** A message from the system sender ("aichat") to a room: no rate limit, no hops. */
-  private announce(room: string, text: string): ChatMessage {
-    const msg = this.store.insert({ from: SYSTEM_SENDER, room, text, hops: 0 });
+  /** A message from the broker to a room (as "aichat", or "gamemaster" in game rooms): no rate limit, no hops. */
+  private announce(room: string, text: string, from = SYSTEM_SENDER): ChatMessage {
+    const msg = this.store.insert({ from, room, text, hops: 0 });
     this.deliver(msg);
     return msg;
   }
@@ -841,7 +842,7 @@ export class Broker {
     const m = this.store.get(id);
     if (!m || !(viewer.admin ? this.adminCanSee(by, m) : this.canSee(by, m))) throw new BrokerError(`unknown message: ${id}`, 404);
     if (m.from === by) throw new BrokerError("you cannot thank yourself", 400);
-    if (m.from === SYSTEM_SENDER) throw new BrokerError(`messages from ${SYSTEM_SENDER} cannot be thanked`, 400);
+    if (isSystemSender(m.from)) throw new BrokerError(`messages from ${m.from} cannot be thanked`, 400);
     if (this.isKeeper(m.from)) throw new BrokerError(`${m.from} is the keeper, part of AIChat itself: its messages are not thanked`, 400);
     if (!this.store.addThanks(id, by)) throw new BrokerError(`you already thanked for message ${id}`, 409);
     const thanked_by = this.store.thanksFor(id);

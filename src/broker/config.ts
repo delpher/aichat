@@ -1,6 +1,6 @@
 import { readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { NAME_RE, ROOM_RE } from "../protocol.js";
+import { NAME_RE, ROOM_RE, isSystemSender } from "../protocol.js";
 import { ACCOUNT_HASH_RE } from "../usage.js";
 
 /** Most accounts one person may name. */
@@ -223,7 +223,7 @@ export function validate(raw: Partial<BrokerConfig>): BrokerConfig {
   let keeper: string | undefined;
   for (const a of cfg.agents) {
     if (!NAME_RE.test(a.name)) throw new Error(`invalid agent name: ${a.name}`);
-    if (a.name === "aichat") throw new Error(`the name "aichat" is reserved for messages from the broker itself`);
+    if (isSystemSender(a.name)) throw new Error(`the name "${a.name}" is reserved for messages from the broker itself`);
     if (names.has(a.name)) throw new Error(`duplicate agent name: ${a.name}`);
     if (!a.token || a.token.length < 16) throw new Error(`agent ${a.name}: token must be at least 16 characters`);
     if (tokens.has(a.token)) throw new Error(`agent ${a.name}: token is shared with another agent`);
