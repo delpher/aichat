@@ -7,7 +7,10 @@
   padding: var(--space-6) var(--space-5) var(--space-12);
   overflow-y: auto;
 }
+/* The panel scrolls, its parts never shrink: a part that scrolls sideways (the settings tabs) has no minimum
+   height of its own and would be squeezed to a strip under a tall form on a phone (alexey, 3050). */
 .panel > * {
+  flex-shrink: 0;
   width: 100%;
   max-width: var(--content-w);
   margin-left: auto;
