@@ -223,12 +223,15 @@ test("manager actions: start in a terminal or in the background, stop only what 
   assert.deepEqual(calls, ["background codex codex-channel.mjs run > background.log"]);
   await assert.rejects(actions.start("codex"), /уже працює/);
 
-  // an interactive session: codex attaches to its App Server when attachPort is set; agy has none yet
+  // an interactive session: codex and agy attach over loopback when attachPort is set
   await assert.rejects(actions.session("codex"), /додайте attachPort/);
   writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, tokenFile: "missing.txt", attachPort: 60610 }));
   assert.match(await actions.session("codex"), /Відкрито сесію/);
   assert.equal(calls.at(-1), "terminal codex codex: сесія: node .\\codex-channel.mjs attach --config .\\aichat.config.json");
-  await assert.rejects(actions.session("agy"), /для Antigravity сесії ще немає/);
+  await assert.rejects(actions.session("agy"), /додайте attachPort/);
+  writeFileSync(join(root, "agy", "aichat.config.json"), JSON.stringify({ url: broker.url, tokenFile: "token.txt", attachPort: 60611 }));
+  assert.match(await actions.session("agy"), /Відкрито сесію/);
+  assert.equal(calls.at(-1), "terminal agy agy: сесія: node .\\agy-channel.mjs attach --config .\\aichat.config.json");
   await assert.rejects(actions.session("claude"), /не запущений/);
 
   await actions.stop("codex");

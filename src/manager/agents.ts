@@ -30,7 +30,7 @@ export interface LocalAgent {
   /** Log files the page may show (names inside .aichat). */
   logs: string[];
   status?: AdapterStatus;
-  /** codex: the App Server port an interactive `codex resume` can attach to (`attachPort` in its config). */
+  /** agy/codex: loopback port an interactive `attach` terminal can connect to (`attachPort` in its config). */
   attachPort?: number;
 }
 
@@ -126,7 +126,7 @@ export function readAgent(dir: string): { agent: LocalAgent; secrets: AgentSecre
     brokerUrl: brokerOrigin(url),
     logs,
   };
-  if (type === "codex" && Number.isInteger(config?.attachPort)) agent.attachPort = config!.attachPort as number;
+  if ((type === "codex" || type === "agy") && Number.isInteger(config?.attachPort)) agent.attachPort = config!.attachPort as number;
   const status = readJson(join(runtime, "status.json"));
   if (status) {
     const pid = typeof status.pid === "number" ? status.pid : undefined;
