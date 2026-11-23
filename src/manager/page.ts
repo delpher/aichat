@@ -32,6 +32,14 @@ export const PAGE = `<!doctype html>
   section.logs { margin-top: 20px; }
   .logs .bar { margin-bottom: 8px; }
   select { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .actions input { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { min-height: 1.4em; margin-bottom: 8px; }
+  ul.removed { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  ul.removed li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  ul.removed li:last-child { border-bottom: 0; }
   pre { margin: 0; padding: 12px; max-height: 60vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 </style>
 </head>
@@ -44,8 +52,16 @@ export const PAGE = `<!doctype html>
     <tbody id="rows"><tr><td colspan="6" class="muted">Завантаження…</td></tr></tbody>
   </table></div>
   <section class="logs" id="logs" hidden>
+    <h2 id="agent-title" style="font-size:16px;margin:0 0 8px"></h2>
+    <div class="actions" id="actions"></div>
+    <div id="msg" class="small"></div>
     <div class="bar"><strong id="logs-title"></strong><select id="log-file"></select><button id="log-refresh" type="button">Оновити лог</button><label class="small muted"><input type="checkbox" id="log-auto" checked> щоразу за 10 с</label></div>
     <pre id="log-text"></pre>
+  </section>
+  <section class="logs" id="removed-box" hidden>
+    <h2 style="font-size:16px;margin:0 0 8px">Видалені</h2>
+    <p class="small muted" style="margin:0 0 8px">Теки лежать в <code>.removed</code>; остаточно стерти їх можна вручну.</p>
+    <ul class="removed" id="removed"></ul>
   </section>
 </main>
 <script>
@@ -96,20 +112,72 @@ function render() {
   }
 }
 
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-aichat-manager": "1" }, body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status + " " + r.statusText);
+  return d.message || "Готово.";
+}
+
+function say(text, cls) { const m = $("msg"); m.textContent = text; m.className = "small " + (cls || ""); }
+
+async function act(label, path, body) {
+  for (const b of $("actions").querySelectorAll("button")) b.disabled = true;
+  say(label + "…", "muted");
+  try { say(await post(path, body), "ok"); } catch (e) { say(e.message, "bad"); }
+  await load();
+  if (selected && !agents.some((a) => a.folder === selected)) { selected = null; $("logs").hidden = true; } else if (selected) actionsFor(agents.find((a) => a.folder === selected));
+}
+
+function actionsFor(a) {
+  const box = $("actions"); box.replaceChildren();
+  const b = a.broker || {};
+  const base = "/api/agents/" + encodeURIComponent(a.folder) + "/";
+  const button = (text, fn, cls) => { const x = el("button", text, cls); x.type = "button"; x.addEventListener("click", fn); box.append(x); return x; };
+  const runs = (a.status && a.status.alive) || b.online;
+  if (!runs) button("Запустити", () => act("Запускаю", base + "start"));
+  if ((a.type === "agy" || a.type === "codex") && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"));
+  if (b.version) button(a.version === b.version ? "Перевстановити адаптер " + b.version : "Оновити адаптер до " + b.version, () => act("Оновлюю", base + "update"));
+  if (!runs) {
+    const confirmBox = el("input"); confirmBox.placeholder = "назва теки для підтвердження"; confirmBox.hidden = true;
+    const del = button("Видалити", () => {
+      if (confirmBox.hidden) { confirmBox.hidden = false; confirmBox.focus(); del.textContent = "Підтвердити видалення"; return; }
+      act("Видаляю", base + "remove", { confirm: confirmBox.value.trim() });
+    }, "danger");
+    box.append(confirmBox);
+  }
+  if (a.type === "claude" || a.type === "opencode") box.append(el("span", runs ? "Працює в терміналі: зупиняється там." : "Відкриється вкладка Windows Terminal.", "small muted"));
+}
+
+async function loadRemoved() {
+  try {
+    const d = await (await fetch("/api/removed")).json();
+    const ul = $("removed"); ul.replaceChildren();
+    $("removed-box").hidden = !d.removed.length;
+    for (const name of d.removed) {
+      const li = el("li"); li.append(el("span", name));
+      const x = el("button", "Повернути"); x.type = "button";
+      x.addEventListener("click", async () => { x.disabled = true; try { await post("/api/removed/" + encodeURIComponent(name) + "/restore"); } catch (e) { alert(e.message); } load(); });
+      li.append(x); ul.append(li);
+    }
+  } catch {}
+}
+
 async function load() {
   try {
     const r = await fetch("/api/agents");
     if (!r.ok) throw new Error(r.status + " " + (await r.text()));
     const d = await r.json();
     agents = d.agents; $("root").textContent = "Тека: " + d.root; $("when").textContent = "оновлено " + new Date().toLocaleTimeString();
-    render();
+    render(); loadRemoved();
   } catch (e) { $("when").textContent = "не вдалося: " + e.message; }
 }
 
 async function select(folder) {
   selected = folder; render();
   const a = agents.find((x) => x.folder === folder);
-  $("logs").hidden = false; $("logs-title").textContent = (a.name || a.folder) + ": лог";
+  $("logs").hidden = false; $("agent-title").textContent = a.name || a.folder; $("logs-title").textContent = "Лог"; say("");
+  actionsFor(a);
   const sel = $("log-file"); sel.replaceChildren();
   for (const f of a.logs) sel.append(el("option", f));
   if (!a.logs.length) { $("log-text").textContent = a.type === "claude" || a.type === "opencode" ? "Цей агент працює в терміналі: його вивід там." : "Логів немає."; sel.hidden = true; return; }

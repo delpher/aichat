@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
+import { Actions, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
 
@@ -133,4 +134,121 @@ test("manager: the page needs the printed key and its own host name; logs only f
   assert.deepEqual(JSON.parse((await get("/api/agents/agy/logs/adapter.log?lines=1", cookie)).body), { file: "adapter.log", text: "three" });
   assert.equal((await get("/api/agents/agy/logs/status.json", cookie)).status, 404);
   assert.equal((await get("/api/agents/agy/logs/..%2F..%2Fagy%2Ftoken.txt", cookie)).status, 404);
+});
+
+/** A runner that only records what it was asked; `stop` makes the agy agent's process "exit". */
+function fakeRunner() {
+  const calls: string[] = [];
+  const runner: Runner = {
+    openTerminal: async (dir, title, command) => void calls.push(`terminal ${basename(dir)} ${title}: ${command}`),
+    node: async (dir, args) => {
+      calls.push(`node ${basename(dir)} ${basename(args[0])} ${args[1]}`);
+      if (args[1] === "stop") writeFileSync(join(dir, ".aichat", "status.json"), JSON.stringify({ pid: 999999, phase: "stopped" }));
+    },
+    waitExit: async () => true,
+  };
+  return { calls, runner };
+}
+
+test("manager actions: update an adapter from the broker, keep the old one, restart a running agy agent", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  writeFileSync(join(root, "agy", "start.ps1"), "node agy-channel.mjs run");
+  writeFileSync(join(root, "claude", "aichat-hook.mjs"), "old hook");
+  const { calls, runner } = fakeRunner();
+  const served: Record<string, string> = {
+    "agy-channel.mjs": 'var VERSION = true ? "0.20.0" : "0.0.0-dev";',
+    "claude-channel.mjs": 'var V = process.env.X || (true ? "0.20.0" : V2);',
+    "aichat-hook.mjs": "new hook",
+    "codex-channel.mjs": 'const VERSION = "0.19.0";',
+  };
+  const fetched: string[] = [];
+  const actions = new Actions(root, runner, async (url) => {
+    fetched.push(url.replace(broker.url, ""));
+    return served[url.split("/").at(-1)!];
+  });
+
+  assert.match(await actions.update("agy", "0.20.0"), /0\.20\.0.*перезапущено/);
+  assert.equal(adapterVersion(join(root, "agy", "agy-channel.mjs")), "0.20.0");
+  assert.equal(adapterVersion(join(root, "agy", "agy-channel.mjs.bak-0.19.0")), "0.19.0");
+  assert.deepEqual(calls, ["node agy agy-channel.mjs stop", "terminal agy agy: .\\start.ps1"]);
+
+  // Claude Code: the hook goes along; no restart, it runs in a terminal
+  assert.match(await actions.update("claude", "0.20.0"), /Перезапустіть агента в його терміналі/);
+  assert.deepEqual(fetched.slice(-2), ["/client/claude-channel.mjs", "/client/aichat-hook.mjs"]);
+  assert.equal(readFileSync(join(root, "claude", "aichat-hook.mjs"), "utf8"), "new hook");
+  assert.equal(readFileSync(join(root, "claude", "aichat-hook.mjs.bak-old"), "utf8"), "old hook");
+
+  // the broker serves another version than it says: nothing changes
+  await assert.rejects(actions.update("codex", "0.20.0"), /завантажено 0\.19\.0, а брокер має 0\.20\.0/);
+  assert.equal(adapterVersion(join(root, "codex", "codex-channel.mjs")), "0.17.1");
+  assert.ok(!existsSync(join(root, "codex", "codex-channel.mjs.download")));
+});
+
+test("manager actions: start in a terminal, stop only what can stop, soft removal and restore", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const { calls, runner } = fakeRunner();
+  const actions = new Actions(root, runner);
+
+  await actions.start("claude");
+  await actions.start("opencode");
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { claude: "claude --continue --dangerously-load-development-channels server:aichat" } }));
+  await actions.start("claude");
+  assert.deepEqual(calls, [
+    "terminal claude claude: claude --dangerously-load-development-channels server:aichat",
+    "terminal opencode opencode: opencode",
+    "terminal claude claude: claude --continue --dangerously-load-development-channels server:aichat",
+  ]);
+  await assert.rejects(actions.start("claude", true), /уже працює/);
+  await assert.rejects(actions.start("agy"), /уже працює/, "its adapter process is alive");
+  await assert.rejects(actions.stop("claude"), /закрийте його там/);
+  await assert.rejects(actions.stop("codex"), /не запущений/);
+  await assert.rejects(actions.start("../agy"), /немає такого агента/);
+
+  assert.throws(() => actions.remove("codex", "codx", false), /введіть назву теки/);
+  assert.throws(() => actions.remove("agy", "agy", false), /спершу зупиніть/);
+  assert.throws(() => actions.remove("codex", "codex", true), /спершу зупиніть/, "the broker sees it online");
+  assert.match(actions.remove("codex", "codex", false), /\.removed\\codex-\d{8}-\d{6}/);
+  assert.ok(!existsSync(join(root, "codex")));
+  const [gone] = actions.removed();
+  assert.match(gone, /^codex-\d{8}-\d{6}$/);
+  assert.deepEqual(discover(root).map((a) => a.agent.folder), ["agy", "claude", "opencode"], "out of the overview");
+  mkdirSync(join(root, "codex"));
+  assert.throws(() => actions.restore(gone), /уже є/);
+  rmSync(join(root, "codex"), { recursive: true });
+  assert.match(actions.restore(gone), /повернуто/);
+  assert.equal(adapterVersion(join(root, "codex", "codex-channel.mjs")), "0.17.1");
+  assert.deepEqual(actions.removed(), []);
+});
+
+test("manager: actions are POSTs with the manager's header", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const { calls, runner } = fakeRunner();
+  const { server } = await startManager({ root, port: 0, key: "ab12", runner });
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    new Promise<{ status: number; body: { ok?: boolean; message?: string; error?: string } }>((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port, path, method: "POST", headers: { cookie: "aichat_manager=ab12", "content-type": "application/json", ...headers } },
+        (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c)).on("end", () => resolve({ status: res.statusCode!, body: JSON.parse(text) }));
+        },
+      );
+      req.on("error", reject).end(JSON.stringify(body));
+    });
+  assert.equal((await post("/api/agents/codex/start", {})).status, 403, "a form from another site has no such header");
+  const h = { "x-aichat-manager": "1" };
+  assert.deepEqual(await post("/api/agents/codex/start", {}, h), { status: 200, body: { ok: true, message: "Відкрито термінал з агентом." } });
+  assert.deepEqual(calls, ["terminal codex codex: node .\\codex-channel.mjs run --config .\\aichat.config.json"]);
+  assert.equal((await post("/api/agents/agy/start", {}, h)).status, 409, "agy-bot is online");
+  assert.equal((await post("/api/agents/codex/remove", { confirm: "x" }, h)).status, 400);
+  assert.equal((await post("/api/agents/codex/remove", { confirm: "codex" }, h)).status, 200);
+  assert.equal((await post("/api/agents/nobody/stop", {}, h)).status, 404);
 });
