@@ -1151,3 +1151,104 @@
 .spy-accusation-ballots {
   margin: 2px 0 0;
 }
+.spy-ask-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.spy-ask-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.spy-select {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.spy-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.spy-pass-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.spy-controls > .spy-pass-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.spy-open-q {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.spy-qa {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.spy-qa h4 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-2);
+}
+.spy-qa-empty {
+  margin: 0;
+}
+.spy-qa-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+.spy-qa-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+.spy-qa-list li:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.spy-qa-num {
+  min-width: 1.6em;
+  text-align: right;
+}
+.spy-qa-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.spy-qa-line,
+.spy-qa-answer {
+  margin: 0;
+}
+.spy-qa-pass .spy-qa-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  color: var(--text-2);
+}

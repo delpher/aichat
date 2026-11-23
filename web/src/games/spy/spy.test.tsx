@@ -30,9 +30,22 @@ describe("spy game web module", () => {
   it("registers in the games registry and formats text summary and move rows", () => {
     expect(findGame("spy")).toBe(spy);
     expect(spy.toText?.(["deal 3", "clue море"])).toContain("«море»");
-    const rows = spy.moveRows?.(["deal 3", "accuse 0 1", "ballot 2 yes", "verdict -", "stop 1 маяк"]);
+    expect(spy.toText?.(["deal qa 3", "ask 1 Чи тепле?"])).toContain("«Чи тепле?»");
+    const rows = spy.moveRows?.([
+      "deal qa 3",
+      "ask 1 Чи тепле?",
+      "answer Так",
+      "pass 2",
+      "accuse 0 1",
+      "ballot 2 yes",
+      "verdict -",
+      "stop 1 маяк",
+    ]);
     expect(rows?.map((r) => r[0].text)).toEqual([
       "Роздача",
+      "→ гравець 2: «Чи тепле?»",
+      "«Так»",
+      "Передача → гравець 3",
       "гравець 1 звинувачує гравець 2",
       "гравець 3: так",
       "Не одностайно",
@@ -85,6 +98,123 @@ describe("spy game web module", () => {
     );
     expect(screen.getByText("«берег і світло»")).toBeInTheDocument();
     expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows asking a player or passing the turn in Q&A ask phase", async () => {
+    const onMove = vi.fn();
+    const get = vi.fn(async () => ({
+      card: "твоє слово — «маяк». Питай і відповідай так, щоб свої впізнали, а шпигун не здогадався. Самого слова не називай.",
+    }));
+    const game = makeGame({ moves: ["deal qa 3"], turn: 0, movers: [0] });
+    renderWithChat(<spy.Play game={game} ply={1} canMove={0} bottom={0} onMove={onMove} />, {
+      api: fakeApi({ get }),
+    });
+
+    expect(await screen.findByText("«маяк»")).toBeInTheDocument();
+    expect(screen.getByLabelText("Питання та відповіді")).toBeInTheDocument();
+    expect(screen.getAllByText("2/2")).toHaveLength(3);
+
+    const select = screen.getByLabelText("Кого спитати");
+    await userEvent.selectOptions(select, "2");
+    await userEvent.type(screen.getByLabelText("Ваше питання"), "Чи буває це на березі?");
+    await userEvent.click(screen.getByRole("button", { name: "Спитати" }));
+    expect(onMove).toHaveBeenCalledWith("ask bot2 Чи буває це на березі?");
+
+    await userEvent.click(screen.getByRole("button", { name: "Передати хід bot1" }));
+    expect(onMove).toHaveBeenCalledWith("pass bot1");
+  });
+
+  it("handles Q&A answer phase and enforces noAsk while still allowing pass", async () => {
+    const onMove = vi.fn();
+    const get = vi.fn(async () => ({
+      card: "твоє слово — «маяк». Питай і відповідай так, щоб свої впізнали, а шпигун не здогадався. Самого слова не називай.",
+    }));
+    const moves = ["deal qa 3", "ask 1 Чи велике?"];
+    const game = makeGame({ moves, turn: 1, movers: [1] });
+    const { rerender, ctx } = renderWithChat(
+      <spy.Play game={game} ply={moves.length} canMove={1} bottom={1} onMove={onMove} />,
+      { api: fakeApi({ get }), sender: "bot1" },
+    );
+
+    expect(await screen.findByText("«маяк»")).toBeInTheDocument();
+    expect(screen.getByText(/питає вас: «Чи велике\?»/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Ваша відповідь"), "Досить високе");
+    await userEvent.click(screen.getByRole("button", { name: "Відповісти" }));
+    expect(onMove).toHaveBeenCalledWith("answer Досить високе");
+
+    // After answering, bot1 asks next, cannot ask olena (noAsk=0), but can pass to olena (tries=1)
+    const afterAnswer = makeGame({
+      moves: [...moves, "answer Досить високе"],
+      turn: 1,
+      movers: [1],
+    });
+    rerender(
+      <ChatContext.Provider value={ctx}>
+        <spy.Play game={afterAnswer} ply={afterAnswer.moves.length} canMove={1} bottom={1} onMove={onMove} />
+      </ChatContext.Provider>,
+    );
+    const options = Array.from(screen.getByLabelText("Кого спитати").querySelectorAll("option")).map((o) => o.textContent);
+    expect(options).toEqual(["bot2"]);
+    expect(screen.getByRole("button", { name: "Передати хід olena" })).toBeInTheDocument();
+  });
+
+  it("offers only a free pass to players with tries left when the asker has 0 tries", async () => {
+    const onMove = vi.fn();
+    const get = vi.fn(async () => ({
+      card: "твоє слово — «маяк». Питай і відповідай так, щоб свої впізнали, а шпигун не здогадався. Самого слова не називай.",
+    }));
+    const moves = [
+      "deal qa 3",
+      "ask 1 q1",
+      "answer a1",
+      "ask 2 q2",
+      "answer a2",
+      "ask 1 q3",
+      "answer a3",
+      "ask 0 q4",
+      "answer a4",
+      "ask 1 q5",
+      "answer a5",
+    ];
+    const game = makeGame({ moves, turn: 1, movers: [1] });
+    renderWithChat(<spy.Play game={game} ply={moves.length} canMove={1} bottom={1} onMove={onMove} />, {
+      api: fakeApi({ get }),
+      sender: "bot1",
+    });
+
+    expect(await screen.findByText("«маяк»")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ваше питання")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Передати хід olena" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Передати хід bot2" }));
+    expect(onMove).toHaveBeenCalledWith("pass bot2");
+  });
+
+  it("shows unanswered questions when the asked player resigned and supports out-of-turn spy guess during answer", async () => {
+    const onMove = vi.fn();
+    const get = vi.fn(async () => ({
+      card: "ти — шпигун. Слова ти не знаєш: слухай питання й відповіді, питай і відповідай так, ніби знаєш, і не видай себе.",
+    }));
+    const moves = ["deal qa 4", "ask 3 Чи воно гучне?", "out 3", "ask 2 Чи бачать здалеку?"];
+    const game = makeGame({
+      players: ["olena", "bot1", "bot2", "bot3"],
+      moves,
+      turn: 2,
+      movers: [2],
+    });
+    renderWithChat(<spy.Play game={game} ply={moves.length} canMove={null} bottom={1} onMove={onMove} />, {
+      api: fakeApi({ get }),
+      sender: "bot1",
+    });
+
+    expect(await screen.findByText("Ви — шпигун")).toBeInTheDocument();
+    expect(screen.getByText("Без відповіді (гравець вийшов)")).toBeInTheDocument();
+    expect(screen.getByText("Чекаємо на відповідь…")).toBeInTheDocument();
+    // Out-of-turn spy guess and accusation work during answer phase
+    await userEvent.type(screen.getByLabelText("Слово шпигуна"), "маяк");
+    await userEvent.click(screen.getByRole("button", { name: "Назвати слово" }));
+    expect(onMove).toHaveBeenCalledWith("guess маяк");
+    await userEvent.click(screen.getByRole("button", { name: "Звинуватити olena" }));
+    expect(onMove).toHaveBeenCalledWith("accuse olena");
   });
 
   it("allows out-of-turn accusation in clue phase and disables it once used", async () => {
