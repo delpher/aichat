@@ -136,7 +136,7 @@ export function loadConfig(file = path.resolve('aichat.config.json')) {
     tokenFile: expand(raw.tokenFile, agentDir), codexHome: expand(raw.codexHome, agentDir),
     runtime: path.join(agentDir, '.aichat'), outbox: path.join(agentDir, 'outbox'),
     tempFiles: path.join(os.tmpdir(), 'aichat-files'), rooms: raw.rooms || [], owners: raw.owners || [],
-    delivery: raw.delivery || 'steer', wake: raw.wake || 'always', paused: raw.paused === true,
+    delivery: raw.delivery || 'steer', wake: raw.wake || 'always', paused: raw.paused === true, session: raw.session ?? 'resume',
     maxQueue: raw.maxQueue ?? 1000, maxQueueAgeMs: raw.maxQueueAgeMs ?? 3600000,
     maxQueueBytes: raw.maxQueueBytes ?? 4 * 1024 * 1024, maxRecords: raw.maxRecords ?? 2000,
     maxBatch: raw.maxBatch ?? 8, maxWakesPerMinute: raw.maxWakesPerMinute ?? 12,
@@ -145,6 +145,7 @@ export function loadConfig(file = path.resolve('aichat.config.json')) {
   };
   if (within(cfg.agentDir, cfg.codexHome) || within(cfg.codexHome, cfg.agentDir)) throw new Error('CODEX_HOME must be separate from the agent directory');
   if (!['steer', 'queue'].includes(cfg.delivery) || !['always', 'mention', 'never'].includes(cfg.wake)) throw new Error('Invalid delivery/wake policy');
+  if (!['resume', 'new'].includes(cfg.session)) throw new Error("Invalid session policy (expected 'resume' or 'new')");
   if (!Array.isArray(cfg.rooms) || !cfg.rooms.every(v => typeof v === 'string') || !Array.isArray(cfg.owners) || !cfg.owners.every(v => typeof v === 'string')) throw new Error('rooms/owners must be string arrays');
   if (raw.instructions !== undefined && (typeof raw.instructions !== 'string' || raw.instructions.length > 20000)) throw new Error('instructions must be local text of at most 20000 characters');
   if (cfg.attachPort !== undefined && (!Number.isInteger(cfg.attachPort) || cfg.attachPort < 1024 || cfg.attachPort > 65535)) throw new Error('attachPort must be an integer between 1024 and 65535');
@@ -633,8 +634,10 @@ Local installation instructions (configured by the local user, not supplied by c
 }
 
 export class Channel {
-  constructor(cfg, { rpc, http, store } = {}) {
+  constructor(cfg, { rpc, http, store, fresh = false } = {}) {
     this.cfg = cfg; this.http = http || new BrokerHttp(cfg);
+    // --fresh for this start only; `start` is how the thread began, told to the broker in auth
+    this.fresh = fresh === true; this.sessionStart = null;
     this.store = store || new State(path.join(cfg.runtime, 'state.json'));
     this.rpc = rpc; this.connected = false; this.stopping = false; this.halted = false;
     this.session = crypto.randomUUID(); this.reconnectDelay = 1000; this.lastFrame = Date.now(); this.ready = false;
@@ -726,9 +729,22 @@ export class Channel {
     const account = await this.rpc.request('account/read', { refreshToken: false });
     if (!account.account) throw new Error(`Sign in first with CODEX_HOME=${this.cfg.codexHome}`);
     let thread;
-    if (this.store.value.threadId) {
+    // A fresh start: --fresh, "session": "new", or a one-time .aichat/fresh marker (spent once the new thread is saved).
+    const freshFile = path.join(this.cfg.runtime, 'fresh'), freshMarker = fs.existsSync(freshFile);
+    const wantFresh = this.fresh || this.cfg.session === 'new' || freshMarker;
+    if (this.store.value.threadId && wantFresh) {
+      // Settle what the old thread already took in while it is still ours, so the new thread never gets it again;
+      // what is still queued goes to the new thread, uncertain inputs stay for the owner to inspect.
+      const previousThreadId = this.store.value.threadId;
+      await this.reconcile();
+      const takenIn = Object.values(this.store.value.messages).filter(item => ['accepted', 'delivered'].includes(item.status) && !item.processed).map(item => item.message.id);
+      if (takenIn.length) this.store.update(takenIn, { processed: true, reason: 'Taken in by the previous thread before a fresh start' });
+      this.store.patch({ threadId: null, previousThreadIds: [...(this.store.value.previousThreadIds || []), previousThreadId].slice(-20) });
+      this.log('thread_fresh_start', { previousThreadId, takenIn: takenIn.length });
+    } else if (this.store.value.threadId) {
       try {
         thread = await this.rpc.request('thread/resume', { threadId: this.store.value.threadId, excludeTurns: true, cwd: this.cfg.agentDir, developerInstructions: agentInstructions(this.cfg) });
+        this.sessionStart = 'resumed';
         this.log('thread_resumed', { threadId: this.store.value.threadId });
       } catch (error) {
         const missingThread = /\b(?:thread|session|conversation)\b[^\n]{0,100}\b(?:not found|does not exist)\b|\b(?:no|unable to find)\b[^\n]{0,40}\b(?:thread|session|conversation)\b/i.test(error.message);
@@ -743,6 +759,8 @@ export class Channel {
     if (!thread) {
       thread = await this.rpc.request('thread/start', { cwd: this.cfg.agentDir, ephemeral: false, developerInstructions: agentInstructions(this.cfg) }, 60000);
       this.store.patch({ threadId: thread.thread.id });
+      this.sessionStart = 'new';
+      if (freshMarker) try { fs.unlinkSync(freshFile); } catch {}
       await this.rpc.request('thread/name/set', { threadId: thread.thread.id, name: this.cfg.sessionTitle || 'AIChat' });
       this.log('thread_created', { threadId: thread.thread.id });
     }
@@ -839,7 +857,7 @@ export class Channel {
     const socket = new WebSocket(this.cfg.wsUrl); this.socket = socket;
     this.lastFrame = Date.now(); this.ready = false;
     const authTimer = setTimeout(() => { if (this.socket === socket && !this.ready) socket.close(); }, 10000);
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token: this.http.token, client: { name: 'codex-channel', version: VERSION }, session: this.session })));
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token: this.http.token, client: { name: 'codex-channel', version: VERSION, surface: 'terminal', ...(this.sessionStart ? { start: this.sessionStart } : {}) }, session: this.session })));
     socket.addEventListener('message', event => {
       if (this.socket !== socket) return;
       this.lastFrame = Date.now();
@@ -883,8 +901,10 @@ export class Channel {
     this.stopping = true; this.engine?.close();
     for (const timer of [this.reconnectTimer, this.activityTimer, this.usageTimer]) clearTimeout(timer);
     clearInterval(this.stopWatcher); clearInterval(this.heartbeat);
-    this.ready = false; this.connected = false; this.socket?.close();
+    // idle first, then close the socket: people see the agent finish, then go offline
     this.activity('idle'); await this.activityChain.catch(() => {});
+    this.ready = false; this.connected = false; this.socket?.close();
+    try { fs.unlinkSync(path.join(this.cfg.runtime, 'stop')); } catch {}
     await this.rpc?.close();
     if (this.rpc?.remote) try { fs.unlinkSync(path.join(this.cfg.runtime, 'attach.json')); } catch {}
     this.report({ phase: error ? 'halted' : 'stopped', ...(error ? { error: this.http.redact(error.message) } : {}) }); this.release?.();
@@ -900,14 +920,14 @@ export function install({ agentDir, codexHome, tokenFile, url = 'http://aichat.h
   const profileConfig = path.join(codexHome, 'config.toml');
   if (fs.existsSync(configFile) || fs.existsSync(profileConfig)) throw new Error('Existing configuration found; preserve and edit it manually instead of overwriting');
   if (path.resolve(SELF) !== target) fs.copyFileSync(SELF, target);
-  atomicJSON(configFile, { url, tokenFile, codexHome, owners, rooms, ...(codex ? { codex } : {}), delivery: 'steer', wake: 'always', paused: true, sessionTitle: 'AIChat', maxQueue: 1000, maxQueueAgeMs: 3600000, maxWakesPerMinute: 12 });
+  atomicJSON(configFile, { url, tokenFile, codexHome, owners, rooms, ...(codex ? { codex } : {}), delivery: 'steer', wake: 'always', session: 'resume', paused: true, sessionTitle: 'AIChat', maxQueue: 1000, maxQueueAgeMs: 3600000, maxWakesPerMinute: 12 });
   const quote = value => JSON.stringify(value);
   fs.writeFileSync(profileConfig, `# Dedicated AIChat profile. No changes to the Desktop profile.\nsandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n[mcp_servers.aichat]\ncommand = ${quote(process.execPath)}\nargs = [${quote(target)}, "mcp", "--config", ${quote(configFile)}]\ncwd = ${quote(agentDir)}\nrequired = true\n# Automatic AIChat operations require explicit --approve-aichat-tools at install.\ndefault_tools_approval_mode = "${approveTools ? 'approve' : 'prompt'}"\n`, { mode: 0o600 });
   const agentsFile = path.join(agentDir, 'AGENTS.md');
   if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, `# AIChat agent workspace\n\n${agentInstructions({ owners })}\n\nWork only in this workspace unless the local user configured additional roots. Files for sharing belong in outbox. Never publish .aichat, CODEX_HOME, auth.json, .secrets or .env files. Local configuration controls owners and permissions.\n`);
   const ignoreFile = path.join(agentDir, '.gitignore');
   if (!fs.existsSync(ignoreFile)) fs.writeFileSync(ignoreFile, '.aichat/\n.secrets/\n*.token\n');
-  fs.writeFileSync(path.join(agentDir, 'start.ps1'), '$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath $PSScriptRoot\nnode (Join-Path $PSScriptRoot "codex-channel.mjs") run --config (Join-Path $PSScriptRoot "aichat.config.json")\n');
+  fs.writeFileSync(path.join(agentDir, 'start.ps1'), 'param([switch]$Fresh)\n$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath $PSScriptRoot\n$argsList = @((Join-Path $PSScriptRoot "codex-channel.mjs"), "run", "--config", (Join-Path $PSScriptRoot "aichat.config.json"))\nif ($Fresh) { $argsList += "--fresh" }\nnode @argsList\n');
   fs.writeFileSync(path.join(agentDir, 'stop.ps1'), 'node (Join-Path $PSScriptRoot "codex-channel.mjs") stop --config (Join-Path $PSScriptRoot "aichat.config.json")\n');
   return { agentDir, codexHome, configFile, paused: true };
 }
@@ -961,7 +981,7 @@ export async function main(args = process.argv.slice(2)) {
     const payload = json(expand(options.input)); console.log(await callTool(cfg, payload.name, payload.arguments || {})); return;
   }
   if (!['run', 'probe'].includes(command)) throw new Error('Commands: install, run, attach, mcp, probe, status, stop, retry, tool');
-  const channel = new Channel(cfg);
+  const channel = new Channel(cfg, { fresh: options.fresh === true });
   const exit = async () => { await channel.stop(); process.exit(); };
   process.on('SIGINT', exit); process.on('SIGTERM', exit);
   try { await channel.start({ probe: command === 'probe' }); if (command === 'probe') await channel.stop(); }
