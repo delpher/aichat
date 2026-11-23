@@ -70,7 +70,7 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 const ago = (iso) => { if (!iso) return ""; const s = Math.round((Date.now() - Date.parse(iso)) / 1000); return s < 60 ? s + " с тому" : s < 3600 ? Math.round(s / 60) + " хв тому" : Math.round(s / 3600) + " год тому"; };
-let agents = [], selected = null;
+let agents = [], selected = null, busy = false;
 
 function adapterCell(a) {
   const td = el("td");
@@ -124,9 +124,12 @@ function say(text, cls) { const m = $("msg"); m.textContent = text; m.className 
 async function act(label, path, body) {
   for (const b of $("actions").querySelectorAll("button")) b.disabled = true;
   say(label + "…", "muted");
+  busy = true;
   try { say(await post(path, body), "ok"); } catch (e) { say(e.message, "bad"); }
+  busy = false;
   await load();
   if (selected && !agents.some((a) => a.folder === selected)) { selected = null; $("logs").hidden = true; } else if (selected) actionsFor(agents.find((a) => a.folder === selected));
+  watchSoon();
 }
 
 function actionsFor(a) {
@@ -137,7 +140,7 @@ function actionsFor(a) {
   const runs = (a.status && a.status.alive) || b.online;
   if (!runs) button("Запустити", () => act("Запускаю", base + "start"));
   const bg = a.type === "agy" || a.type === "codex";
-  if (a.type === "codex" && a.attachPort && a.status && a.status.alive) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"));
+  if (bg && a.attachPort && a.status && a.status.alive) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"));
   if (bg && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"));
   if (b.version) button(a.version === b.version ? "Перевстановити адаптер " + b.version : "Оновити адаптер до " + b.version, () => act("Оновлюю", base + "update"));
   if (!runs) {
@@ -150,9 +153,22 @@ function actionsFor(a) {
   }
   if (a.type === "claude" || a.type === "opencode") box.append(el("span", runs ? "Працює в терміналі: зупиняється там." : "Відкриється вкладка Windows Terminal.", "small muted"));
   else if (!runs) box.append(el("span", "Запуститься у фоні, без вікна; вивід піде в лог background.log.", "small muted"));
-  else if (a.type === "codex" && !a.attachPort) box.append(el("span", "Щоб відкривати сесію, додайте attachPort у aichat.config.json і перезапустіть агента.", "small muted"));
-  else if (a.type === "codex") box.append(el("span", "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.", "small muted"));
-  else if (a.type === "agy") box.append(el("span", "Інтерактивної сесії для Antigravity поки немає: потрібна підтримка в адаптері.", "small muted"));
+  else if (!a.attachPort) box.append(el("span", "Щоб відкривати сесію, додайте attachPort у aichat.config.json і перезапустіть агента.", "small muted"));
+  else box.append(el("span", "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.", "small muted"));
+}
+
+/** Redraws the buttons of the selected agent after a refresh, unless an action is under way or a deletion is being confirmed. */
+function refreshActions() {
+  if (!selected || busy) return;
+  const confirming = [...$("actions").querySelectorAll("input")].some((i) => !i.hidden);
+  const a = agents.find((x) => x.folder === selected);
+  if (a && !confirming) actionsFor(a);
+}
+
+/** A terminal agent comes online in the broker a few seconds after its tab opens: look more often for a while. */
+function watchSoon() {
+  let left = 15;
+  const t = setInterval(() => { load(); if (--left <= 0) clearInterval(t); }, 3000);
 }
 
 async function loadRemoved() {
@@ -175,7 +191,7 @@ async function load() {
     if (!r.ok) throw new Error(r.status + " " + (await r.text()));
     const d = await r.json();
     agents = d.agents; $("root").textContent = "Тека: " + d.root; $("when").textContent = "оновлено " + new Date().toLocaleTimeString();
-    render(); loadRemoved();
+    render(); refreshActions(); loadRemoved();
   } catch (e) { $("when").textContent = "не вдалося: " + e.message; }
 }
 
