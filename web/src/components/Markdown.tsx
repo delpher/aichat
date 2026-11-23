@@ -77,14 +77,18 @@ function refPlugin(names: string[], rooms: string[]) {
   const people = new Set(names);
   const roomSet = new Set(rooms);
   type Node = { type: string; value?: string; children?: Node[]; data?: Record<string, unknown> };
+  const plain = (n: Node): string => n.value ?? (n.children ?? []).map(plain).join("");
   return () => (tree: Node) => {
-    const walk = (node: Node) => {
+    // `before`: the text that comes before this node in its paragraph, so "**PR** #79" reads as "PR #79"
+    const walk = (node: Node, before = "") => {
       if (!node.children) return;
       if (node.type === "link" || node.type === "inlineCode" || node.type === "code") return;
       const out: Node[] = [];
       for (const child of node.children) {
+        const prefix = before.slice(-200);
+        before += plain(child);
         if (child.type !== "text" || !/[@#]/.test(child.value ?? "")) {
-          walk(child);
+          walk(child, prefix);
           out.push(child);
           continue;
         }
@@ -95,14 +99,12 @@ function refPlugin(names: string[], rooms: string[]) {
           const hash = m[1] === "#";
           // # only at the start of a word: not "a#b" or "&#38;"
           if (hash && m.index > 0 && /[\w&#]/.test(v[m.index - 1])) continue;
+          const numeric = /^\d{1,9}$/.test(m[2]);
+          // "PR #79" is a pull request, whether or not a room or a message has that number
+          if (hash && numeric && NOT_A_MESSAGE.test(prefix + v.slice(0, m.index))) continue;
           const room = hash && roomSet.has(m[2]);
           // a #1234 that is no room's name refers to a message
-          const msg =
-            hash &&
-            !room &&
-            /^\d{1,9}$/.test(m[2]) &&
-            !/[\w-]/.test(v[m.index + m[0].length] ?? "") &&
-            !NOT_A_MESSAGE.test(v.slice(0, m.index));
+          const msg = hash && !room && numeric && !/[\w-]/.test(v[m.index + m[0].length] ?? "");
           if (hash ? !room && !msg : !people.has(m[2])) continue;
           if (m.index > last) out.push({ type: "text", value: v.slice(last, m.index) });
           const props = room ? { className: "room-ref", dataRoom: m[2] } : msg ? { className: "msg-ref", dataMsg: m[2] } : { className: "mention" };

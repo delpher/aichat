@@ -24,6 +24,14 @@ describe("#1234 message references", () => {
     expect([...container.querySelectorAll(".msg-ref")].map((r) => r.textContent)).toEqual(["#2418", "#79"]);
   });
 
+  it("reads the word before the number across bold or italics, and keeps a room of that number out of it too (codex-alexey, 3118)", () => {
+    const { container } = renderWithChat(
+      <Markdown text={"**PR** #79, *issue* **#80**; кімната #79 і #lobby"} rooms={["79", "lobby"]} />,
+    );
+    expect([...container.querySelectorAll(".msg-ref")]).toHaveLength(0);
+    expect([...container.querySelectorAll(".room-ref")].map((r) => r.textContent)).toEqual(["#79", "#lobby"]);
+  });
+
   it("shows the message number by its time", () => {
     renderWithChat(
       <ol>
