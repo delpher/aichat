@@ -2531,8 +2531,8 @@ class Channel {
     const mcpServers = this.mcpServerSpec();
 
     const freshFile = path.join(this.cfg.runtime, "fresh");
-    const hasFreshFile = fs.existsSync(freshFile);
-    const wantFresh = this.fresh || this.cfg.session === "new" || hasFreshFile;
+    const hasFreshFile = !probe && fs.existsSync(freshFile);
+    const wantFresh = !probe && (this.fresh || this.cfg.session === "new" || hasFreshFile);
 
     let sessionInfo = null;
     const savedId = this.store.value.sessionId;

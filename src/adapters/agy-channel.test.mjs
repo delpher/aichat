@@ -2004,12 +2004,28 @@ test("Lifecycle contract: session policy, .aichat/fresh, previousSessionIds, del
   rpcFail.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
   rpcFail.onRequest("session/new", () => Promise.reject(new RpcError({ code: -32603, message: "acp down" })));
   const chFail = new Channel(cfg, { rpc: rpcFail, http: new FakeHttp(), store: storeFail });
-  await assert.rejects(() => chFail.start({ probe: true }), /acp down/);
+  await assert.rejects(() => chFail.start(), /acp down/);
   assert.equal(storeFail.value.sessionId, "sess-before-fail");
   assert.equal(fs.existsSync(freshFile), true);
   await chFail.stop();
 
-  // 3. .aichat/fresh success: archives old sessionId in previousSessionIds, removes marker, skips session/load,
+  // 3. probe ignores fresh policy (.aichat/fresh, session="new", --fresh): keeps saved session and marker intact
+  const storeProbe = new State(path.join(agentDir, ".aichat", "state-probe-fresh.json"));
+  storeProbe.patch({ sessionId: "sess-probe-keep" });
+  const rpcProbe = new FakeRpc();
+  rpcProbe.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcProbe.onRequest("session/list", () => ({ sessions: [{ sessionId: "sess-probe-keep" }] }));
+  rpcProbe.onRequest("session/load", (p) => ({ sessionId: p.sessionId }));
+  const chProbe = new Channel({ ...cfg, session: "new" }, { rpc: rpcProbe, http: new FakeHttp(), store: storeProbe, fresh: true });
+  await chProbe.start({ probe: true });
+  assert.equal(chProbe.sessionStart, "resumed");
+  assert.equal(storeProbe.value.sessionId, "sess-probe-keep");
+  assert.deepEqual(storeProbe.value.previousSessionIds, []);
+  assert.equal(fs.existsSync(freshFile), true);
+  assert.ok(!rpcProbe.requests.some((r) => r.method === "session/new"));
+  await chProbe.stop();
+
+  // 4. .aichat/fresh success: archives old sessionId in previousSessionIds, removes marker, skips session/load,
   //    keeps queued (undelivered) inputs for the new session, never re-delivers already accepted inputs, reports start="new"
   const storeFresh = new State(path.join(agentDir, ".aichat", "state-fresh-ok.json"));
   storeFresh.patch({ sessionId: "sess-old-2", sessionUsage: { tokensIn: 500, tokensOut: 100 } });
@@ -2021,8 +2037,8 @@ test("Lifecycle contract: session policy, .aichat/fresh, previousSessionIds, del
   rpcFresh.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
   rpcFresh.onRequest("session/new", () => ({ sessionId: "sess-fresh-2" }));
 
-  const chFresh = new Channel({ ...cfg, paused: false }, { rpc: rpcFresh, http: new FakeHttp(), store: storeFresh });
-  await chFresh.start({ probe: true });
+  const chFresh = new Channel(cfg, { rpc: rpcFresh, http: new FakeHttp(), store: storeFresh });
+  await chFresh.start();
   assert.equal(chFresh.sessionStart, "new");
   assert.equal(storeFresh.value.sessionId, "sess-fresh-2");
   assert.deepEqual(storeFresh.value.previousSessionIds, ["sess-old-2"]);
@@ -2034,20 +2050,21 @@ test("Lifecycle contract: session policy, .aichat/fresh, previousSessionIds, del
   assert.equal(storeFresh.value.messages["502"].status, "queued");
   assert.equal(storeFresh.value.messages["502"].processed, false);
 
+  chFresh.wsAllowed = true;
   chFresh.connect();
   sockets.at(-1).emit("open");
   assert.equal(sockets.at(-1).sent[0].client.surface, "terminal");
   assert.equal(sockets.at(-1).sent[0].client.start, "new");
   await chFresh.stop();
 
-  // 4. cfg.session="new" and fresh=true option both start a fresh session and archive previousSessionIds
+  // 5. cfg.session="new" starts a fresh session and archives previousSessionIds
   const storeOpt = new State(path.join(agentDir, ".aichat", "state-opt-new.json"));
   storeOpt.patch({ sessionId: "sess-old-3" });
   const rpcOpt = new FakeRpc();
   rpcOpt.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
   rpcOpt.onRequest("session/new", () => ({ sessionId: "sess-opt-3" }));
   const chOpt = new Channel({ ...cfg, session: "new" }, { rpc: rpcOpt, http: new FakeHttp(), store: storeOpt });
-  await chOpt.start({ probe: true });
+  await chOpt.start();
   assert.equal(chOpt.sessionStart, "new");
   assert.equal(storeOpt.value.sessionId, "sess-opt-3");
   assert.deepEqual(storeOpt.value.previousSessionIds, ["sess-old-3"]);
