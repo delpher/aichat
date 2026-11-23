@@ -30,7 +30,7 @@ const DEFAULTS = {
   tokenFile: "~/.secrets/aichat-token",
   wake: "always", // always | mention | never
   paused: false, // true — не підключатися до брокера (пауза), тули працюють
-  session: "resume", // resume | new — підхопити збережену сесію чи почати нову (як .aichat/fresh)
+  session: "resume", // resume | new — new starts a new model session on every plugin start (incl. opencode reload); .aichat/fresh does it once
   sessionTitle: "AIChat",
   rooms: [],
   maxWakesPerMinute: 12,
@@ -359,6 +359,7 @@ async function ensureSession(ctx, cfg, state) {
   });
   state.sessionID = created.id;
   state.start = "new";
+  state.forceNew = false; // the fresh start is spent: a retried delivery keeps this new session
   state.lastModel = created.model ?? model;
   await ctx.storage.set(sessionKey, { id: created.id, title: created.title ?? cfg.sessionTitle });
   return state.sessionID;
@@ -1480,10 +1481,14 @@ export default {
           unlinkSync(stopFile);
         } catch {}
         console.warn("[aichat] .aichat/stop — відключаю канал (сервер OpenCode лишається)");
-        stopActivity?.();
-        stopUsage?.();
-        stop?.();
-        void postActivity(cfg, { state: "idle" }).catch(() => {});
+        // idle first (the contract), then close the socket; activity/usage stop with the channel.
+        void postActivity(cfg, { state: "idle" })
+          .catch(() => {})
+          .finally(() => {
+            stopActivity?.();
+            stopUsage?.();
+            stop?.();
+          });
       }, 1000);
       stopWatcher.unref?.();
     }
