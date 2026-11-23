@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
+import type { AdapterInfo } from "../protocol.js";
 
 export interface ManagerOptions {
   root: string;
@@ -28,7 +29,7 @@ interface BrokerAgent {
   name: string;
   online: boolean;
   activity?: { state?: string; topic?: string; since?: string };
-  adapter?: { name?: string; version?: string };
+  adapter?: Partial<AdapterInfo>;
 }
 
 export interface AgentView extends LocalAgent {

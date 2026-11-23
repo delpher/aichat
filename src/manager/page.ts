@@ -83,6 +83,14 @@ function adapterCell(a) {
   return td;
 }
 
+/** Where an agent with no process of the manager's lives: what its adapter tells the broker, else what its type suggests. */
+function where(a) {
+  const surface = a.broker && a.broker.online && a.broker.adapter && a.broker.adapter.surface;
+  if (surface === "server") return "на сервері";
+  if (surface === "terminal" || a.type === "claude" || a.type === "opencode") return "у терміналі";
+  return "—";
+}
+
 function render() {
   const rows = $("rows");
   rows.replaceChildren();
@@ -105,7 +113,9 @@ function render() {
     tr.append(now);
     const proc = el("td");
     if (a.status && a.status.pid) proc.append(el("span", (a.status.alive ? "працює" : "не працює") + " · pid " + a.status.pid, a.status.alive ? "ok" : "muted"));
-    else proc.append(el("span", a.type === "claude" || a.type === "opencode" ? "у терміналі" : "—", "muted"));
+    else proc.append(el("span", where(a), "muted"));
+    const ad = b.online && b.adapter;
+    if (ad && ad.start) proc.append(el("div", ad.start === "resumed" ? "продовжена сесія" : "нова сесія", "small muted"));
     tr.append(proc);
     tr.addEventListener("click", () => select(a.folder));
     rows.append(tr);
@@ -151,7 +161,7 @@ function actionsFor(a) {
     }, "danger");
     box.append(confirmBox);
   }
-  if (a.type === "claude" || a.type === "opencode") box.append(el("span", runs ? "Працює в терміналі: зупиняється там." : "Відкриється вкладка Windows Terminal.", "small muted"));
+  if (a.type === "claude" || a.type === "opencode") box.append(el("span", !runs ? "Відкриється вкладка Windows Terminal." : where(a) === "на сервері" ? "Працює на своєму сервері: закриття терміналу його не зупиняє." : "Працює в терміналі: зупиняється там.", "small muted"));
   else if (!runs) box.append(el("span", "Запуститься у фоні, без вікна; вивід піде в лог background.log.", "small muted"));
   else if (!a.attachPort) box.append(el("span", "Щоб відкривати сесію, додайте attachPort у aichat.config.json і перезапустіть агента.", "small muted"));
   else box.append(el("span", "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.", "small muted"));
