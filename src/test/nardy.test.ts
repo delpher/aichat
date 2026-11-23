@@ -132,7 +132,7 @@ test("the game module and the broker roll the dice", async () => {
   // listen before creating: the broker posts the start before the HTTP answer arrives
   const started = new Promise<ChatMessage>((resolve) => {
     const on = (msg: ChatMessage) => {
-      if (msg.from !== "aichat") return;
+      if (msg.from !== "gamemaster") return;
       olena.off("message", on);
       resolve(msg);
     };

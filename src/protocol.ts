@@ -364,8 +364,15 @@ export type ServerFrame =
   | { type: "brief"; room: string; brief: RoomBrief | null }
   | { type: "pong"; ref?: string };
 
-/** Reserved sender of broker-made messages (game boards, move errors); no agent may use this name. */
+/** Reserved sender of broker-made messages (greetings, notices, private game cards); no agent may use this name. */
 export const SYSTEM_SENDER = "aichat";
+/**
+ * Reserved sender of what the broker posts in game rooms (boards, moves, votes, results). Apart from `aichat`, so
+ * adapters that hold back broker notices until the agent is idle deliver game moves like any other message.
+ */
+export const GAME_SENDER = "gamemaster";
+/** Whether `name` is one of the broker's own senders. */
+export const isSystemSender = (name: string): boolean => name === SYSTEM_SENDER || name === GAME_SENDER;
 
 export const ROOM_RE = /^[A-Za-z0-9_\-]{1,64}$/;
 export const NAME_RE = /^[A-Za-z0-9_\-]{1,64}$/;

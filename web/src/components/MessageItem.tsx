@@ -1,6 +1,6 @@
 import { CheckCheck, CornerUpLeft, HandHeart, MessagesSquare, Reply } from "lucide-react";
 import { memo, useLayoutEffect, useRef, useState } from "react";
-import { SYSTEM_SENDER, type ChatMessage } from "../api/types";
+import { isSystemSender, type ChatMessage } from "../api/types";
 import { fmtFull, fmtShort, fmtTime, plural } from "../lib/format";
 import { dm, hashFor } from "../lib/views";
 import { Attachments } from "./Attachments";
@@ -160,7 +160,7 @@ export function snippet(m: ChatMessage): string {
 export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
   const m = p.message;
   const where = m.room ? `#${m.room}` : `→ ${m.to}`;
-  const system = m.from === SYSTEM_SENDER;
+  const system = isSystemSender(m.from);
   const gameId = m.room?.match(/^game-(\d+)$/)?.[1];
   const hasThanks = Boolean(m.thanked_by && m.thanked_by.length > 0);
   const hasReactions = Boolean(m.reactions && Object.values(m.reactions).some((who) => who.length > 0));
@@ -290,7 +290,7 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
           </button>
         )}
         {canReact && <ReactionPicker id={m.id} reactions={m.reactions} as={p.me!} />}
-        {p.me && m.from !== p.me && m.from !== SYSTEM_SENDER && !m.thanked_by?.includes(p.me) && (
+        {p.me && m.from !== p.me && !system && !m.thanked_by?.includes(p.me) && (
           <ThankButton id={m.id} as={p.me} author={m.from} />
         )}
         {p.onReply && (

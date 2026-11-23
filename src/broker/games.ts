@@ -1,12 +1,12 @@
 // The broker's game service, for any game in src/games/: games are stored, every move goes through the
-// game's rules, and each game has a chat room `game-<id>` where the broker (as the system sender "aichat")
+// game's rules, and each game has a chat room `game-<id>` where the broker (as the game sender "gamemaster")
 // posts the board and whose players may also play by plain text: `move <move>`, `resign`, `draw`.
 // Nothing here knows about a particular game.
 import type { GameInfo, GameRatings, GameResult, GameType } from "../protocol.js";
 import type { GameDefinition, GameOutcome } from "../games/game.js";
 import type { GameRecord, Store } from "./store.js";
 
-export { SYSTEM_SENDER } from "../protocol.js";
+export { GAME_SENDER, SYSTEM_SENDER } from "../protocol.js";
 export const GAME_ROOM_RE = /^game-(\d+)$/;
 export const gameRoom = (id: number) => `game-${id}`;
 

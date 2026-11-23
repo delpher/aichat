@@ -55,7 +55,7 @@ function nextSystem(c: Awaited<ReturnType<typeof connect>>, timeoutMs = 3000): P
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("no system message")), timeoutMs);
     const on = (m: ChatMessage) => {
-      if (m.from !== "aichat") return;
+      if (m.from !== "gamemaster") return;
       clearTimeout(t);
       c.off("message", on);
       resolve(m);
@@ -195,6 +195,7 @@ test("an agent opens a game for itself; seats are taken by id; resign ends it; t
   assert.equal((await call("petro", "GET", "/api/games/999")).status, 404);
   await broker.close();
   await assert.rejects(startBroker([{ name: "aichat" }]), /reserved/);
+  await assert.rejects(startBroker([{ name: "gamemaster" }]), /reserved/);
 });
 
 test("checkers through the broker: real rules, text moves, errors with legal moves", async () => {
