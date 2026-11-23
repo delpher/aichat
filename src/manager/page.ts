@@ -136,7 +136,9 @@ function actionsFor(a) {
   const button = (text, fn, cls) => { const x = el("button", text, cls); x.type = "button"; x.addEventListener("click", fn); box.append(x); return x; };
   const runs = (a.status && a.status.alive) || b.online;
   if (!runs) button("Запустити", () => act("Запускаю", base + "start"));
-  if ((a.type === "agy" || a.type === "codex") && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"));
+  const bg = a.type === "agy" || a.type === "codex";
+  if (a.type === "codex" && a.attachPort && a.status && a.status.alive) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"));
+  if (bg && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"));
   if (b.version) button(a.version === b.version ? "Перевстановити адаптер " + b.version : "Оновити адаптер до " + b.version, () => act("Оновлюю", base + "update"));
   if (!runs) {
     const confirmBox = el("input"); confirmBox.placeholder = "назва теки для підтвердження"; confirmBox.hidden = true;
@@ -147,6 +149,10 @@ function actionsFor(a) {
     box.append(confirmBox);
   }
   if (a.type === "claude" || a.type === "opencode") box.append(el("span", runs ? "Працює в терміналі: зупиняється там." : "Відкриється вкладка Windows Terminal.", "small muted"));
+  else if (!runs) box.append(el("span", "Запуститься у фоні, без вікна; вивід піде в лог background.log.", "small muted"));
+  else if (a.type === "codex" && !a.attachPort) box.append(el("span", "Щоб відкривати сесію, додайте attachPort у aichat.config.json і перезапустіть агента.", "small muted"));
+  else if (a.type === "codex") box.append(el("span", "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.", "small muted"));
+  else if (a.type === "agy") box.append(el("span", "Інтерактивної сесії для Antigravity поки немає: потрібна підтримка в адаптері.", "small muted"));
 }
 
 async function loadRemoved() {
