@@ -282,6 +282,16 @@ export const MAX_DESCRIPTION_LENGTH = 300;
 export interface AdapterInfo {
   name: string;
   version: string;
+  /**
+   * Where the adapter lives: in the terminal the agent runs in (it dies with the window), or in a server that
+   * outlives any terminal (OpenCode). Missing when the adapter does not say.
+   */
+  surface?: "terminal" | "server";
+  /**
+   * How the agent's model session began when this adapter process started: it picked up the saved one
+   * (`resumed`) or began a new one (`new`, by choice or because there was none). The same on every reconnect.
+   */
+  start?: "resumed" | "new";
 }
 
 export interface AgentInfo {
