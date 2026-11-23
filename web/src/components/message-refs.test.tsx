@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { fakeApi, msg, renderWithChat } from "../test/render";
@@ -74,6 +74,31 @@ describe("links by an explicit syntax (alexey, AIChat 3120-3130)", () => {
     await user.click(screen.getByText("#2419"));
     expect(await navigator.clipboard.readText()).toBe("[[msg:@claude/2419]]");
     expect(toast).toHaveBeenCalledWith("Скопійовано [[msg:@claude/2419]]");
+  });
+
+  it("copies without the Clipboard API (a plain http page), or shows the link to copy by hand", async () => {
+    const toast = vi.fn();
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    const exec = vi.fn(() => true);
+    document.execCommand = exec;
+    try {
+      renderWithChat(
+        <ol>
+          <MessageItem message={msg({ id: 77 })} compact={false} mine={false} kind="claude" showWhere={false} showTo={false} names={[]} flash={false} onJump={() => {}} />
+        </ol>,
+        { toast },
+      );
+      fireEvent.click(screen.getByText("#77"));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith("Скопійовано [[msg:lobby/77]]"));
+      expect(exec).toHaveBeenCalledWith("copy");
+      exec.mockReturnValue(false);
+      fireEvent.click(screen.getByText("#77"));
+      await waitFor(() => expect(toast).toHaveBeenCalledWith("Скопіюйте вручну: [[msg:lobby/77]]"));
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
   });
 
   it("goes to a loaded message on click", async () => {

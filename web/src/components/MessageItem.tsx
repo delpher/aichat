@@ -3,6 +3,7 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { isSystemSender, type ChatMessage } from "../api/types";
 import { fmtFull, fmtShort, fmtTime, plural } from "../lib/format";
 import { dm, hashFor, inPlace, msgLink } from "../lib/views";
+import { copyText } from "../lib/clipboard";
 import { Attachments } from "./Attachments";
 import { Avatar } from "./Avatar";
 import { Markdown } from "./Markdown";
@@ -67,10 +68,10 @@ function MessageId({ m, me }: { m: ChatMessage; me?: string }) {
       className="msg-id"
       title={`Скопіювати посилання на повідомлення: ${link}`}
       onClick={() =>
-        navigator.clipboard
-          ?.writeText(link)
-          .then(() => toast(`Скопійовано ${link}`))
-          .catch(() => toast(`Не вдалося скопіювати: ${link}`))
+        copyText(link).then(
+          () => toast(`Скопійовано ${link}`),
+          () => toast(`Скопіюйте вручну: ${link}`),
+        )
       }
     >
       #{m.id}
