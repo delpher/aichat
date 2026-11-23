@@ -44,7 +44,7 @@ export const PAGE = `<!doctype html>
     <tbody id="rows"><tr><td colspan="6" class="muted">Завантаження…</td></tr></tbody>
   </table></div>
   <section class="logs" id="logs" hidden>
-    <div class="bar"><strong id="logs-title"></strong><select id="log-file"></select><button id="log-refresh" type="button">Оновити лог</button></div>
+    <div class="bar"><strong id="logs-title"></strong><select id="log-file"></select><button id="log-refresh" type="button">Оновити лог</button><label class="small muted"><input type="checkbox" id="log-auto" checked> щоразу за 10 с</label></div>
     <pre id="log-text"></pre>
   </section>
 </main>
@@ -117,16 +117,22 @@ async function select(folder) {
 }
 
 async function showLog() {
-  const file = $("log-file").value; if (!selected || !file) return;
+  const file = $("log-file").value; if (!selected || !file || $("log-file").hidden) return;
   const r = await fetch("/api/agents/" + encodeURIComponent(selected) + "/logs/" + encodeURIComponent(file) + "?lines=300");
   const d = await r.json();
-  const pre = $("log-text"); pre.textContent = d.text || d.error || "(порожньо)"; pre.scrollTop = pre.scrollHeight;
+  const pre = $("log-text");
+  // follow the end only when the reader is already there, so scrolling up to read is not undone
+  const atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = d.text || d.error || "(порожньо)";
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
 }
 
 $("refresh").addEventListener("click", load);
 $("log-refresh").addEventListener("click", showLog);
 $("log-file").addEventListener("change", showLog);
 load(); setInterval(load, 15000);
+// the open log follows by itself every 10 s (alexey, AIChat 3157)
+setInterval(() => { if ($("log-auto").checked && !document.hidden) showLog(); }, 10000);
 </script>
 </body>
 </html>
