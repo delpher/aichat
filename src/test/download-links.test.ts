@@ -9,7 +9,7 @@ import { connect, startBroker, tok } from "./helpers.js";
 const BOSS = { name: "boss", kind: "human", admin: true };
 const auth = (name: string) => ({ authorization: `Bearer ${tok(name)}`, "content-type": "application/json" });
 
-test("a file's download link opens it without a token, only that file and only for five minutes", async () => {
+test("a file's download link opens it without a token, only that file and only for five minutes", async (t) => {
   let now = Date.parse("2026-11-20T12:00:00Z");
   const { broker, url, http } = await startBroker([{ name: "a", rooms: ["team"] }, { name: "b", rooms: ["team"] }, { name: "c" }, BOSS], {}, { now: () => now });
   const up = await fetch(`${http}/api/files`, {
@@ -19,6 +19,11 @@ test("a file's download link opens it without a token, only that file and only f
   });
   const f = ((await up.json()) as { file: FileInfo }).file;
   const a = await connect(url, "a");
+  // also when an assertion fails: an open broker keeps the test run waiting for ever
+  t.after(async () => {
+    a.close();
+    await broker.close();
+  });
   await a.send({ room: "team", text: "ось", attachments: [f.id] });
 
   const link = (who: string, admin = false) => fetch(`${http}/${admin ? "admin/api" : "api"}/files/${f.id}/link`, { method: "POST", headers: auth(who) });
@@ -39,21 +44,26 @@ test("a file's download link opens it without a token, only that file and only f
 
   // a link for one file does not open another, and a changed signature opens nothing
   assert.equal((await fetch(`${http}${path.replace(f.id, "x".repeat(f.id.length))}`)).status, 403);
-  assert.equal((await fetch(`${http}${path.replace(/sig=./, "sig=Z")}`)).status, 403);
+  // (a different first character: "Z" was the signature's own one time in 64, and the test failed)
+  const tampered = path.replace(/sig=(.)/, (_, c: string) => `sig=${c === "A" ? "B" : "A"}`);
+  assert.notEqual(tampered, path);
+  assert.equal((await fetch(`${http}${tampered}`)).status, 403);
   // the admin API gives links too
   assert.equal((await link("boss", true)).status, 200);
   // after five minutes the link is dead
   now += 5 * 60_000 + 1;
   dl = await fetch(`${http}${path}`);
   assert.equal(dl.status, 403);
-  a.close();
-  await broker.close();
 });
 
-test("a room's export link gives its whole conversation as a Markdown file in the viewer's time zone", async () => {
+test("a room's export link gives its whole conversation as a Markdown file in the viewer's time zone", async (t) => {
   let now = Date.parse("2026-11-20T12:05:00Z");
   const { broker, url, http } = await startBroker([{ name: "a", rooms: ["team"] }, { name: "c" }, BOSS], {}, { now: () => now });
   const a = await connect(url, "a");
+  t.after(async () => {
+    a.close();
+    await broker.close();
+  });
   for (let i = 1; i <= 3; i++) await a.send({ room: "team", text: `крок ${i}` });
 
   const exp = (who: string, room: string, tz: string, admin = false) =>
@@ -79,8 +89,6 @@ test("a room's export link gives its whole conversation as a Markdown file in th
   assert.match(utc.url, /tz=UTC/);
   now += 6 * 60_000;
   assert.equal((await fetch(`${http}${path}`)).status, 403);
-  a.close();
-  await broker.close();
 });
 
 test("the export file lists the brief and every message with its author, time, number, reply and files", () => {
