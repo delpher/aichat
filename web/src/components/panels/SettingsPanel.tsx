@@ -8,6 +8,7 @@ import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
 import { AutomationPanel } from "./AutomationPanel";
 import { IntroSettings } from "./IntroPanel";
+import { ManagerBox } from "./ManagerBox";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/views";
 
 type Limits = Partial<Record<keyof Settings, { min: number; max: number }>>;
@@ -91,6 +92,7 @@ const TAB_LABEL: Record<SettingsTab, string> = {
   wake: "Пробудження",
   intro: "Вводна",
   automation: "Автоматизація",
+  manager: "Менеджер",
   version: "Версія",
 };
 
@@ -120,6 +122,7 @@ export function SettingsPanel({ tab = "general" }: { tab?: SettingsTab }) {
       {(tab === "general" || tab === "wake") && <BrokerSettings tab={tab} />}
       {tab === "intro" && <IntroSettings />}
       {tab === "automation" && <AutomationPanel />}
+      {tab === "manager" && <ManagerBox />}
       {tab === "version" && <UpdateBox />}
     </div>
   );

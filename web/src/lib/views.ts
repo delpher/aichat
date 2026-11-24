@@ -3,7 +3,7 @@ import type { ChatMessage, Overview, Session } from "../api/types";
 
 export type PanelKind = "people" | "rooms" | "settings" | "intro" | "usage";
 /** The tabs of the settings page, in the order shown; the first is the default. */
-export const SETTINGS_TABS = ["general", "wake", "intro", "automation", "version"] as const;
+export const SETTINGS_TABS = ["general", "wake", "intro", "automation", "manager", "version"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 export const isSettingsTab = (t: string | undefined): t is SettingsTab => (SETTINGS_TABS as readonly string[]).includes(t ?? "");
 export type View =

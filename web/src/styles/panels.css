@@ -400,7 +400,8 @@
   margin-bottom: var(--space-4);
 }
 /* One-line commands wrap so the whole command is visible before copying. */
-.setup .code pre {
+.setup .code pre,
+.manager-code pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
