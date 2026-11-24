@@ -811,6 +811,7 @@ function startChannel(ctx, cfg, state) {
     gen += 1;
     stopHeartbeat();
     state.ws = null;
+    writeStatus(ctx, cfg, state);
     try {
       socket?.close();
     } catch {
@@ -930,6 +931,7 @@ function startChannel(ctx, cfg, state) {
     sock.addEventListener("close", (event) => {
       if (!isCurrent()) return;
       state.ws = null;
+      writeStatus(ctx, cfg, state);
       stopHeartbeat();
       if (stopped) return;
       if (event.code === 4003) {
@@ -1496,8 +1498,8 @@ export default {
           } catch {}
         }
       })
-      .catch((error) => console.warn(`[aichat] не вдалось підготувати сесію: ${error.message}`));
-    writeStatus(ctx, cfg, state);
+      .catch((error) => console.warn(`[aichat] не вдалось підготувати сесію: ${error.message}`))
+      .finally(() => writeStatus(ctx, cfg, state));
     let stop;
     let stopActivity;
     let stopUsage;
