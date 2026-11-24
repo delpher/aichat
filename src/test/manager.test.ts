@@ -7,7 +7,7 @@ import test from "node:test";
 import { Actions, readSettings, startCommand, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
-import { flagValue, joinCommand, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
+import { flagValue, joinCommand, opencodeModel, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
 import { replaceToken } from "../manager/token.js";
@@ -983,4 +983,39 @@ test("manager folders: a TOML table's array, set or removed", () => {
   assert.equal(withTomlTableArray("", "t", "k", ["a"]), '\n[t]\nk = ["a"]\n');
   assert.equal(withTomlTableArray('[t]\nk = [\n  "a",\n]\ny = 1', "t", "k", ["b"]), '[t]\nk = ["b"]\ny = 1');
   assert.equal(withTomlTableArray('[t]\nk = ["a"]\n[u]', "t", "k", []), "[t]\n[u]");
+});
+
+test("manager settings: an OpenCode model with its level pasted in says where the level goes", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
+  assert.throws(() => writeAgentSettings(agent, root, { model: "litellm/main-model#high" }), (e: Error & { field?: string }) => e.field === "model" && /у полі Effort/.test(e.message));
+});
+
+test("manager settings: OpenCode effort alone builds on the model inherited from opencode.jsonc (antigravity-alexey, 3506)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  writeFileSync(join(root, "opencode", "opencode.jsonc"), '{ "model": "litellm/main-model#high", // the profile\n}');
+  const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
+  writeAgentSettings(agent, root, { effort: "max" });
+  assert.equal(JSON.parse(readFileSync(join(root, "opencode", "aichat.config.json"), "utf8")).model, "litellm/main-model#max");
+  assert.ok(readFileSync(join(root, "opencode", "opencode.jsonc"), "utf8").includes("// the profile"), "opencode.jsonc untouched");
+});
+
+test("manager settings: an OpenCode model comes from where the plugin takes it (opencode-alexey, 3508)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const dir = join(root, "opencode");
+  writeFileSync(join(dir, "opencode.jsonc"), '{ "model": "p/top", "default_agent": "aichat", "agents": { "aichat": { "model": "p/agent#low" } } }');
+  assert.deepEqual(opencodeModel(dir, {}), { ref: "p/agent#low", source: "opencode.jsonc, агент aichat" });
+  assert.deepEqual(opencodeModel(dir, { agent: "other" }), { ref: "p/top", source: "opencode.jsonc" });
+  assert.deepEqual(opencodeModel(dir, { model: "p/own" }), { ref: "p/own", source: "aichat.config.json" });
+  const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
+  const items = readAgentSettings(agent, root).sections.find((s) => s.id === "model")!.items;
+  assert.deepEqual([items.find((i) => i.key === "model")?.value, items.find((i) => i.key === "effort")?.value], ["p/agent", "low"]);
+  writeAgentSettings(agent, root, { effort: "max" });
+  assert.equal(JSON.parse(readFileSync(join(dir, "aichat.config.json"), "utf8")).model, "p/agent#max");
 });

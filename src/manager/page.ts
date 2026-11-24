@@ -1989,6 +1989,7 @@ function actionsFor(a) {
 // settings saved together through the form; "secret" (token) and "dirs" (folders) are actions of their own (3c)
 const FORM_TYPES = new Set(["enum", "bool", "int", "text", "list"]);
 const inForm = (it) => Boolean(it && it.edit && FORM_TYPES.has(it.edit.type));
+const currentType = () => (agents.find((x) => x.folder === selected) || {}).type;
 
 function hasEditableSettings(d) {
   return Boolean(d && Array.isArray(d.sections) && d.sections.some((s) => (s.items || []).some(inForm)));
@@ -2382,6 +2383,9 @@ function buildEditControl(item, row) {
     if (key === "command" && item.note === "типова") {
       inp.placeholder = "типова: " + String(item.value || "");
       block = true;
+    } else if (key === "model" && currentType() === "opencode") {
+      // OpenCode's model reference is provider/model; its level (#high) has a field of its own (opencode-alexey, 3498)
+      inp.placeholder = "провайдер/модель, без # (рівень — у полі Effort)";
     } else if (spec.optional) {
       inp.placeholder = "не задано";
     }
