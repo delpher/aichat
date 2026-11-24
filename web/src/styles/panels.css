@@ -393,8 +393,19 @@
   font-weight: var(--weight-medium);
   cursor: pointer;
 }
-.manual[open] summary {
+/* only the summary of the open one: a folded «Вручну» inside an open guide keeps no gap (antigravity-alexey, 3561) */
+.manual[open] > summary {
   margin-bottom: var(--space-4);
+}
+/* a new token on top of the setup, the instructions folded under it (alexey, 3553) */
+.setup-token h3 {
+  margin: 0 0 var(--space-2);
+}
+.setup-token p {
+  margin: var(--space-2) 0 0;
+}
+.setup-guide .manual {
+  margin-top: var(--space-4);
 }
 .manual > .field {
   margin-bottom: var(--space-4);
