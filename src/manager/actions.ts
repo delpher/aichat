@@ -73,9 +73,23 @@ export const systemRunner: Runner = {
         if (probe.error) return reject(new ActionError("потрібен tmux: встановіть його (наприклад, sudo apt install tmux)", 501));
         if (tmux(["has-session", "-t", `=${session}`]).status === 0)
           return reject(new ActionError(`tmux-сесія ${session} уже є: tmux attach -t ${session}`, 409));
-        const started = tmux(["new-session", "-d", "-s", session, "-c", dir, command]);
+        // sh -c as separate words: tmux runs them as they are, not through the user's shell (which may be fish). The pause
+        // keeps a session whose command failed, so its error can be read instead of vanishing with it (alexey, 3631)
+        const started = tmux(["new-session", "-d", "-s", session, "-c", dir, "sh", "-c", `(${command})${TMUX_PAUSE}`]);
         if (started.status !== 0) return reject(new ActionError(`tmux не запустив сесію: ${(started.stderr || "").trim()}`, 502));
-        return resolve();
+        // on a desktop also open a window attached to it, as Windows opens a tab; over SSH the page names the session
+        const windows = attachTerminals(session);
+        const next = (i: number): void => {
+          if (i >= windows.length) return resolve();
+          const [exe, args] = windows[i];
+          const child = spawn(exe, args, { cwd: dir, detached: true, stdio: "ignore" });
+          child.once("error", () => next(i + 1));
+          child.once("spawn", () => {
+            child.unref();
+            resolve();
+          });
+        };
+        return next(0);
       }
       tryStart("wt.exe", ["-w", "0", "nt", "-d", dir, "--title", title, ...ps], () =>
         tryStart("cmd.exe", ["/c", "start", JSON.stringify(title), "/D", dir, ...ps]),
@@ -302,9 +316,30 @@ export function tmuxSession(title: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
+/** Appended to a command run in tmux: when it ends, say so with its exit code and wait, so the session stays to be read. */
+export const TMUX_PAUSE = `; code=$?; printf '\\n[Завершено, код %s. Enter — закрити]\\n' "$code"; read _`;
+
+/**
+ * The terminal windows to try, in order, for attaching to tmux `session` on a desktop; none without a display (SSH,
+ * a server). `=` makes tmux match the name exactly.
+ */
+export function attachTerminals(session: string, env: NodeJS.ProcessEnv = process.env): [string, string[]][] {
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return [];
+  const attach = ["tmux", "attach", "-t", `=${session}`];
+  return [
+    ["x-terminal-emulator", ["-e", ...attach]],
+    ["gnome-terminal", ["--", ...attach]],
+    ["konsole", ["-e", ...attach]],
+    ["xfce4-terminal", ["-x", ...attach]],
+    ["kitty", attach],
+    ["alacritty", ["-e", ...attach]],
+    ["xterm", ["-e", ...attach]],
+  ];
+}
+
 /** What the page says after opening a terminal: Windows opens a tab; elsewhere it names the tmux session to attach to. */
 export function terminalNote(title: string, platform = process.platform): string {
   if (platform === "win32") return "";
   const session = tmuxSession(title);
-  return ` Сесія tmux ${session}: tmux attach -t ${session} (Ctrl+B, D — від'єднатися, агент працює далі).`;
+  return ` Сесія tmux ${session} (на робочому столі відкривається вікно; інакше: tmux attach -t ${session}; Ctrl+B, D — від'єднатися, агент працює далі).`;
 }

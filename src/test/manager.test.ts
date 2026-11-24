@@ -5,7 +5,7 @@ import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { Actions, readSettings, startCommand, terminalNote, tmuxSession, type Runner } from "../manager/actions.js";
+import { Actions, TMUX_PAUSE, attachTerminals, readSettings, startCommand, terminalNote, tmuxSession, type Runner } from "../manager/actions.js";
 import { CLAUDE_START_PS1, startScriptCommand, startScriptName, writeStartScript } from "../manager/claude-start.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
@@ -1053,6 +1053,21 @@ test("manager on Linux: tmux session names and notes", () => {
   assert.equal(tmuxSession("a.b: сесія"), "aichat-a-b-session");
   assert.match(terminalNote("claude-test", "linux"), /tmux attach -t aichat-claude-test/);
   assert.equal(terminalNote("claude-test", "win32"), "");
+});
+
+test("manager on Linux: a window on a desktop, none over SSH; a failed command stays readable", () => {
+  // over SSH or on a server there is no window to open: the page names the session instead
+  assert.deepEqual(attachTerminals("aichat-x-session", {}), []);
+  const desk = attachTerminals("aichat-x-session", { WAYLAND_DISPLAY: "wayland-0" });
+  assert.deepEqual(desk[0], ["x-terminal-emulator", ["-e", "tmux", "attach", "-t", "=aichat-x-session"]]);
+  assert.deepEqual(desk[1], ["gnome-terminal", ["--", "tmux", "attach", "-t", "=aichat-x-session"]]);
+  assert.ok(desk.every(([, args]) => args.at(-1) === "=aichat-x-session"));
+  assert.equal(attachTerminals("s", { DISPLAY: ":0" }).length, desk.length);
+
+  if (process.platform === "win32") return;
+  // the pause names the exit code and waits for Enter (here stdin is closed, so read ends at once)
+  const out = spawnSync("sh", ["-c", `echo boom; (exit 3)${TMUX_PAUSE}`], { encoding: "utf8", input: "" });
+  assert.match(out.stdout, /boom\n\n\[Завершено, код 3\. Enter — закрити\]\n/);
 });
 
 test("manager on Linux: start.sh does what start.ps1 does", { skip: process.platform === "win32" && "runs where sh is the shell (CI on Linux)" }, () => {
