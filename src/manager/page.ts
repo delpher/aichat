@@ -394,7 +394,7 @@ try {
   .icon-btn.plain {
     border-color: transparent;
   }
-  input[type="text"], input[type="number"], select {
+  input[type="text"], input[type="password"], input[type="number"], select {
     height: var(--control-h-sm);
     padding: 0 10px;
     border: 1px solid var(--line-2);
@@ -403,12 +403,12 @@ try {
     font-size: var(--text-sm);
     transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
   }
-  input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus, select:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
-  input[type="text"]::placeholder, input[type="number"]::placeholder {
+  input[type="text"]::placeholder, input[type="password"]::placeholder, input[type="number"]::placeholder {
     color: var(--muted);
   }
   input[type="checkbox"] {
@@ -1706,7 +1706,7 @@ const MCP_STATES = {
   failed: ["помилка", "bad", true],
   unknown: ["стан невідомий", "muted-pill", false],
 };
-const CODE_KEYS = new Set(["dir", "url", "tokenFile", "command", "start", "startCommand", "codexHome", "appDataDir", "configFile", "adapterFile", "model", "provider"]);
+const CODE_KEYS = new Set(["dir", "url", "tokenFile", "command", "start", "startCommand", "codexHome", "appDataDir", "configFile", "adapterFile", "model", "provider", "model_provider", "running"]);
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
@@ -1998,16 +1998,28 @@ function hasEditableSettings(d) {
 /** An action of the settings tab (token, folders, MCP): its answer redraws the tab and says what happened. */
 async function settingsAction(path, body, waitText) {
   const folder = selected;
+  if (!folder) return { ok: false, data: {} };
   say(waitText, "", "settings-msg");
-  const res = await postJson("/api/agents/" + encodeURIComponent(folder) + path, body);
+  let res;
+  try {
+    res = await postJson("/api/agents/" + encodeURIComponent(folder) + path, body);
+  } catch (e) {
+    if (selected === folder) say((e && e.message) || "Помилка запиту.", "bad", "settings-msg");
+    return { ok: false, data: {} };
+  }
   if (selected !== folder) return res;
   if (!res.ok) {
     say(res.data.error || res.status + " " + res.statusText, "bad", "settings-msg");
     return res;
   }
-  if (res.data.settings) renderSettings(res.data.settings);
-  else loadSettings(folder, true);
+  if (res.data.settings) {
+    ++settingsSeq;
+    renderSettings(res.data.settings);
+  } else {
+    loadSettings(folder, true);
+  }
   say(res.data.message || "Готово.", "ok", "settings-msg");
+  if (path === "/token") load();
   return res;
 }
 
@@ -2039,6 +2051,7 @@ function tokenControl(item) {
   });
   cancel.addEventListener("click", close);
   const send = async () => {
+    if (save.disabled) return;
     const token = inp.value;
     inp.value = ""; // the token leaves the page with this request and is not kept in it
     save.disabled = true;
@@ -2051,7 +2064,10 @@ function tokenControl(item) {
   };
   save.addEventListener("click", send);
   inp.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") send();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      send();
+    }
     if (e.key === "Escape") close();
   });
   form.append(inp, save, cancel);
@@ -2073,7 +2089,15 @@ function dirsControl(item) {
     rm.type = "button";
     rm.title = "Прибрати доступ до " + d;
     rm.setAttribute("aria-label", "Прибрати " + d);
-    rm.addEventListener("click", () => settingsAction("/dirs", { remove: d }, "Прибираю теку…"));
+    rm.addEventListener("click", async () => {
+      if (rm.disabled) return;
+      rm.disabled = true;
+      try {
+        await settingsAction("/dirs", { remove: d }, "Прибираю теку…");
+      } finally {
+        rm.disabled = false;
+      }
+    });
     row.append(rm);
     list.append(row);
   }
@@ -2082,8 +2106,12 @@ function dirsControl(item) {
   const form = el("div", null, "inline-form");
   form.hidden = true;
   const path = el("input", null, "edit-input mono");
+  path.type = "text";
+  path.autocomplete = "off";
   path.placeholder = "повний шлях до теки";
   const again = el("input", null, "edit-input mono");
+  again.type = "text";
+  again.autocomplete = "off";
   again.placeholder = "той самий шлях ще раз";
   const add = el("button", "Дати доступ", "btn primary xs");
   add.type = "button";
@@ -2101,7 +2129,8 @@ function dirsControl(item) {
     path.focus();
   });
   cancel.addEventListener("click", close);
-  add.addEventListener("click", async () => {
+  const submit = async () => {
+    if (add.disabled) return;
     add.disabled = true;
     try {
       const res = await settingsAction("/dirs", { add: path.value, confirm: again.value }, "Додаю теку…");
@@ -2109,6 +2138,21 @@ function dirsControl(item) {
     } finally {
       add.disabled = false;
     }
+  };
+  add.addEventListener("click", submit);
+  path.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      again.focus();
+    }
+    if (e.key === "Escape") close();
+  });
+  again.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+    if (e.key === "Escape") close();
   });
   form.append(path, again, add, cancel);
   form.append(el("span", "Агент отримає доступ до цієї теки. Щоб не помилитися, введіть шлях двічі.", "field-hint"));
@@ -2546,6 +2590,7 @@ async function saveSettings(restart) {
     editingSettings = false;
     savingSettings = false;
     if (res.data.settings) {
+      ++settingsSeq;
       lastSettings = res.data.settings;
       renderSettings(lastSettings);
     } else {
