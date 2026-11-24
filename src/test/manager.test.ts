@@ -7,7 +7,7 @@ import test from "node:test";
 import { Actions, readSettings, startCommand, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
-import { parseJsonc, parseTomlLite, readAgentSettings, writeAgentSettings } from "../manager/settings.js";
+import { flagValue, joinCommand, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
 
@@ -398,10 +398,10 @@ test("manager settings: the page changes only what may be changed, checked first
   const view = readAgentSettings(agent("agy"), root);
   const edits = Object.fromEntries(view.sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => [i.key, i.edit!.type]));
   assert.deepEqual(edits, {
-    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int",
+    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text",
   });
   const claudeEdits = readAgentSettings(agent("claude"), root).sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => i.key);
-  assert.deepEqual(claudeEdits, ["command"]);
+  assert.deepEqual(claudeEdits.sort(), ["command", "effort", "model"]);
 
   assert.match(writeAgentSettings(agent("agy"), root, { wake: "mention", rooms: "#dev, lobby dev", attachPort: null, maxWakesPerMinute: "20" }, agents()), /Збережено/);
   assert.deepEqual(read(), { url: broker.url, tokenFile: "token.txt", owners: ["me"], wake: "mention", rooms: ["dev", "lobby"], maxWakesPerMinute: 20 });
@@ -712,4 +712,62 @@ test("manager wizard: a Claude Code agent gets the start script that resumes its
   rmSync(join(root, "claude-bot", "start.ps1"));
   writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { "claude-bot": "claude --model opus" } }));
   assert.equal(startCommand(agent, readSettings(root)), "claude --model opus --dangerously-load-development-channels server:aichat");
+});
+
+test("manager settings: model and effort for every kind, each in its own place (alexey, 3447)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const codexHome = join(root, "codex-home");
+  mkdirSync(codexHome);
+  const toml = ['# my profile', 'sandbox_mode = "workspace-write"', "", "[mcp_servers.aichat]", 'command = "node"', ""].join("\n");
+  writeFileSync(join(codexHome, "config.toml"), toml);
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, codexHome }));
+  writeFileSync(join(root, "opencode", "aichat.config.json"), JSON.stringify({ url: broker.url, model: "litellm/main-model#high" }));
+  const agent = (folder: string) => discover(root).find((a) => a.agent.folder === folder)!.agent;
+  const items = (folder: string) => readAgentSettings(agent(folder), root).sections.find((s) => s.id === "model")!.items;
+  const item = (folder: string, key: string) => items(folder).find((i) => i.key === key);
+
+  // Claude: flags of the start command
+  assert.equal(item("claude", "effort")?.edit?.type, "enum");
+  writeAgentSettings(agent("claude"), root, { model: "opus", effort: "high" });
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")).start.claude, "claude --model opus --effort high");
+  assert.deepEqual([item("claude", "model")?.value, item("claude", "effort")?.value], ["opus", "high"]);
+  writeAgentSettings(agent("claude"), root, { model: "sonnet", effort: null });
+  assert.equal(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")).start.claude, "claude --model sonnet");
+  assert.throws(() => writeAgentSettings(agent("claude"), root, { effort: "huge" }), /одне з low, medium, high, xhigh, max/);
+  assert.throws(() => writeAgentSettings(agent("claude"), root, { model: "opus; rm -rf" }), /лише літери/);
+
+  // Codex: its config.toml, only the model lines change
+  writeAgentSettings(agent("codex"), root, { model: "gpt-x", effort: "high" });
+  let text = readFileSync(join(codexHome, "config.toml"), "utf8");
+  assert.equal(text, ['# my profile', 'sandbox_mode = "workspace-write"', 'model = "gpt-x"', 'model_reasoning_effort = "high"', "", "[mcp_servers.aichat]", 'command = "node"', ""].join("\n"));
+  assert.deepEqual([item("codex", "model")?.value, item("codex", "effort")?.value], ["gpt-x", "high"]);
+  assert.deepEqual((item("codex", "effort")?.edit as { suggestions?: string[] }).suggestions, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+  writeAgentSettings(agent("codex"), root, { effort: null });
+  text = readFileSync(join(codexHome, "config.toml"), "utf8");
+  assert.ok(!text.includes("model_reasoning_effort") && text.includes('model = "gpt-x"') && text.includes("[mcp_servers.aichat]"));
+
+  // OpenCode: one reference, provider/model#variant, in aichat.config.json (the plugin reads it every turn)
+  assert.deepEqual([item("opencode", "model")?.value, item("opencode", "effort")?.value], ["litellm/main-model", "high"]);
+  writeAgentSettings(agent("opencode"), root, { effort: "max" });
+  assert.equal(JSON.parse(readFileSync(join(root, "opencode", "aichat.config.json"), "utf8")).model, "litellm/main-model#max");
+  writeAgentSettings(agent("opencode"), root, { model: "other/m", effort: null });
+  assert.equal(JSON.parse(readFileSync(join(root, "opencode", "aichat.config.json"), "utf8")).model, "other/m");
+  assert.throws(() => writeAgentSettings(agent("opencode"), root, { model: "no-provider" }), /провайдер\/модель/);
+  writeAgentSettings(agent("opencode"), root, { model: null });
+  assert.equal(JSON.parse(readFileSync(join(root, "opencode", "aichat.config.json"), "utf8")).model, undefined);
+
+  // agy: model in aichat.config.json
+  writeAgentSettings(agent("agy"), root, { model: "gemini-x-high" });
+  assert.equal(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).model, "gemini-x-high");
+  assert.equal(item("agy", "model")?.edit?.type, "text");
+});
+
+test("manager settings: command words and TOML lines", () => {
+  assert.deepEqual(splitCommand('claude --add-dir "C:/My Dir" --model=opus'), ["claude", "--add-dir", "C:/My Dir", "--model=opus"]);
+  assert.equal(joinCommand(withFlag(splitCommand('claude --add-dir "C:/My Dir" --model=opus'), "--model", "sonnet")), 'claude --add-dir "C:/My Dir" --model sonnet');
+  assert.equal(flagValue(["claude", "--effort", "max"], "--effort"), "max");
+  assert.equal(withTomlTop("", "model", "x"), 'model = "x"');
+  assert.equal(withTomlTop('a = 1\r\n[t]\r\nmodel = "in table"', "model", "top"), 'a = 1\r\nmodel = "top"\r\n[t]\r\nmodel = "in table"');
 });
