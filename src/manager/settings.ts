@@ -320,11 +320,12 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     configFiles.push(ocFile);
     const oc = parseJsonc(readText(ocFile) ?? readText(at("opencode.json")) ?? "") ?? {};
     add(model, "agent", "Агент OpenCode", config.agent ?? oc.default_agent);
-    // the plugin asks for aichat.config.json's model on every turn, else the agent's own (opencode-channel routedModel)
-    const ref = str(config.model) ?? str(oc.model);
+    // the model the plugin really asks for, in its own order (opencode-channel routedModel; opencode-alexey, 3508)
+    const { ref, source } = opencodeModel(agent.dir, config);
     const [base, variant] = ref ? ref.split("#") : [null, null];
-    model.push({ key: "model", label: "Модель", value: base ?? null, note: config.model ? CONFIGURED : ref ? "opencode.jsonc (успадковано)" : CONFIGURED });
-    model.push({ key: "effort", label: "Effort (варіант)", value: variant ?? null, note: config.model ? CONFIGURED : ref ? "opencode.jsonc (успадковано)" : CONFIGURED });
+    const note = source === "aichat.config.json" ? CONFIGURED : source ? `${source} (успадковано)` : CONFIGURED;
+    model.push({ key: "model", label: "Модель", value: base ?? null, note });
+    model.push({ key: "effort", label: "Effort (варіант)", value: variant ?? null, note });
     const block = (oc.mcp ?? {}) as Record<string, unknown>;
     const map = (block.servers && typeof block.servers === "object" ? block.servers : block) as Record<string, Record<string, unknown>>;
     mcp = mcpFromMap(map, "opencode.jsonc", (_, e) => !(e.disabled === true || e.enabled === false));
@@ -542,10 +543,8 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
   }
   // OpenCode: model and effort are one reference, provider/model#variant
   if ("model" in ocRef || "effort" in ocRef) {
-    // what the form showed: aichat.config.json's model, else the one inherited from opencode.jsonc (antigravity, 3506)
-    const own = str((readJson(join(agent.dir, "aichat.config.json")) ?? {}).model);
-    const inherited = str((parseJsonc(readText(join(agent.dir, "opencode.jsonc")) ?? readText(join(agent.dir, "opencode.json")) ?? "") ?? {}).model);
-    const current = own ?? inherited ?? "";
+    // what the form showed, in the plugin's own order (antigravity-alexey, 3506; opencode-alexey, 3508)
+    const current = opencodeModel(agent.dir, readJson(join(agent.dir, "aichat.config.json")) ?? {}).ref ?? "";
     const [base, variant] = current ? current.split("#") : ["", ""];
     const m = "model" in ocRef ? ocRef.model : base || null;
     const e = "effort" in ocRef ? ocRef.effort : variant || null;
@@ -663,4 +662,21 @@ export function withTomlTop(text: string, key: string, value: string | undefined
     lines.splice(pos, 0, line);
   }
   return lines.join(eol);
+}
+
+/**
+ * The model an OpenCode agent runs, in the order its plugin asks (opencode-channel routedModel): aichat.config.json's
+ * model, then the model of its OpenCode agent (`agents.<config.agent ?? default_agent>.model`), then opencode.jsonc's
+ * own model. `source` says which; both null when none is set (OpenCode's default).
+ */
+export function opencodeModel(dir: string, config: Record<string, unknown>): { ref: string | null; source: string | null } {
+  const own = str(config.model);
+  if (own) return { ref: own, source: "aichat.config.json" };
+  const oc = parseJsonc(readText(join(dir, "opencode.jsonc")) ?? readText(join(dir, "opencode.json")) ?? "") ?? {};
+  const name = str(config.agent) ?? str(oc.default_agent);
+  const agents = (oc.agents ?? oc.agent ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  const agentModel = name ? str(agents[name]?.model) : null;
+  if (agentModel) return { ref: agentModel, source: `opencode.jsonc, агент ${name}` };
+  const top = str(oc.model);
+  return top ? { ref: top, source: "opencode.jsonc" } : { ref: null, source: null };
 }
