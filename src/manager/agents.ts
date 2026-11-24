@@ -15,6 +15,8 @@ export interface AdapterStatus {
   connected?: boolean;
   updatedAt?: string;
   version?: string;
+  /** OpenCode: the model session the plugin keeps the agent in (a shell-safe id only). */
+  sessionID?: string;
 }
 
 /** One agent folder as the manager shows it; never holds the token. */
@@ -137,6 +139,8 @@ export function readAgent(dir: string): { agent: LocalAgent; secrets: AgentSecre
       connected: typeof status.connected === "boolean" ? status.connected : undefined,
       updatedAt: typeof status.updatedAt === "string" ? status.updatedAt : undefined,
       version: typeof status.version === "string" ? status.version : undefined,
+      // it goes into a command line: only an id that needs no quoting
+      sessionID: typeof status.sessionID === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(status.sessionID) ? status.sessionID : undefined,
     };
   }
   return { agent, secrets: { token } };

@@ -242,6 +242,29 @@ test("manager actions: start in a terminal or in the background, stop only what 
   assert.equal(calls.at(-1), "terminal agy agy: сесія: node ./agy-channel.mjs attach --config ./aichat.config.json");
   await assert.rejects(actions.session("claude"), /не запущений/);
 
+  // OpenCode lives in its background server: a closed terminal leaves it online, and a session opens a new client
+  // in its folder, in the agent's own model session (opencode-alexey, 3659-3660)
+  await assert.rejects(actions.session("opencode", false), /не запущений/);
+  assert.match(await actions.session("opencode", true), /Відкрито сесію/);
+  assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode");
+  mkdirSync(join(root, "opencode", ".aichat"), { recursive: true });
+  writeFileSync(join(root, "opencode", ".aichat", "status.json"), JSON.stringify({ surface: "server", sessionID: "ses_A1-b2" }));
+  await actions.session("opencode", true);
+  assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode --session ses_A1-b2");
+  // an id that would need quoting never reaches the command line
+  writeFileSync(join(root, "opencode", ".aichat", "status.json"), JSON.stringify({ sessionID: "x; rm -rf ~" }));
+  await actions.session("opencode", true);
+  assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode");
+  // the person's own command is kept, and its own session choice too
+  writeFileSync(join(root, "opencode", ".aichat", "status.json"), JSON.stringify({ sessionID: "ses_1" }));
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { opencode: "opencode --auto" } }));
+  await actions.session("opencode", true);
+  assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode --auto --session ses_1");
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { opencode: "opencode -c" } }));
+  await actions.session("opencode", true);
+  assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode -c");
+  rmSync(join(root, ".manager.json"));
+
   await actions.stop("codex");
   await assert.rejects(actions.session("codex"), /не запущений/);
   await assert.rejects(new Actions(root, fakeRunner({ dies: true }).runner).start("codex"), /одразу завершився: дивіться лог background\.log/);

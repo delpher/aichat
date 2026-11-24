@@ -212,7 +212,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
               : act[2] === "stop"
                 ? await actions.stop(folder)
                 : act[2] === "session"
-                  ? await actions.session(folder)
+                  ? await actions.session(folder, online)
                   : act[2] === "update"
                   ? await actions.update(folder, view.broker?.version)
                   : actions.remove(folder, String(body.confirm ?? ""), online);
