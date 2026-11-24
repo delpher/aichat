@@ -636,7 +636,9 @@ test("manager wizard: a failure after the installer also takes back the profile 
   assert.deepEqual(readdirSync(old), ["auth.json"]);
   broken = false;
   const done = await installAgent(root, req(join(base, "it's-home")), deps);
-  assert.match(done.next[0], /\$env:CODEX_HOME='.*it''s-home'; codex login/);
+  // the path quoted for the shell of the OS: PowerShell doubles the quote, a POSIX shell closes, escapes, reopens
+  if (process.platform === "win32") assert.match(done.next[0], /\$env:CODEX_HOME='.*it''s-home'; codex login/);
+  else assert.ok(done.next[0].endsWith(`CODEX_HOME='${join(base, "it")}'\\''s-home' codex login`), done.next[0]);
 });
 
 test("manager wizard: one installation at a time (codex-alexey, 3415)", async (t) => {
