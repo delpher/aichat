@@ -11,6 +11,7 @@ import { flagValue, joinCommand, parseJsonc, parseTomlLite, readAgentSettings, s
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
 import { replaceToken } from "../manager/token.js";
+import { toggleMcp, withDisabledFlag, withJsoncServerDisabled, withTomlServerEnabled } from "../manager/mcp.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -337,7 +338,7 @@ test("manager settings: what each agent is set up for, from its own files, with 
   assert.equal(item(agy, "connection", "tokenFile")?.note, "у файлі");
   assert.equal(item(agy, "launch", "attachPort")?.value, 60620);
   assert.equal(item(agy, "launch", "start")?.value, "resumed");
-  assert.deepEqual(agy.mcp.find((m) => m.name === "aichat"), { name: "aichat", kind: "builtin", enabled: true, source: "адаптер (при старті сесії)", state: "connected" });
+  assert.deepEqual(agy.mcp.find((m) => m.name === "aichat"), { name: "aichat", kind: "builtin", enabled: true, source: "адаптер (при старті сесії)", state: "connected", toggle: false });
   assert.equal(agy.restartNeeded, null, "no adapter.lock: the start time is unknown");
 
   const codex = settingsOf("codex");
@@ -348,8 +349,8 @@ test("manager settings: what each agent is set up for, from its own files, with 
   assert.equal(item(codex, "behavior", "maxBatch")?.value, 5);
   assert.equal(item(codex, "connection", "tokenFile")?.note, "файлу немає");
   assert.deepEqual(codex.mcp, [
-    { name: "github", kind: "local", enabled: true, source: "config.toml" },
-    { name: "docs", kind: "remote", enabled: false, source: "config.toml" },
+    { name: "github", kind: "local", enabled: true, source: "config.toml", toggle: true },
+    { name: "docs", kind: "remote", enabled: false, source: "config.toml", toggle: true },
   ]);
 
   const claude = settingsOf("claude");
@@ -842,4 +843,78 @@ test("manager token: replaced only with one the broker gives this agent, written
   const bad = await post({ token: "new-claude" });
   assert.equal(bad.status, 400);
   assert.equal(JSON.parse(bad.text).field, "token");
+});
+
+test("manager MCP: switched on and off in the agent's own file only, never AIChat's own (3c.2)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const agent = (folder: string) => discover(root).find((a) => a.agent.folder === folder)!.agent;
+  const entry = (folder: string, name: string) => readAgentSettings(agent(folder), root).mcp.find((m) => m.name === name);
+
+  // Claude Code: settings.local.json lists, .mcp.json untouched
+  const mcpFile = join(root, "claude", ".mcp.json");
+  const mcp = JSON.parse(readFileSync(mcpFile, "utf8"));
+  mcp.mcpServers.docs = { command: "npx", args: ["docs-mcp"] };
+  writeFileSync(mcpFile, JSON.stringify(mcp));
+  mkdirSync(join(root, "claude", ".claude"));
+  writeFileSync(join(root, "claude", ".claude", "settings.local.json"), JSON.stringify({ enabledMcpjsonServers: ["aichat", "docs"], hooks: { x: 1 } }));
+  assert.equal(entry("claude", "aichat")?.toggle, false);
+  assert.equal(entry("claude", "docs")?.toggle, true);
+  assert.match(toggleMcp(agent("claude"), root, "docs", false), /docs вимкнено/);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "claude", ".claude", "settings.local.json"), "utf8")), {
+    enabledMcpjsonServers: ["aichat"], disabledMcpjsonServers: ["docs"], hooks: { x: 1 },
+  });
+  assert.equal(entry("claude", "docs")?.enabled, false);
+  toggleMcp(agent("claude"), root, "docs", true);
+  assert.equal(entry("claude", "docs")?.enabled, true);
+  assert.throws(() => toggleMcp(agent("claude"), root, "aichat", false), /канал AIChat/);
+  assert.throws(() => toggleMcp(agent("claude"), root, "nope", false), /немає MCP-сервера/);
+
+  // Codex: enabled = false in its table of its own config.toml; other tables and comments as they were
+  const home = join(root, "codex-home");
+  mkdirSync(home);
+  const toml = ["# profile", "[mcp_servers.aichat]", 'command = "node"', "", "[mcp_servers.github] # code", 'command = "npx"', "", "[tui]", "x = 1"].join("\n");
+  writeFileSync(join(home, "config.toml"), toml);
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, codexHome: home }));
+  toggleMcp(agent("codex"), root, "github", false);
+  assert.equal(readFileSync(join(home, "config.toml"), "utf8"), toml.replace("[mcp_servers.github] # code\n", "[mcp_servers.github] # code\nenabled = false\n"));
+  assert.equal(entry("codex", "github")?.enabled, false);
+  toggleMcp(agent("codex"), root, "github", true);
+  assert.equal(readFileSync(join(home, "config.toml"), "utf8"), toml);
+  assert.throws(() => toggleMcp(agent("codex"), root, "aichat", false), /канал AIChat/);
+
+  // OpenCode: "disabled" on the server object, comments kept
+  const jsonc = [
+    "{",
+    '  "model": "litellm/m", // the model',
+    '  "mcp": {',
+    "    /* off on purpose */",
+    '    "gitlab": { "type": "local", "command": ["npx"], "disabled": true },',
+    '    "grafana": { "type": "remote", "url": "https://g/mcp" }',
+    "  }",
+    "}",
+  ].join("\n");
+  writeFileSync(join(root, "opencode", "opencode.jsonc"), jsonc);
+  toggleMcp(agent("opencode"), root, "grafana", false);
+  let text = readFileSync(join(root, "opencode", "opencode.jsonc"), "utf8");
+  assert.ok(text.includes('"grafana": { "disabled": true, "type": "remote", "url": "https://g/mcp" }') && text.includes("/* off on purpose */") && text.includes("// the model"), text);
+  toggleMcp(agent("opencode"), root, "gitlab", true);
+  text = readFileSync(join(root, "opencode", "opencode.jsonc"), "utf8");
+  assert.ok(text.includes('"gitlab": { "type": "local", "command": ["npx"], }') || text.includes('"gitlab": { "type": "local", "command": ["npx"] }'), text);
+  assert.deepEqual(readAgentSettings(agent("opencode"), root).mcp.map((m) => `${m.name}:${m.enabled}`), ["gitlab:true", "grafana:false"]);
+
+  // agy: its MCP file is shared by every agy profile
+  assert.throws(() => toggleMcp(agent("agy"), root, "aichat", false), /канал AIChat/);
+});
+
+test("manager MCP: TOML table switch and JSONC edits by themselves", () => {
+  assert.equal(withTomlServerEnabled('[mcp_servers."my server"]\nenabled = true\nx = 1', "my server", false), '[mcp_servers."my server"]\nenabled = false\nx = 1');
+  assert.throws(() => withTomlServerEnabled("[tui]", "x", false), /немає \[mcp_servers\.x\]/);
+  assert.equal(withJsoncServerDisabled('{"mcp":{"servers":{"a":{}}}}', "a", true), '{"mcp":{"servers":{"a":{ "disabled": true }}}}');
+  assert.equal(withJsoncServerDisabled('{"mcp":{"a":{ "disabled": true }}}', "a", false), '{"mcp":{"a":{}}}');
+  // a multi-line object: the flag is a line of its own, and taking it back leaves no stray comma
+  const multi = '{\n  "type": "remote",\n  "url": "u",\n  "disabled": true\n}';
+  assert.equal(withDisabledFlag(multi, false), '{\n  "type": "remote",\n  "url": "u"\n}');
+  assert.equal(withDisabledFlag(withDisabledFlag(multi, false), true), '{\n  "disabled": true,\n  "type": "remote",\n  "url": "u"\n}');
 });

@@ -46,6 +46,8 @@ export interface McpEntry {
   source: string;
   /** What the running adapter reports, when it does (`effective.mcp` in .aichat/status.json). */
   state?: "connected" | "failed" | "unknown";
+  /** The page may switch it on or off (POST /api/agents/<folder>/mcp, stage 3c.2); not for AIChat's own or global ones. */
+  toggle?: boolean;
 }
 
 export interface AgentSettings {
@@ -112,7 +114,7 @@ export function parseTomlLite(text: string): Record<string, Record<string, unkno
   for (let n = 0; n < lines.length; n++) {
     let line = lines[n].trim();
     if (!line || line.startsWith("#")) continue;
-    const header = /^\[([^\[\]]+)\]$/.exec(line);
+    const header = /^\[([^\[\]]+)\]\s*(?:#.*)?$/.exec(line);
     if (header) {
       current = tables[header[1].trim()] ??= {};
       continue;
@@ -384,6 +386,9 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
       { id: "launch", title: "Запуск", items: launch },
     ] as SettingsSection[]
   ).filter((s) => s.items.length);
+  // which servers the page may switch (3c.2): the agent's own files only; never AIChat's own channel
+  const ownFiles = new Set([".mcp.json", "opencode.jsonc", ...(agent.type === "codex" && str(config.codexHome) ? ["config.toml"] : [])]);
+  for (const m of mcp) m.toggle = ownFiles.has(m.source) && m.kind !== "builtin" && m.name !== "aichat";
   return { sections, mcp, restartNeeded };
 }
 
