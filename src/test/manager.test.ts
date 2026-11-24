@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -9,6 +9,7 @@ import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.
 import { overview, startManager } from "../manager/server.js";
 import { parseJsonc, parseTomlLite, readAgentSettings, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
+import { installAgent, installInfo } from "../manager/wizard.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -510,4 +511,152 @@ test("manager delivery: install checks the file against the broker's manifest, u
   assert.match(key, /^[0-9a-f]{32}$/);
   assert.equal(pageKey(root), key);
   assert.equal(installedFile("C:\\x\\dist\\manager\\server.js"), null);
+});
+
+test("manager wizard: connects an agent the broker already knows, with its token checked and kept apart", async (t) => {
+  const broker = await fakeBroker(); // tok-agy belongs to agy-bot, tok-claude to claude-bot
+  t.after(() => broker.server.close());
+  const root = mkdtempSync(join(tmpdir(), "aichat-wizard-"));
+  const secrets = mkdtempSync(join(tmpdir(), "aichat-secrets-"));
+  t.after(() => [root, secrets].forEach((d) => rmSync(d, { recursive: true, force: true })));
+  mkdirSync(join(root, ".manager"));
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  const files: Record<string, Buffer> = {
+    "agy-channel.mjs": Buffer.from("// agy"),
+    "opencode-channel.js": Buffer.from("// opencode"),
+    "claude-channel.mjs": Buffer.from("// claude"),
+    "aichat-hook.mjs": Buffer.from("// hook"),
+  };
+  const manifest = () => ({ version: "9.9.9", files: Object.fromEntries(Object.entries(files).map(([n, d]) => [n, { sha256: sha256(d), size: d.length }])) });
+  const get = async (url: string) => {
+    if (url.endsWith("/client/manifest.json")) return Buffer.from(JSON.stringify(manifest()));
+    const name = url.split("/client/")[1];
+    if (files[name]) return files[name];
+    throw new Error("404");
+  };
+  const runs: string[][] = [];
+  let installerFails = false;
+  const run = async (args: string[], cwd: string) => {
+    runs.push(args.map((a) => a.replace(root, "<root>").replace(secrets, "<secrets>")));
+    if (installerFails) return { code: 1, output: "boom" };
+    writeFileSync(join(cwd, "aichat.config.json"), JSON.stringify({ url: "x", paused: true }));
+    return { code: 0, output: "" };
+  };
+  const deps = { get, run, secretsDir: secrets };
+  const tries = (req: Record<string, unknown>, field: string | undefined, why: RegExp) =>
+    assert.rejects(installAgent(root, req, deps), (e: Error & { field?: string }) => e.field === field && why.test(e.message));
+
+  await tries({ type: "gpt", name: "agy-bot", token: "tok-agy" }, "type", /тип/);
+  await tries({ type: "agy", name: "bad name", token: "tok-agy" }, "name", /ім'я/);
+  await tries({ type: "agy", name: "agy-bot", token: "" }, "token", /потрібен токен/);
+  await tries({ type: "agy", name: "agy-bot", token: "nope" }, "token", /не прийняв/);
+  await tries({ type: "agy", name: "agy-bot", token: "tok-claude" }, "token", /агента «claude-bot», а не «agy-bot»/);
+  await tries({ type: "agy", name: "agy-bot", token: "tok-agy", profile: "antigravity-cli" }, "profile", /не antigravity-cli/);
+  // a file that is not what the manifest names: nothing is written
+  files["agy-channel.mjs"] = Buffer.from("// agy");
+  const real = files["agy-channel.mjs"];
+  const tampered = { ...deps, get: async (url: string) => (url.endsWith("agy-channel.mjs") ? Buffer.from("// evil") : get(url)) };
+  await assert.rejects(installAgent(root, { type: "agy", name: "agy-bot", token: "tok-agy" }, tampered), /SHA-256/);
+  assert.ok(!existsSync(join(root, "agy-bot")) && !existsSync(join(secrets, "aichat-agy-bot.token")));
+  // the installer fails: what this run made is taken back
+  installerFails = true;
+  await assert.rejects(installAgent(root, { type: "agy", name: "agy-bot", token: "tok-agy" }, deps), /кодом 1: boom/);
+  assert.ok(!existsSync(join(root, "agy-bot")) && !existsSync(join(secrets, "aichat-agy-bot.token")));
+  installerFails = false;
+
+  const agy = await installAgent(root, { type: "agy", name: "agy-bot", token: " tok-agy ", owners: "@alexey", rooms: "#dev lobby", attachPort: 60650 }, deps);
+  assert.equal(agy.folder, "agy-bot");
+  assert.equal(readFileSync(join(root, "agy-bot", "agy-channel.mjs"), "utf8"), real.toString());
+  assert.equal(readFileSync(join(secrets, "aichat-agy-bot.token"), "utf8"), "tok-agy\n");
+  assert.deepEqual(runs.at(-1), [
+    join("<root>", "agy-bot", "agy-channel.mjs"), "install", "--dir", join("<root>", "agy-bot"), "--profile", "aichat-agy-bot",
+    "--token-file", join("<secrets>", "aichat-agy-bot.token"), "--url", broker.url, "--owners", "alexey", "--rooms", "dev,lobby",
+  ]);
+  assert.equal(JSON.parse(readFileSync(join(root, "agy-bot", "aichat.config.json"), "utf8")).attachPort, 60650);
+  assert.match(agy.next.join(" "), /зніміть паузу/i);
+  assert.ok(!JSON.stringify(agy).includes("tok-agy"), "the token is not in the answer");
+  await tries({ type: "agy", name: "agy-bot", token: "tok-agy" }, "name", /уже є/);
+
+  // OpenCode: no installer; the wizard lays the files out itself
+  const oc = await installAgent(root, { type: "opencode", name: "claude-bot", token: "tok-claude" }, deps);
+  assert.equal(readFileSync(join(root, "claude-bot", ".opencode", "plugins", "aichat-channel", "index.js"), "utf8"), "// opencode");
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "claude-bot", "aichat.config.json"), "utf8")), {
+    url: broker.url.replace("http", "ws") + "/ws", tokenFile: join(secrets, "aichat-claude-bot.token"), wake: "always", delivery: "steer", paused: true, session: "resume", rooms: [],
+  });
+  assert.equal(oc.steps.length, 4);
+
+  const info = installInfo(root);
+  assert.equal(info.broker, broker.url);
+  assert.deepEqual(info.folders.sort(), ["agy-bot", "claude-bot"]);
+  assert.equal(info.defaults.profile, "aichat-{name}");
+  assert.equal(info.defaults.attachPort, 60610);
+});
+
+test("manager wizard: a failure after the installer also takes back the profile this run made (codex-alexey, 3413)", async (t) => {
+  const broker = await fakeBroker(); // tok-agy belongs to agy-bot
+  t.after(() => broker.server.close());
+  const base = mkdtempSync(join(tmpdir(), "aichat-wizard-rollback-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, "root");
+  mkdirSync(join(root, ".manager"), { recursive: true });
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  const adapter = Buffer.from("// codex");
+  const get = async (url: string) =>
+    url.endsWith("manifest.json")
+      ? Buffer.from(JSON.stringify({ version: "9.9.9", files: { "codex-channel.mjs": { sha256: sha256(adapter), size: adapter.length } } }))
+      : adapter;
+  let broken = true;
+  // what codex-channel's installer does: a profile in --home and the agent's config; here the config comes out broken
+  const run = async (args: string[], cwd: string) => {
+    const home = args[args.indexOf("--home") + 1];
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "config.toml"), "# profile");
+    writeFileSync(join(cwd, "aichat.config.json"), broken ? "{ not json" : "{}");
+    return { code: 0, output: "" };
+  };
+  const deps = { get, run, secretsDir: join(base, "secrets"), home: base };
+  const req = (codexHome: string) => ({ type: "codex", name: "agy-bot", token: "tok-agy", codexHome, attachPort: 60655 });
+
+  // a CODEX_HOME this run made goes away whole
+  const fresh = join(base, "codex-new");
+  await assert.rejects(installAgent(root, req(fresh), deps));
+  assert.ok(!existsSync(fresh) && !existsSync(join(root, "agy-bot")) && !existsSync(join(base, "secrets", "aichat-agy-bot.token")));
+  // one that was there keeps everything but the config.toml this run wrote, so the wizard can be run again
+  const old = join(base, "codex-old");
+  mkdirSync(old);
+  writeFileSync(join(old, "auth.json"), "{}");
+  await assert.rejects(installAgent(root, req(old), deps));
+  assert.deepEqual(readdirSync(old), ["auth.json"]);
+  broken = false;
+  const done = await installAgent(root, req(join(base, "it's-home")), deps);
+  assert.match(done.next[0], /\$env:CODEX_HOME='.*it''s-home'; codex login/);
+});
+
+test("manager wizard: one installation at a time (codex-alexey, 3415)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = mkdtempSync(join(tmpdir(), "aichat-wizard-one-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".manager"));
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  const adapter = Buffer.from("// agy");
+  const get = async (url: string) =>
+    url.endsWith("manifest.json")
+      ? Buffer.from(JSON.stringify({ version: "9.9.9", files: { "agy-channel.mjs": { sha256: sha256(adapter), size: adapter.length } } }))
+      : adapter;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const run = async (_args: string[], cwd: string) => {
+    await gate; // the first installer is still running
+    writeFileSync(join(cwd, "aichat.config.json"), "{}");
+    return { code: 0, output: "" };
+  };
+  const deps = { get, run, secretsDir: join(root, "secrets"), home: root };
+  const first = installAgent(root, { type: "agy", name: "agy-bot", token: "tok-agy" }, deps);
+  await new Promise((r) => setTimeout(r, 50));
+  await assert.rejects(installAgent(root, { type: "agy", name: "claude-bot", token: "tok-claude" }, deps), /уже триває інше встановлення/);
+  release();
+  assert.equal((await first).folder, "agy-bot");
+  // and the next one may go
+  assert.equal((await installAgent(root, { type: "agy", name: "claude-bot", token: "tok-claude" }, deps)).folder, "claude-bot");
 });
