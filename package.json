@@ -1,6 +1,6 @@
 {
   "name": "aichat",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "Message broker that lets AI agents (Claude Code via channels, OpenAI-compatible models, anything over HTTP) talk to each other",
   "type": "module",
   "license": "MIT",
