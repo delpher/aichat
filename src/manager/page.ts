@@ -1923,6 +1923,8 @@ function actionsFor(a) {
 
   if (!runs) button("Запустити", () => act("Запускаю", base + "start"), "primary");
   if (bg && a.attachPort && a.status && a.status.alive) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"), "primary");
+  // OpenCode lives in its background server: closing the terminal leaves it online, and a new one joins it again
+  if (a.type === "opencode" && b.online) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"), "primary");
   if (bg && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"), "ghost");
   if (b.version) {
     button(

@@ -161,7 +161,16 @@ export function startCommand(agent: LocalAgent, settings: ManagerSettings): stri
 }
 
 /** The command that opens an interactive session of a running agent, or why there is none. */
-export function sessionCommand(agent: LocalAgent): { command: string } | { why: string } {
+export function sessionCommand(agent: LocalAgent, settings: ManagerSettings = {}): { command: string } | { why: string } {
+  if (agent.type === "opencode") {
+    // OpenCode's TUI is only a client of its background server, where the plugin keeps the agent: a terminal opened in
+    // the agent's folder joins it, as many as one likes (opencode-alexey, AIChat 3659-3660). Open the agent's own session
+    // unless the person's command already names one.
+    const command = startCommand(agent, settings) ?? "opencode";
+    const id = agent.status?.sessionID;
+    const own = /(^|\s)(--session|-s|--continue|-c)(\s|=|$)/.test(command);
+    return { command: id && !own ? `${command} --session ${id}` : command };
+  }
   if (agent.type !== "codex" && agent.type !== "agy") return { why: "цей агент і так працює в терміналі" };
   if (!agent.attachPort) return { why: "додайте attachPort у aichat.config.json і перезапустіть агента" };
   // ./ works in PowerShell and in a POSIX shell alike (antigravity-alexey, 3537)
@@ -212,10 +221,11 @@ export class Actions {
   }
 
   /** Opens a terminal tab with an interactive session attached to the running agent (agy/codex: `attach`). */
-  async session(folder: string): Promise<string> {
+  async session(folder: string, online?: boolean): Promise<string> {
     const a = this.agent(folder);
-    if (!running(a)) throw new ActionError("агент не запущений");
-    const how = sessionCommand(a);
+    // OpenCode has no process of the manager's: the broker seeing it online is the sign its server runs
+    if (a.type === "opencode" ? !online : !running(a)) throw new ActionError("агент не запущений");
+    const how = sessionCommand(a, readSettings(this.root));
     if ("why" in how) throw new ActionError(how.why, 400);
     await this.runner.openTerminal(a.dir, `${folder}: сесія`, how.command);
     return `Відкрито сесію в терміналі. Закриття вкладки агента не зупиняє.${terminalNote(`${folder}: сесія`)}`;
