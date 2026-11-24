@@ -124,7 +124,8 @@ export function findConfig(dir: string): { url: string; token: string } | null {
       const server =
         servers.find(([name]) => name === "aichat")?.[1] ??
         servers.find(([, s]) => s.args?.some((a) => /claude-channel\.m?js$/.test(a)))?.[1];
-      if (server?.env?.AICHAT_TOKEN) return { url: server.env.AICHAT_URL ?? "ws://127.0.0.1:8787", token: server.env.AICHAT_TOKEN };
+      const token = server?.env?.AICHAT_TOKEN || tokenFromFile(server?.env?.AICHAT_TOKEN_FILE);
+      if (token) return { url: server?.env?.AICHAT_URL ?? "ws://127.0.0.1:8787", token };
     } catch {
       // no .mcp.json here, or not readable: keep looking
     }
@@ -132,11 +133,20 @@ export function findConfig(dir: string): { url: string; token: string } | null {
   }
 }
 
-/** The broker's HTTP address and the token: from AICHAT_URL / AICHAT_TOKEN, else from the nearest .mcp.json. */
+/** The token in AICHAT_TOKEN_FILE, when one is named and readable. */
+function tokenFromFile(file: string | undefined): string | undefined {
+  if (!file) return undefined;
+  try {
+    return readFileSync(file, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The broker's HTTP address and the token: from AICHAT_URL / AICHAT_TOKEN(_FILE), else from the nearest .mcp.json. */
 function brokerFor(dir: string): { http: string; token: string } | null {
-  const cfg = process.env.AICHAT_TOKEN
-    ? { url: process.env.AICHAT_URL ?? "ws://127.0.0.1:8787", token: process.env.AICHAT_TOKEN }
-    : findConfig(dir);
+  const envToken = process.env.AICHAT_TOKEN || tokenFromFile(process.env.AICHAT_TOKEN_FILE);
+  const cfg = envToken ? { url: process.env.AICHAT_URL ?? "ws://127.0.0.1:8787", token: envToken } : findConfig(dir);
   if (!cfg) return null;
   return { http: cfg.url.replace(/\/?$/, "").replace(/\/ws$/, "").replace(/^ws(s?):/, "http$1:"), token: cfg.token };
 }

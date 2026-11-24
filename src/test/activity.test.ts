@@ -121,6 +121,10 @@ test("hook script: events map to states; config comes from the nearest .mcp.json
     // a server under another name is found by its adapter file
     writeFileSync(join(dir, "sub", ".mcp.json"), JSON.stringify({ mcpServers: { chat: { args: ["/x/claude-channel.mjs"], env: { AICHAT_TOKEN: "u" } } } }));
     assert.deepEqual(findConfig(join(dir, "sub", "deeper")), { url: "ws://127.0.0.1:8787", token: "u" });
+    // or with the token in a file of its own
+    writeFileSync(join(dir, "tok.txt"), "from-file\n");
+    writeFileSync(join(dir, "sub", ".mcp.json"), JSON.stringify({ mcpServers: { aichat: { env: { AICHAT_URL: "ws://h:2", AICHAT_TOKEN_FILE: join(dir, "tok.txt") } } } }));
+    assert.deepEqual(findConfig(join(dir, "sub", "deeper")), { url: "ws://h:2", token: "from-file" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

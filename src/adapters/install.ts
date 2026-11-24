@@ -93,18 +93,21 @@ export async function installMcpJson(opts: {
   dir: string;
   adapter: string;
   url: string;
-  token: string;
+  /** The token itself, or (better) the file that holds it: then .mcp.json names only the file. */
+  token?: string;
+  tokenFile?: string;
   server?: string;
 }): Promise<InstallResult> {
   const path = resolve(opts.dir, ".mcp.json");
   const merged = existsSync(path);
   const config = await readObject(path);
+  const secret = opts.tokenFile ? { AICHAT_TOKEN_FILE: resolve(opts.tokenFile).replace(/\\/g, "/") } : { AICHAT_TOKEN: opts.token ?? "" };
   config.mcpServers = {
     ...((config.mcpServers as Record<string, unknown> | undefined) ?? {}),
     [opts.server ?? "aichat"]: {
       command: "node",
       args: [opts.adapter.replace(/\\/g, "/")],
-      env: { AICHAT_URL: opts.url, AICHAT_TOKEN: opts.token },
+      env: { AICHAT_URL: opts.url, ...secret },
     },
   };
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
@@ -113,13 +116,14 @@ export async function installMcpJson(opts: {
 
 /** The `install` command line: flags, or AICHAT_URL / AICHAT_TOKEN from the environment. Returns the exit code. */
 export async function runInstall(argv: string[], adapter: string): Promise<number> {
-  let values: { url?: string; token?: string; dir?: string; server?: string; statusline?: boolean };
+  let values: { url?: string; token?: string; "token-file"?: string; dir?: string; server?: string; statusline?: boolean };
   try {
     ({ values } = parseArgs({
       args: argv,
       options: {
         url: { type: "string" },
         token: { type: "string" },
+        "token-file": { type: "string" },
         dir: { type: "string" },
         server: { type: "string" },
         statusline: { type: "boolean" },
@@ -130,9 +134,20 @@ export async function runInstall(argv: string[], adapter: string): Promise<numbe
     return 2;
   }
   const url = values.url ?? process.env.AICHAT_URL;
-  const token = values.token ?? process.env.AICHAT_TOKEN;
-  if (!url || !token) {
-    console.error("usage: node claude-channel.mjs install --url ws://<broker>:8787 --token <token> [--dir <folder with .mcp.json>] [--statusline]");
+  const tokenFile = values["token-file"];
+  const token = tokenFile ? undefined : (values.token ?? process.env.AICHAT_TOKEN);
+  if (!url || (!token && !tokenFile)) {
+    console.error(
+      "usage: node claude-channel.mjs install --url ws://<broker>:8787 (--token-file <file> | --token <token>) [--dir <folder with .mcp.json>] [--statusline]",
+    );
+    return 2;
+  }
+  if (values.token && tokenFile) {
+    console.error("[aichat] give either --token or --token-file, not both");
+    return 2;
+  }
+  if (tokenFile && !existsSync(tokenFile)) {
+    console.error(`[aichat] --token-file: no such file ${tokenFile}`);
     return 2;
   }
   if (!/^wss?:\/\//.test(url)) {
@@ -140,7 +155,7 @@ export async function runInstall(argv: string[], adapter: string): Promise<numbe
     return 2;
   }
   try {
-    const r = await installMcpJson({ dir: values.dir ?? process.cwd(), adapter, url, token, server: values.server });
+    const r = await installMcpJson({ dir: values.dir ?? process.cwd(), adapter, url, token, tokenFile, server: values.server });
     const server = values.server ?? "aichat";
     console.log(`${r.merged ? "Updated" : "Created"} ${r.path} (MCP server "${server}" → ${url}).`);
     // the status hook, when it was downloaded next to the adapter

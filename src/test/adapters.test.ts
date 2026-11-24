@@ -254,6 +254,16 @@ test("claude-channel install writes .mcp.json and keeps other servers", async ()
       env: { AICHAT_URL: "ws://broker.lan:8787", AICHAT_TOKEN: "tok-1" },
     });
 
+    // with --token-file .mcp.json names the file, and the token stays out of it
+    writeFileSync(join(dir, "tok.txt"), "tok-2\n");
+    r = run("--url", "ws://broker.lan:8787", "--token-file", join(dir, "tok.txt"));
+    assert.equal(r.status, 0, r.stderr);
+    const withFile = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
+    assert.deepEqual(withFile.mcpServers.aichat.env, { AICHAT_URL: "ws://broker.lan:8787", AICHAT_TOKEN_FILE: join(dir, "tok.txt").replace(/\\/g, "/") });
+    assert.ok(!readFileSync(join(dir, ".mcp.json"), "utf8").includes("tok-2"));
+    assert.equal(run("--url", "ws://x:1", "--token-file", join(dir, "missing.txt")).status, 2);
+    assert.equal(run("--url", "ws://x:1", "--token", "t", "--token-file", join(dir, "tok.txt")).status, 2);
+
     // missing flags and bad URLs fail without touching the file
     assert.equal(run("--url", "ws://x").status, 2);
     assert.equal(run("--url", "http://x", "--token", "t").status, 2);
