@@ -1711,9 +1711,10 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 const ago = (iso) => { if (!iso) return ""; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? s + " с тому" : s < 3600 ? Math.round(s / 60) + " хв тому" : Math.round(s / 3600) + " год тому"; };
-let agents = [], selected = null, busy = false, watchTimer = null, activeTab = "settings", settingsSeq = 0, logSeq = 0;
+let agents = [], selected = null, rootDir = "", busy = false, watchTimer = null, activeTab = "settings", settingsSeq = 0, logSeq = 0;
 let lastSettings = null, editingSettings = false, savingSettings = false;
 let editOriginal = {}, editDraft = {}, editSpecs = {}, editControls = {};
+const isUnixRoot = (r) => typeof r === "string" && r.startsWith("/");
 
 /** Matches web/src/lib/format.ts so every agent keeps the same avatar colour and initials as in AIChat. */
 function hueFor(name) {
@@ -1968,19 +1969,28 @@ function actionsFor(a) {
     box.append(wrap);
   }
 
+  const linux = isUnixRoot(rootDir);
   let hint = "";
   if (a.type === "claude" || a.type === "opencode") {
-    hint = !runs
-      ? "Відкриється вкладка Windows Terminal."
-      : where(a) === "на сервері"
-        ? "Працює на своєму сервері: закриття терміналу його не зупиняє."
+    if (!runs) {
+      hint = linux
+        ? "Запуститься у tmux-сесії aichat-" + a.folder + " (підключитись: tmux attach -t aichat-" + a.folder + ")."
+        : "Відкриється вкладка Windows Terminal.";
+    } else if (where(a) === "на сервері") {
+      hint = "Працює на своєму сервері: закриття терміналу його не зупиняє.";
+    } else {
+      hint = linux
+        ? "Працює у tmux-сесії: від'єднання терміналу агента не зупиняє."
         : "Працює в терміналі: зупиняється там.";
+    }
   } else if (!runs) {
     hint = "Запуститься у фоні, без вікна; вивід піде в лог background.log.";
   } else if (!a.attachPort) {
     hint = "Щоб відкривати сесію, додайте attachPort у aichat.config.json і перезапустіть агента.";
   } else {
-    hint = "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.";
+    hint = linux
+      ? "Сесія відкривається через tmux (або node ./" + (a.type === "agy" ? "agy" : "codex") + "-channel.mjs attach); від'єднання агента не зупиняє."
+      : "Сесія відкривається вкладкою терміналу; її закриття агента не зупиняє.";
   }
   $("action-hint").textContent = hint;
 }
@@ -2811,7 +2821,8 @@ async function load() {
     if (!r.ok) throw new Error(r.status + " " + (await r.text()));
     const d = await r.json();
     agents = d.agents;
-    $("root").textContent = d.root;
+    rootDir = d.root || "";
+    $("root").textContent = rootDir;
     $("when").textContent = "оновлено " + new Date().toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     render();
     refreshSelected();
@@ -3120,7 +3131,8 @@ function wizClearErrors() {
 
 function wizJoinPath(root, folder) {
   if (!root) return folder;
-  const sep = root.endsWith("\\\\") || root.endsWith("/") ? "" : "\\\\";
+  const slash = root.includes("/") && !root.includes("\\\\") ? "/" : "\\\\";
+  const sep = root.endsWith("\\\\") || root.endsWith("/") ? "" : slash;
   return root + sep + folder;
 }
 
@@ -3136,8 +3148,9 @@ function wizApplyNameDefaults() {
     $("wiz-profile").value = name ? defs.profile.split("{name}").join(name) : defs.profile;
   }
   const tokenHint = $("wiz-token-hint");
+  const tokPath = isUnixRoot(root) ? "~/.secrets/aichat-" + name + ".token" : "~\\\\.secrets\\\\aichat-" + name + ".token";
   tokenHint.textContent = name
-    ? "Менеджер перевірить токен через /api/me (ім'я має збігтися з «" + name + "») і збереже його в ~\\\\.secrets\\\\aichat-" + name + ".token з правами лише для власника."
+    ? "Менеджер перевірить токен через /api/me (ім'я має збігтися з «" + name + "») і збереже його в " + tokPath + " з правами лише для власника."
     : "Менеджер перевірить токен через /api/me і збереже його у файл із правами лише для власника. Назад у браузер токен не повертається.";
 }
 

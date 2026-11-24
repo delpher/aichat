@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeApi } from "../../api/http";
 import { ChatContext, type ChatContextValue } from "../../context";
@@ -59,5 +59,24 @@ describe("ManagerBox", () => {
     expect(screen.queryByText(/не захищене шифруванням/i)).not.toBeInTheDocument();
     expect(managerInstallCommand("https://chat.example.com/")).toContain("$b='https://chat.example.com'");
     expect(managerInstallCommand("https://a'b.example")).toContain("$b='https://a''b.example'");
+  });
+
+  it("switches to Linux bash install and launcher commands and escapes quotes for bash", async () => {
+    renderBox({
+      publicUrl: "http://aichat.home:8787/",
+      manifest: { version: "0.26.0", files: { "aichat-manager.mjs": { sha256: "deadbeef", size: 1024 } } },
+    });
+    await waitFor(() => expect(screen.getByText("v0.26.0")).toBeInTheDocument());
+
+    const linuxTab = screen.getByRole("tab", { name: "Linux (bash)" });
+    fireEvent.click(linuxTab);
+    expect(linuxTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("bash")).toBeInTheDocument();
+    expect(screen.getByText(/sha256sum "\$t"/)).toBeInTheDocument();
+    expect(screen.getByText("~/aichat-agents/aichat-manager.sh")).toBeInTheDocument();
+
+    const bashCmd = managerInstallCommand("https://a'b.example/", "linux");
+    expect(bashCmd).toContain("b='https://a'\\''b.example'");
+    expect(bashCmd).toContain('node "$d/aichat-manager.mjs" install --broker "$b"');
   });
 });
