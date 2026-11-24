@@ -8,9 +8,76 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { WebSocketServer } from "ws";
 import { VERSION } from "../version.js";
 
 const source = fileURLToPath(new URL("../../src/adapters/opencode-channel.js", import.meta.url));
+
+const buildBundle = async (dir: string) => {
+  const out = await build({
+    entryPoints: [source],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    write: false,
+    logLevel: "silent",
+    define: { __AICHAT_VERSION__: JSON.stringify(VERSION) },
+  });
+  const file = join(dir, "index.js");
+  writeFileSync(file, out.outputFiles[0].text);
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+  return (await import(pathToFileURL(file).href)).default as {
+    setup: (ctx: unknown) => Promise<() => Promise<void> | void>;
+  };
+};
+
+const makeCtx = (
+  dir: string,
+  storage: Record<string, unknown>,
+  sessionModel: unknown = null,
+  sessionDir: string = dir,
+) => {
+  const created: string[] = [];
+  const got: string[] = [];
+  const saved: Record<string, unknown> = {};
+  const ctx = {
+    location: { directory: dir },
+    options: {
+      paused: true,
+      token: "test-token",
+      url: "ws://127.0.0.1:9/ws",
+      sessionTitle: "T",
+      requestTimeoutMs: 300,
+    },
+    storage: {
+      get: async (key: string) => storage[key],
+      set: async (key: string, value: unknown) => {
+        storage[key] = value;
+        saved[key] = value;
+      },
+    },
+    session: {
+      create: async () => {
+        created.push("new");
+        return { id: "ses_new", title: "T" };
+      },
+      get: async ({ sessionID }: { sessionID: string }) => {
+        got.push(sessionID);
+        return { id: sessionID, title: "T", model: sessionModel, location: { directory: sessionDir } };
+      },
+      switchModel: async () => {},
+    },
+    tool: {
+      transform: (cb: (editor: unknown) => void) => {
+        cb({ namespace: () => {}, add: () => {} });
+        return Promise.resolve({ dispose() {} });
+      },
+    },
+    model: { list: async () => [] },
+  };
+  return { ctx, created, got, saved };
+};
 
 test("the OpenCode plugin imports only node:* modules and names itself opencode-channel", () => {
   const code = readFileSync(source, "utf8");
@@ -138,66 +205,6 @@ test("aichat_react posts/deletes a fixed emoji and aichat_read renders reactions
 });
 
 test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it otherwise", async () => {
-  const buildBundle = async (dir: string) => {
-    const out = await build({
-      entryPoints: [source],
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      target: "node22",
-      write: false,
-      logLevel: "silent",
-      define: { __AICHAT_VERSION__: JSON.stringify(VERSION) },
-    });
-    const file = join(dir, "index.js");
-    writeFileSync(file, out.outputFiles[0].text);
-    writeFileSync(join(dir, "package.json"), '{"type":"module"}');
-    return (await import(pathToFileURL(file).href)).default as {
-      setup: (ctx: unknown) => Promise<() => Promise<void> | void>;
-    };
-  };
-
-  const makeCtx = (
-    dir: string,
-    storage: Record<string, unknown>,
-    sessionModel: unknown = null,
-    sessionDir: string = dir,
-  ) => {
-    const created: string[] = [];
-    const got: string[] = [];
-    const saved: Record<string, unknown> = {};
-    const ctx = {
-      location: { directory: dir },
-      options: { paused: true, token: "test-token", url: "ws://127.0.0.1:9/ws", sessionTitle: "T" },
-      storage: {
-        get: async (key: string) => storage[key],
-        set: async (key: string, value: unknown) => {
-          storage[key] = value;
-          saved[key] = value;
-        },
-      },
-      session: {
-        create: async () => {
-          created.push("new");
-          return { id: "ses_new", title: "T" };
-        },
-        get: async ({ sessionID }: { sessionID: string }) => {
-          got.push(sessionID);
-          return { id: sessionID, title: "T", model: sessionModel, location: { directory: sessionDir } };
-        },
-        switchModel: async () => {},
-      },
-      tool: {
-        transform: (cb: (editor: unknown) => void) => {
-          cb({ namespace: () => {}, add: () => {} });
-          return Promise.resolve({ dispose() {} });
-        },
-      },
-      model: { list: async () => [] },
-    };
-    return { ctx, created, got, saved };
-  };
-
   // A fresh start: the marker forces a new session, the old id is kept in previousSessionIds, and the marker
   // is spent only after the new session exists.
   const freshDir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
@@ -295,5 +302,51 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     }
   } finally {
     rmSync(caseDir, { recursive: true, force: true });
+  }
+});
+
+test("the OpenCode plugin drops the channel on .aichat/stop and brings it back on .aichat/start", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise<void>((resolve) => wss.once("listening", resolve));
+  const port = (wss.address() as { port: number }).port;
+  let connections = 0;
+  wss.on("connection", (socket) => {
+    connections += 1;
+    socket.send(JSON.stringify({ type: "welcome", agent: "opencode-test", rooms: [] }));
+  });
+  const waits = async (what: () => boolean, ms = 8000) => {
+    const started = Date.now();
+    while (Date.now() - started < ms) {
+      if (what()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  };
+  try {
+    const plugin = await buildBundle(dir);
+    const { ctx } = makeCtx(dir, {});
+    ctx.options.paused = false;
+    ctx.options.url = `ws://127.0.0.1:${port}/ws`;
+    const dispose = await plugin.setup(ctx);
+    try {
+      assert.ok(await waits(() => connections === 1), "connected to the broker");
+      writeFileSync(join(dir, ".aichat", "stop"), "");
+      // the channel closes without the shared OpenCode server being touched
+      assert.ok(await waits(() => wss.clients.size === 0), "the channel closed");
+      assert.equal(existsSync(join(dir, ".aichat", "stop")), false, "the stop marker is spent");
+      const stopped = JSON.parse(readFileSync(join(dir, ".aichat", "status.json"), "utf8"));
+      assert.equal(stopped.connected, false);
+      writeFileSync(join(dir, ".aichat", "start"), "");
+      assert.ok(await waits(() => connections === 2), "connected again on .aichat/start");
+      assert.equal(existsSync(join(dir, ".aichat", "start")), false, "the start marker is spent");
+      const back = JSON.parse(readFileSync(join(dir, ".aichat", "status.json"), "utf8"));
+      assert.equal(back.connected, true);
+    } finally {
+      await dispose();
+    }
+  } finally {
+    wss.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
