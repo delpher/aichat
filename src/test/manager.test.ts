@@ -581,6 +581,8 @@ test("manager wizard: connects an agent the broker already knows, with its token
   ]);
   assert.equal(JSON.parse(readFileSync(join(root, "agy-bot", "aichat.config.json"), "utf8")).attachPort, 60650);
   assert.match(agy.next.join(" "), /зніміть паузу/i);
+  // the login goes into the agent's own profile, with the command to do it (qhukz, 3620)
+  assert.match(agy.next[0], /agy acp --app-data-dir aichat-agy-bot --login/);
   assert.ok(!JSON.stringify(agy).includes("tok-agy"), "the token is not in the answer");
   await tries({ type: "agy", name: "agy-bot", token: "tok-agy" }, "name", /уже є/);
 
