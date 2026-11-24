@@ -681,7 +681,7 @@ test("manager wizard: a Claude Code agent gets the start script that resumes its
   };
   const done = await installAgent(root, { type: "claude", name: "claude-bot", token: "tok-claude" }, { get, run, secretsDir: join(root, "secrets"), home: root });
   const script = readFileSync(join(root, "claude-bot", "start.ps1"), "utf8");
-  assert.match(script, /\$env:AICHAT_START = if \(\$session\) \{ 'resumed' \} else \{ 'new' \}/);
+  assert.match(script, /\$env:AICHAT_START = if \(\$session\) \{ 'resumed' \} elseif \(\$ownSession\) \{ '' \} else \{ 'new' \}/);
   assert.match(script, /@\('--resume', \$session\.BaseName\)/);
   assert.match(script, /'\.aichat\\fresh'/);
   assert.ok(script.includes("\r\n"), "Windows line ends");
