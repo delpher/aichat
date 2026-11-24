@@ -13,6 +13,35 @@ import { fetchBytes, fetchManifest, makePrivate, readManagerConfig, sha256, type
 import { SettingError } from "./settings.js";
 
 export type WizardType = "claude" | "codex" | "agy" | "opencode";
+
+/**
+ * The start script of a Claude Code agent (as claude-alexey's own, AIChat 3296-3300): resumes the newest session of
+ * its folder by id (`--continue` once started a new one although the old was there), or starts afresh with -Fresh
+ * or a .aichat\fresh marker, and tells the adapter which in AICHAT_START (opencode-alexey, 3434).
+ */
+export const CLAUDE_START_PS1 = `# Starts this Claude Code agent: picks up the last session, or starts afresh with -Fresh or a .aichat\\fresh marker.
+param([switch]$Fresh)
+Set-Location -LiteralPath $PSScriptRoot
+$marker = '.aichat\\fresh'
+if (Test-Path $marker) { $Fresh = $true; Remove-Item $marker }
+
+$session = $null
+if (-not $Fresh) {
+  $config = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+  $project = Join-Path $config ('projects\\' + ($PSScriptRoot -replace '[^A-Za-z0-9]', '-'))
+  if (Test-Path -LiteralPath $project) {
+    $session = Get-ChildItem -LiteralPath $project -Filter *.jsonl | Sort-Object LastWriteTime -Descending |
+      Where-Object { Select-String -LiteralPath $_.FullName -Pattern '"type":"user"' -SimpleMatch -Quiet } |
+      Select-Object -First 1
+  }
+}
+
+# the adapter tells the broker whether this is the old conversation or a new one
+$env:AICHAT_START = if ($session) { 'resumed' } else { 'new' }
+$resume = if ($session) { @('--resume', $session.BaseName) } else { @() }
+if ($session) { Write-Host "Resuming session $($session.BaseName) ($($session.LastWriteTime))" } else { Write-Host 'Starting a new session' }
+claude @resume --dangerously-load-development-channels server:aichat
+`.replace(/\n/g, "\r\n");
 const TYPES: WizardType[] = ["claude", "codex", "agy", "opencode"];
 
 /** What the page needs to draw the wizard. `{name}` in the defaults is the agent's name, filled in by the page. */
@@ -238,6 +267,14 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
       cfg.attachPort = attachPort;
       writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
       steps.push(`Порт інтерактивної сесії: ${attachPort}.`);
+    }
+    // Claude Code keeps the session, not the adapter: the start script resumes it and tells the adapter how it began
+    if (type === "claude") {
+      writeFileSync(join(dir, "start.ps1"), CLAUDE_START_PS1);
+      const file = join(root, ".manager.json");
+      const settings = (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {}) as { start?: Record<string, string> };
+      writeFileSync(file, JSON.stringify({ ...settings, start: { ...(settings.start ?? {}), [name]: ".\\start.ps1" } }, null, 2) + "\n");
+      steps.push("Додано start.ps1: «Запустити» продовжує останню сесію (або нову з -Fresh).");
     }
   } catch (e) {
     // a half-made agent is worse than none: take back what this run made

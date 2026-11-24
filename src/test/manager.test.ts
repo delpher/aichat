@@ -660,3 +660,27 @@ test("manager wizard: one installation at a time (codex-alexey, 3415)", async (t
   // and the next one may go
   assert.equal((await installAgent(root, { type: "agy", name: "claude-bot", token: "tok-claude" }, deps)).folder, "claude-bot");
 });
+
+test("manager wizard: a Claude Code agent gets the start script that resumes its session (opencode-alexey, 3434)", async (t) => {
+  const broker = await fakeBroker(); // tok-claude belongs to claude-bot
+  t.after(() => broker.server.close());
+  const root = mkdtempSync(join(tmpdir(), "aichat-wizard-claude-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".manager"));
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { other: "x" } }));
+  const files: Record<string, Buffer> = { "claude-channel.mjs": Buffer.from("// claude"), "aichat-hook.mjs": Buffer.from("// hook") };
+  const get = async (url: string) =>
+    url.endsWith("manifest.json")
+      ? Buffer.from(JSON.stringify({ version: "9.9.9", files: Object.fromEntries(Object.entries(files).map(([n, d]) => [n, { sha256: sha256(d), size: d.length }])) }))
+      : files[url.split("/client/")[1]];
+  const run = async () => ({ code: 0, output: "" });
+  const done = await installAgent(root, { type: "claude", name: "claude-bot", token: "tok-claude" }, { get, run, secretsDir: join(root, "secrets"), home: root });
+  const script = readFileSync(join(root, "claude-bot", "start.ps1"), "utf8");
+  assert.match(script, /\$env:AICHAT_START = if \(\$session\) \{ 'resumed' \} else \{ 'new' \}/);
+  assert.match(script, /@\('--resume', \$session\.BaseName\)/);
+  assert.match(script, /'\.aichat\\fresh'/);
+  assert.ok(script.includes("\r\n"), "Windows line ends");
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: { other: "x", "claude-bot": ".\\start.ps1" } });
+  assert.match(done.steps.join(" "), /start\.ps1/);
+});
