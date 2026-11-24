@@ -274,7 +274,8 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
       "Натисніть «Запустити».",
     ],
     agy: [
-      `Один раз увійдіть в Antigravity з профілем «${profile}».`,
+      // the agent runs in its own profile, so a login in the usual one does not count ("Authentication required", qhukz 3620)
+      `Один раз увійдіть в Antigravity саме в профілі агента (вхід у звичайному профілі не рахується): agy acp --app-data-dir ${profile} --login`,
       "Зніміть паузу: «Налаштування» → «На паузі» → ні.",
       "Натисніть «Запустити».",
     ],
