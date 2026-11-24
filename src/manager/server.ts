@@ -11,6 +11,7 @@ import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
 import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
+import { installAgent, installInfo, type NodeRunner } from "./wizard.js";
 import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
 import { spawn } from "node:child_process";
 import type { AdapterInfo } from "../protocol.js";
@@ -29,6 +30,9 @@ export interface ManagerOptions {
   fetchBytes?: Fetch;
   self?: string | null;
   onRestart?: () => void;
+  /** For tests: how the agent wizard runs adapter installers and where it keeps tokens. */
+  runNode?: NodeRunner;
+  secretsDir?: string;
 }
 
 /** What the broker says about one agent (GET /api/agents), by its AIChat name. */
@@ -143,6 +147,10 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
         // a page on another site may post a form here, but cannot add this header without our consent (CORS)
         if (req.headers["x-aichat-manager"] !== "1") return send(403, { error: "missing x-aichat-manager header" });
         const body = await readBody(req);
+        if (url.pathname === "/api/install") {
+          const done = await installAgent(opts.root, body, { get, run: opts.runNode, secretsDir: opts.secretsDir });
+          return send(200, { ok: true, ...done });
+        }
         if (url.pathname === "/api/manager/update") {
           const version = await updateSelf(opts.root, firstBroker(), self, get).catch((e: Error) => {
             throw new ActionError(e.message, 502);
@@ -190,6 +198,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
       if (req.method !== "GET") return send(405, { error: "method not allowed" });
       if (url.pathname === "/api/removed") return send(200, { removed: actions.removed() });
       if (url.pathname === "/") return send(200, PAGE, "text/html; charset=utf-8", { "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" });
+      if (url.pathname === "/api/install") return send(200, installInfo(opts.root));
       if (url.pathname === "/api/manager") return send(200, await updateInfo(opts.root, firstBroker(), get, self));
       if (url.pathname === "/api/agents") return send(200, { root: opts.root, agents: await overview(opts.root, timeout) });
       const settings = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
