@@ -932,6 +932,15 @@ export function install({ agentDir, codexHome, tokenFile, url = 'http://aichat.h
   if (!fs.existsSync(ignoreFile)) fs.writeFileSync(ignoreFile, '.aichat/\n.secrets/\n*.token\n');
   fs.writeFileSync(path.join(agentDir, 'start.ps1'), 'param([switch]$Fresh)\n$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath $PSScriptRoot\n$argsList = @((Join-Path $PSScriptRoot "codex-channel.mjs"), "run", "--config", (Join-Path $PSScriptRoot "aichat.config.json"))\nif ($Fresh) { $argsList += "--fresh" }\nnode @argsList\n');
   fs.writeFileSync(path.join(agentDir, 'stop.ps1'), 'node (Join-Path $PSScriptRoot "codex-channel.mjs") stop --config (Join-Path $PSScriptRoot "aichat.config.json")\n');
+  const shellHeader = '#!/usr/bin/env sh\nset -eu\nDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\n';
+  const startSh = path.join(agentDir, 'start.sh');
+  const stopSh = path.join(agentDir, 'stop.sh');
+  fs.writeFileSync(startSh, shellHeader + 'cd "$DIR"\nexec node "$DIR/codex-channel.mjs" run --config "$DIR/aichat.config.json" "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(stopSh, shellHeader + 'exec node "$DIR/codex-channel.mjs" stop --config "$DIR/aichat.config.json"\n', { mode: 0o755 });
+  if (process.platform !== 'win32') {
+    fs.chmodSync(startSh, 0o755);
+    fs.chmodSync(stopSh, 0o755);
+  }
   return { agentDir, codexHome, configFile, paused: true };
 }
 function argumentsFor(args) {
