@@ -220,7 +220,12 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
       assert.deepEqual(status.effective.writableRoots, ["*"]);
       assert.equal(created.length, 1, "created a new session");
       assert.equal(got.length, 0, "did not resume the old one");
-      assert.deepEqual(saved["aichat/session:".concat(String(freshDir).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())], {
+      const sessionKeyDir = (dir: string) => {
+        const value = String(dir).replace(/\\/g, "/").replace(/\/+$/, "");
+        // the adapter lowercases the folder only on Windows (POSIX paths are case-sensitive)
+        return process.platform === "win32" ? value.toLowerCase() : value;
+      };
+      assert.deepEqual(saved["aichat/session:".concat(sessionKeyDir(freshDir))], {
         id: "ses_new",
         title: "T",
       });
