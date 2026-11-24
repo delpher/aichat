@@ -72,6 +72,8 @@ export interface SetupStep {
 export interface Setup {
   /** Agent kind the steps are for: "human", "claude", "openai" or another. */
   kind?: string;
+  /** The token just made, shown on top apart from the commands; absent when the instructions are shown again. */
+  token?: string;
   steps: SetupStep[];
 }
 

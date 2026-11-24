@@ -391,6 +391,8 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   const tokenStep = oc.setup.steps.find((s) => s.code?.includes(oc.token))!;
   assert.ok(tokenStep.code!.includes("> ~/.secrets/aichat-oc-token") && tokenStep.code!.includes('"$HOME\\.secrets\\aichat-oc-token"'));
   assert.equal(oc.setup.steps.filter((s) => s.code?.includes(oc.token)).length, 1); // the token is only in the token file
+  // a new token also travels on its own, for the web UI to show on top (alexey, AIChat 3553)
+  assert.equal((oc.setup as { token?: string }).token, oc.token);
   assert.equal(oc.setup.steps.at(-1)!.code, "opencode reload"); // the first start is paused, the last step connects
 
   // Codex: install the channel adapter with a profile apart from the agent's folder; the admin is its owner

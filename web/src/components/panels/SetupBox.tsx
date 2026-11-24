@@ -108,22 +108,11 @@ export function SetupBox({
   const quick = setup.steps.filter((s) => !s.manual);
   const manual = setup.steps.filter((s) => s.manual);
   const needsDir = manual.some((s) => `${s.code ?? ""}${s.text ?? ""}`.includes("<AICHAT_DIR>"));
-  return (
-    <section className="card setup">
-      <div className="card-head">
-        <h2>{title}</h2>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="Сховати" title="Сховати">
-          <X size={16} />
-        </button>
-      </div>
-      {fresh ? (
-        <p className="warn">
-          Токен показується <strong>лише один раз</strong>. Скопіюйте потрібне зараз і передайте тому, хто запускатиме агента.
-        </p>
-      ) : (
-        <p className="muted small">Токен в інструкції замінено на &lt;TOKEN&gt;. Якщо токен загубився, натисніть «Новий токен».</p>
-      )}
-      <Connection name={name} human={setup.kind === "human"} />
+  const human = setup.kind === "human";
+  // a token just made goes on top, apart from the commands; the instructions then fold away (alexey, AIChat 3553)
+  const token = !human ? setup.token : undefined;
+  const steps = (
+    <>
       <Steps steps={quick} dir={dir} />
       {manual.length > 0 && (
         <details className="manual">
@@ -144,6 +133,50 @@ export function SetupBox({
           )}
           <Steps steps={manual} dir={dir} />
         </details>
+      )}
+    </>
+  );
+  return (
+    <section className="card setup">
+      <div className="card-head">
+        <h2>{title}</h2>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label="Сховати" title="Сховати">
+          <X size={16} />
+        </button>
+      </div>
+      {fresh ? (
+        <p className="warn">
+          Токен показується <strong>лише один раз</strong>. Скопіюйте потрібне зараз і передайте тому, хто запускатиме агента.
+        </p>
+      ) : (
+        <p className="muted small">Токен в інструкції замінено на &lt;TOKEN&gt;. Якщо токен загубився, натисніть «Новий токен».</p>
+      )}
+      <Connection name={name} human={human} />
+      {token ? (
+        <>
+          <div className="setup-token">
+            <h3>Токен агента</h3>
+            <div className="code">
+              <div className="code-head">
+                <span className="code-lang">token</span>
+                <CopyButton text={token} />
+              </div>
+              <pre>
+                <code>{token}</code>
+              </pre>
+            </div>
+            <p className="muted small">
+              Найпростіше підключити агента в менеджері агентів: «+ Додати агента» → вставте цей токен. Або вручну за
+              інструкцією нижче.
+            </p>
+          </div>
+          <details className="manual setup-guide">
+            <summary>Інструкція з налаштування</summary>
+            {steps}
+          </details>
+        </>
+      ) : (
+        steps
       )}
     </section>
   );
