@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -590,4 +590,44 @@ test("manager wizard: connects an agent the broker already knows, with its token
   assert.deepEqual(info.folders.sort(), ["agy-bot", "claude-bot"]);
   assert.equal(info.defaults.profile, "aichat-{name}");
   assert.equal(info.defaults.attachPort, 60610);
+});
+
+test("manager wizard: a failure after the installer also takes back the profile this run made (codex-alexey, 3413)", async (t) => {
+  const broker = await fakeBroker(); // tok-agy belongs to agy-bot
+  t.after(() => broker.server.close());
+  const base = mkdtempSync(join(tmpdir(), "aichat-wizard-rollback-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, "root");
+  mkdirSync(join(root, ".manager"), { recursive: true });
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  const adapter = Buffer.from("// codex");
+  const get = async (url: string) =>
+    url.endsWith("manifest.json")
+      ? Buffer.from(JSON.stringify({ version: "9.9.9", files: { "codex-channel.mjs": { sha256: sha256(adapter), size: adapter.length } } }))
+      : adapter;
+  let broken = true;
+  // what codex-channel's installer does: a profile in --home and the agent's config; here the config comes out broken
+  const run = async (args: string[], cwd: string) => {
+    const home = args[args.indexOf("--home") + 1];
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "config.toml"), "# profile");
+    writeFileSync(join(cwd, "aichat.config.json"), broken ? "{ not json" : "{}");
+    return { code: 0, output: "" };
+  };
+  const deps = { get, run, secretsDir: join(base, "secrets"), home: base };
+  const req = (codexHome: string) => ({ type: "codex", name: "agy-bot", token: "tok-agy", codexHome, attachPort: 60655 });
+
+  // a CODEX_HOME this run made goes away whole
+  const fresh = join(base, "codex-new");
+  await assert.rejects(installAgent(root, req(fresh), deps));
+  assert.ok(!existsSync(fresh) && !existsSync(join(root, "agy-bot")) && !existsSync(join(base, "secrets", "aichat-agy-bot.token")));
+  // one that was there keeps everything but the config.toml this run wrote, so the wizard can be run again
+  const old = join(base, "codex-old");
+  mkdirSync(old);
+  writeFileSync(join(old, "auth.json"), "{}");
+  await assert.rejects(installAgent(root, req(old), deps));
+  assert.deepEqual(readdirSync(old), ["auth.json"]);
+  broken = false;
+  const done = await installAgent(root, req(join(base, "it's-home")), deps);
+  assert.match(done.next[0], /\$env:CODEX_HOME='.*it''s-home'; codex login/);
 });

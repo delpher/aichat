@@ -172,6 +172,11 @@ export async function installAgent(root: string, req: InstallRequest, deps: Wiza
   if (existsSync(tokenFile) && readFileSync(tokenFile, "utf8").trim() !== token) fail(`${tokenFile} уже є, з іншим токеном: приберіть його вручну`, "token");
   const createdToken = !existsSync(tokenFile);
   const createdDir = !existsSync(dir);
+  // profiles outside the agent folder that the installers set up: a rollback takes back only what this run made
+  // (codex-alexey, 3413). CODEX_HOME has no config.toml yet (checked above); agy's profile lives in ~/.gemini/<profile>.
+  const codexHomeNew = type === "codex" && !existsSync(codexHome);
+  const agyProfile = type === "agy" ? join(home, ".gemini", profile) : "";
+  const agyProfileNew = type === "agy" && !existsSync(agyProfile);
   const steps: string[] = [`Токен перевірено: він належить «${name}» на ${broker}.`];
   try {
     mkdirSync(secrets, { recursive: true });
@@ -222,13 +227,16 @@ export async function installAgent(root: string, req: InstallRequest, deps: Wiza
     // a half-made agent is worse than none: take back what this run made
     if (createdDir) rmSync(dir, { recursive: true, force: true });
     if (createdToken) rmSync(tokenFile, { force: true });
+    if (codexHomeNew) rmSync(codexHome, { recursive: true, force: true });
+    else if (type === "codex") rmSync(join(codexHome, "config.toml"), { force: true });
+    if (agyProfileNew) rmSync(agyProfile, { recursive: true, force: true });
     throw e;
   }
 
   const next: Record<WizardType, string[]> = {
     claude: ["Натисніть «Запустити»: відкриється вкладка Windows Terminal з Claude Code у теці агента."],
     codex: [
-      `Увійдіть у Codex для цього профілю: у PowerShell $env:CODEX_HOME='${codexHome}'; codex login`,
+      `Увійдіть у Codex для цього профілю: у PowerShell $env:CODEX_HOME='${codexHome.replace(/'/g, "''")}'; codex login`,
       "Зніміть паузу: «Налаштування» → «На паузі» → ні.",
       "Натисніть «Запустити».",
     ],
