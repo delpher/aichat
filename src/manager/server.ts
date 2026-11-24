@@ -12,6 +12,7 @@ import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
 import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
 import { replaceToken } from "./token.js";
+import { toggleMcp } from "./mcp.js";
 import { installAgent, installInfo, type NodeRunner } from "./wizard.js";
 import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
 import { spawn } from "node:child_process";
@@ -161,6 +162,13 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
           // answer first, then hand over to the new file
           res.once("finish", () => setTimeout(() => opts.onRestart?.(), 100));
           return send(200, { ok: true, message: `Менеджер оновлено до ${version}, стара версія збережена поруч (.bak). Перезапускаюсь…` });
+        }
+        const switchMcp = /^\/api\/agents\/([^/]+)\/mcp$/.exec(url.pathname);
+        if (switchMcp) {
+          const agent = discover(opts.root).find((a) => a.agent.folder === decodeURIComponent(switchMcp[1]))?.agent;
+          if (!agent) return send(404, { error: "немає такого агента" });
+          const message = toggleMcp(agent, opts.root, body.name, body.enabled);
+          return send(200, { ok: true, message, settings: readAgentSettings(agent, opts.root) });
         }
         const replace = /^\/api\/agents\/([^/]+)\/token$/.exec(url.pathname);
         if (replace) {
