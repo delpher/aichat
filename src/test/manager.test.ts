@@ -984,3 +984,11 @@ test("manager folders: a TOML table's array, set or removed", () => {
   assert.equal(withTomlTableArray('[t]\nk = [\n  "a",\n]\ny = 1', "t", "k", ["b"]), '[t]\nk = ["b"]\ny = 1');
   assert.equal(withTomlTableArray('[t]\nk = ["a"]\n[u]', "t", "k", []), "[t]\n[u]");
 });
+
+test("manager settings: an OpenCode model with its level pasted in says where the level goes", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
+  assert.throws(() => writeAgentSettings(agent, root, { model: "litellm/main-model#high" }), (e: Error & { field?: string }) => e.field === "model" && /у полі Effort/.test(e.message));
+});

@@ -529,6 +529,9 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
     const field = fields[key];
     if (!field) throw new SettingError(`${key}: це налаштування тут не змінюється`, key);
     const value = checked(key, field.edit, raw) as string | undefined;
+    // an OpenCode reference pasted whole (provider/model#high): say where the level goes (opencode-alexey, 3498)
+    if (field.file === "opencodeModel" && key === "model" && typeof value === "string" && value.includes("#"))
+      throw new SettingError("model: без #…: рівень (наприклад high) вкажіть у полі Effort", "model");
     if (field.section === "model" && typeof value === "string" && !/^[\w.:/@+-]+$/.test(value))
       throw new SettingError(`${key}: лише літери, цифри та . : / @ + - _`, key);
     if (field.file === "manager") command = value ?? null;
@@ -543,6 +546,7 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
     const [base, variant] = current ? current.split("#") : ["", ""];
     const m = "model" in ocRef ? ocRef.model : base || null;
     const e = "effort" in ocRef ? ocRef.effort : variant || null;
+    if (m?.includes("#")) throw new SettingError("model: без #…: рівень (наприклад high) вкажіть у полі Effort", "model");
     if (m && !/^[^/#]+\/[^/#]+$/.test(m)) throw new SettingError("model: у вигляді провайдер/модель, наприклад litellm/main-model", "model");
     if (!m && e) throw new SettingError("effort: спершу задайте модель", "effort");
     config.model = m ? (e ? `${m}#${e}` : m) : undefined;
