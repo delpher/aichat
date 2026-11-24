@@ -13,10 +13,11 @@ export type SettingValue = string | number | boolean | string[] | null;
 
 /** How the page may change a setting (stage 3b, AIChat 3345); a setting without it is read-only. */
 export type EditSpec =
-  | { type: "enum"; options: string[] }
+  | { type: "enum"; options: string[]; optional?: boolean }
   | { type: "bool" }
   | { type: "int"; min: number; max: number; optional?: boolean }
-  | { type: "text"; max: number; optional?: boolean }
+  /** `suggestions`: known values to offer; others are allowed (a model's own names and levels, AIChat 3460). */
+  | { type: "text"; max: number; optional?: boolean; suggestions?: string[] }
   | { type: "list" };
 
 export interface SettingItem {
@@ -230,7 +231,11 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     // other AICHAT_* settings of the channel, never anything that looks like a secret
     for (const [k, v] of Object.entries(env))
       if (k.startsWith("AICHAT_") && !/TOKEN|KEY|SECRET|PASSWORD/i.test(k) && k !== "AICHAT_URL") add(behavior, k, k, v);
-    add(model, "model", "Модель", settings.model ?? null);
+    // model and effort: flags of the person's Claude command (AIChat 3447-3459); settings.json's model otherwise
+    const words = splitCommand(claudeCommand(readSettings(root).start?.[agent.folder]));
+    const flagModel = flagValue(words, "--model");
+    model.push({ key: "model", label: "Модель", value: flagModel ?? str(settings.model), note: flagModel ? "команда запуску" : settings.model ? ".claude/settings" : CONFIGURED });
+    model.push({ key: "effort", label: "Effort", value: flagValue(words, "--effort"), note: "команда запуску" });
     const enabledList = strs(settings.enabledMcpjsonServers);
     const disabledList = strs(settings.disabledMcpjsonServers) ?? [];
     const all = settings.enableAllProjectMcpServers === true;
@@ -294,7 +299,7 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     add(workspace, "codexHome", "CODEX_HOME", codexHome);
     add(model, "model", "Модель", top.model ?? config.model ?? null);
     add(model, "model_provider", "Провайдер", top.model_provider);
-    add(model, "model_reasoning_effort", "Зусилля", top.model_reasoning_effort);
+    add(model, "effort", "Effort", top.model_reasoning_effort ?? null);
     for (const [table, e] of Object.entries(toml)) {
       const m = /^mcp_servers\.("?)([^"]+)\1$/.exec(table);
       if (m) mcp.push({ name: m[2], kind: mcpKind(e), enabled: e.enabled === false ? false : true, source: "config.toml" });
@@ -307,7 +312,11 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     configFiles.push(ocFile);
     const oc = parseJsonc(readText(ocFile) ?? readText(at("opencode.json")) ?? "") ?? {};
     add(model, "agent", "Агент OpenCode", config.agent ?? oc.default_agent);
-    add(model, "model", "Модель", config.model ?? oc.model ?? null);
+    // the plugin asks for aichat.config.json's model on every turn, else the agent's own (opencode-channel routedModel)
+    const ref = str(config.model) ?? str(oc.model);
+    const [base, variant] = ref ? ref.split("#") : [null, null];
+    model.push({ key: "model", label: "Модель", value: base ?? null, note: config.model ? CONFIGURED : ref ? "opencode.jsonc (успадковано)" : CONFIGURED });
+    model.push({ key: "effort", label: "Effort (варіант)", value: variant ?? null, note: config.model ? CONFIGURED : ref ? "opencode.jsonc (успадковано)" : CONFIGURED });
     const block = (oc.mcp ?? {}) as Record<string, unknown>;
     const map = (block.servers && typeof block.servers === "object" ? block.servers : block) as Record<string, Record<string, unknown>>;
     mcp = mcpFromMap(map, "opencode.jsonc", (_, e) => !(e.disabled === true || e.enabled === false));
@@ -347,7 +356,7 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
   add(launch, "start", "Як почалась сесія", str(status.start) ?? undefined, ACTUAL);
 
   // what the page may change (3b): every editable setting is there, set or not, with how to edit it
-  const lists = { connection, behavior, launch } as const;
+  const lists = { connection, behavior, launch, model } as const;
   for (const [key, field] of Object.entries(editableFields(agent))) {
     const list = lists[field.section];
     let entry = list.find((i) => i.key === key);
@@ -375,19 +384,49 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
 }
 
 interface EditableField {
-  section: "connection" | "behavior" | "launch";
+  section: "connection" | "behavior" | "launch" | "model";
   label: string;
   edit: EditSpec;
-  /** Where it is written: the agent's aichat.config.json, or the manager's own .manager.json. */
-  file: "config" | "manager";
+  /**
+   * Where it is written: the agent's aichat.config.json; the manager's .manager.json (the start command); a flag of
+   * a Claude agent's command; Codex's config.toml; OpenCode's model reference in aichat.config.json (model#variant).
+   */
+  file: "config" | "manager" | "claudeFlag" | "codexToml" | "opencodeModel";
 }
+
+/** Model levels a Claude command takes (`claude --help`: --effort). */
+const CLAUDE_EFFORT = ["low", "medium", "high", "xhigh", "max"];
+/** Examples from Codex's reference; the real set depends on the model (codex-alexey, 3460). */
+const CODEX_EFFORT = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /** The settings the page may change for this agent (AIChat 3343-3345); owners, permissions, token, instructions stay manual. */
 export function editableFields(agent: LocalAgent): Record<string, EditableField> {
   const fields: Record<string, EditableField> = {
     command: { section: "launch", label: "Команда запуску", edit: { type: "text", max: 500, optional: true }, file: "manager" },
   };
-  if (agent.type === "claude") return fields;
+  // model and effort for every kind (alexey, 3447); they apply after a restart (OpenCode: in a new session)
+  const model = (file: EditableField["file"], suggestions?: string[]): EditableField => ({
+    section: "model",
+    label: "Модель",
+    edit: { type: "text", max: 200, optional: true, ...(suggestions ? { suggestions } : {}) },
+    file,
+  });
+  if (agent.type === "claude")
+    return Object.assign(fields, {
+      model: model("claudeFlag", ["fable", "opus", "sonnet"]),
+      effort: { section: "model", label: "Effort", edit: { type: "enum", options: CLAUDE_EFFORT, optional: true }, file: "claudeFlag" },
+    } satisfies Record<string, EditableField>);
+  if (agent.type === "codex")
+    Object.assign(fields, {
+      model: model("codexToml"),
+      effort: { section: "model", label: "Effort", edit: { type: "text", max: 40, optional: true, suggestions: CODEX_EFFORT }, file: "codexToml" },
+    } satisfies Record<string, EditableField>);
+  if (agent.type === "opencode")
+    Object.assign(fields, {
+      model: model("opencodeModel"),
+      effort: { section: "model", label: "Effort (варіант)", edit: { type: "text", max: 40, optional: true }, file: "opencodeModel" },
+    } satisfies Record<string, EditableField>);
+  if (agent.type === "agy") Object.assign(fields, { model: model("config") });
   Object.assign(fields, {
     rooms: { section: "connection", label: "Кімнати (при старті)", edit: { type: "list" }, file: "config" },
     wake: { section: "behavior", label: "Будити", edit: { type: "enum", options: ["always", "mention", "never"] }, file: "config" },
@@ -469,12 +508,36 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
   const fields = editableFields(agent);
   const config: Record<string, unknown> = {};
   let command: string | null | undefined;
+  const flags: Record<string, string | undefined> = {};
+  const toml: Record<string, string | undefined> = {};
+  const ocRef: { model?: string | null; effort?: string | null } = {};
   for (const [key, raw] of Object.entries(set as Record<string, unknown>)) {
     const field = fields[key];
     if (!field) throw new SettingError(`${key}: це налаштування тут не змінюється`, key);
-    const value = checked(key, field.edit, raw);
-    if (field.file === "manager") command = (value as string | undefined) ?? null;
+    const value = checked(key, field.edit, raw) as string | undefined;
+    if (field.section === "model" && typeof value === "string" && !/^[\w.:/@+-]+$/.test(value))
+      throw new SettingError(`${key}: лише літери, цифри та . : / @ + - _`, key);
+    if (field.file === "manager") command = value ?? null;
+    else if (field.file === "claudeFlag") flags[key] = value;
+    else if (field.file === "codexToml") toml[key === "effort" ? "model_reasoning_effort" : key] = value;
+    else if (field.file === "opencodeModel") ocRef[key as "model" | "effort"] = value ?? null;
     else config[key] = value;
+  }
+  // OpenCode: model and effort are one reference, provider/model#variant
+  if ("model" in ocRef || "effort" in ocRef) {
+    const current = String((readJson(join(agent.dir, "aichat.config.json")) ?? {}).model ?? "");
+    const [base, variant] = current ? current.split("#") : ["", ""];
+    const m = "model" in ocRef ? ocRef.model : base || null;
+    const e = "effort" in ocRef ? ocRef.effort : variant || null;
+    if (m && !/^[^/#]+\/[^/#]+$/.test(m)) throw new SettingError("model: у вигляді провайдер/модель, наприклад litellm/main-model", "model");
+    if (!m && e) throw new SettingError("effort: спершу задайте модель", "effort");
+    config.model = m ? (e ? `${m}#${e}` : m) : undefined;
+  }
+  // Claude: the flags go into the person's command in .manager.json
+  if (Object.keys(flags).length) {
+    let words = splitCommand(command === undefined ? claudeCommand(readSettings(root).start?.[agent.folder]) : (command ?? "claude"));
+    for (const [key, value] of Object.entries(flags)) words = withFlag(words, `--${key}`, value);
+    command = joinCommand(words);
   }
   // an attach port another agent here already uses would make one of the two terminals talk to the wrong agent
   const port = config.attachPort;
@@ -500,6 +563,15 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
     }
     writeAtomic(file, JSON.stringify(current, null, 2) + "\n");
   }
+  if (Object.keys(toml).length) {
+    const config = readJson(join(agent.dir, "aichat.config.json")) ?? {};
+    // never the person's own ~/.codex: that is Codex Desktop's profile, not this agent's (codex-alexey, 3463)
+    if (!str(config.codexHome)) throw new SettingError("у цього агента немає окремого codexHome: модель Codex тут не змінюється", Object.keys(toml)[0] === "model" ? "model" : "effort");
+    const file = join(expand(String(config.codexHome), agent.dir), "config.toml");
+    let text = readText(file) ?? "";
+    for (const [k, v] of Object.entries(toml)) text = withTomlTop(text, k, v);
+    writeAtomic(file, text);
+  }
   if (command !== undefined) {
     const file = join(root, ".manager.json");
     const settings = readSettings(root) as { start?: Record<string, string> } & Record<string, unknown>;
@@ -510,4 +582,64 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
   }
   const names = Object.keys(set as object).join(", ");
   return `Збережено: ${names}.`;
+}
+
+/** A command line as words, the way a shell splits it: quotes keep spaces, and are dropped. */
+export function splitCommand(command: string): string[] {
+  const words: string[] = [];
+  for (const m of command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) words.push(m[1] ?? m[2] ?? m[3]);
+  return words;
+}
+
+/** Words back into a command line, quoting the ones with spaces. */
+export function joinCommand(words: string[]): string {
+  return words.map((w) => (/[\s"]/.test(w) || w === "" ? `"${w.replace(/"/g, "")}"` : w)).join(" ");
+}
+
+/** The value after `flag` (`--model opus` or `--model=opus`), if the words have it. */
+export function flagValue(words: string[], flag: string): string | null {
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === flag) return words[i + 1] ?? null;
+    if (words[i].startsWith(`${flag}=`)) return words[i].slice(flag.length + 1);
+  }
+  return null;
+}
+
+/** The words with `flag` set to `value`, or without it when `value` is undefined. */
+export function withFlag(words: string[], flag: string, value: string | undefined): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === flag) {
+      i++;
+      continue;
+    }
+    if (words[i].startsWith(`${flag}=`)) continue;
+    out.push(words[i]);
+  }
+  if (value !== undefined) out.push(flag, value);
+  return out;
+}
+
+/**
+ * A top-level key of a TOML file set to a string, or removed: only its own line changes, so comments and tables stay
+ * as they are (Codex's config.toml, AIChat 3459).
+ */
+export function withTomlTop(text: string, key: string, value: string | undefined): string {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.length ? text.split(/\r?\n/) : [];
+  const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
+  const end = firstTable < 0 ? lines.length : firstTable;
+  // the key bare or quoted ("model" = …, 'model' = …), so a second one is never added next to it (codex-alexey, 3463)
+  const at = lines.slice(0, end).findIndex((l) => new RegExp(`^\\s*(?:${key}|"${key}"|'${key}')\\s*=`).test(l));
+  const line = value === undefined ? null : `${key} = ${JSON.stringify(value)}`;
+  if (at >= 0) {
+    if (line === null) lines.splice(at, 1);
+    else lines[at] = line;
+  } else if (line !== null) {
+    // after the leading comments and keys, before the first table
+    let pos = end;
+    while (pos > 0 && lines[pos - 1].trim() === "") pos--;
+    lines.splice(pos, 0, line);
+  }
+  return lines.join(eol);
 }
