@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { adapterVersion, readAgent, type LocalAgent } from "./agents.js";
+import { CLAUDE_CHANNEL_FLAGS, CLAUDE_START_PS1, claudeCommand, hasStartScript } from "./claude-start.js";
 
 /** The file each adapter is served as by the broker (GET /client/<name>). */
 const CLIENT_FILE: Record<LocalAgent["type"], string> = {
@@ -121,8 +122,14 @@ export function readSettings(root: string): ManagerSettings {
  */
 export function startCommand(agent: LocalAgent, settings: ManagerSettings): string | null {
   const own = settings.start?.[agent.folder];
+  // Claude Code: the agent's start script runs the person's Claude command (AIChat 3443-3450); without one, the
+  // command itself with the channel flags
+  if (agent.type === "claude") {
+    if (hasStartScript(agent.dir)) return ".\\start.ps1";
+    const command = claudeCommand(own);
+    return command.includes("--dangerously-load-development-channels") ? command : `${command} ${CLAUDE_CHANNEL_FLAGS}`;
+  }
   if (own) return own;
-  if (agent.type === "claude") return "claude --dangerously-load-development-channels server:aichat";
   if (agent.type === "opencode") return "opencode";
   return null;
 }
@@ -230,6 +237,8 @@ export class Actions {
       }
       renameSync(tmp, target);
     }
+    // a Claude Code agent set up before the wizard wrote start scripts gets one now (never over its own)
+    if (a.type === "claude" && !hasStartScript(a.dir)) writeFileSync(join(a.dir, "start.ps1"), CLAUDE_START_PS1);
     if (restart) await this.start(folder);
     const done = `Адаптер оновлено до ${brokerVersion}, стара версія збережена поруч (.bak).`;
     return restart ? `${done} Агента перезапущено.` : stoppable(a) ? done : `${done} Перезапустіть агента в його терміналі.`;

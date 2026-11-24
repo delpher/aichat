@@ -6,6 +6,7 @@ import { ROOM_RE } from "../protocol.js";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { ActionError, readSettings, startCommand } from "./actions.js";
+import { CLAUDE_CHANNEL_FLAGS, claudeCommand, hasStartScript } from "./claude-start.js";
 import type { LocalAgent } from "./agents.js";
 
 export type SettingValue = string | number | boolean | string[] | null;
@@ -327,8 +328,19 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
 
   const command = startCommand(agent, readSettings(root));
   const own = readSettings(root).start?.[agent.folder];
-  // a background agent has no command by default: null, so saving the form unchanged does not invent one
-  launch.push({ key: "command", label: "Команда запуску", value: command, note: own ? ".manager.json" : command ? "типова" : "типова: у фоні, node <адаптер> run" });
+  if (agent.type === "claude") {
+    // the person's Claude command; the start script adds the channel flags and the session (AIChat 3443-3450)
+    const mine = own && !/start\.ps1/i.test(own);
+    launch.push({ key: "command", label: "Команда запуску", value: claudeCommand(own), note: mine ? ".manager.json" : "типова" });
+    launch.push({
+      key: "startScript",
+      label: "Як запускається",
+      value: hasStartScript(agent.dir) ? `start.ps1 → ${claudeCommand(own)} --resume <остання сесія> ${CLAUDE_CHANNEL_FLAGS}` : `${command}`,
+      note: hasStartScript(agent.dir) ? "start.ps1" : "без start.ps1: сесія не продовжується",
+    });
+  } else
+    // a background agent has no command by default: null, so saving the form unchanged does not invent one
+    launch.push({ key: "command", label: "Команда запуску", value: command, note: own ? ".manager.json" : command ? "типова" : "типова: у фоні, node <адаптер> run" });
   if (agent.type === "codex" || agent.type === "agy") add(launch, "attachPort", "Порт інтерактивної сесії", config.attachPort ?? null);
   if (agent.type !== "claude") add(launch, "session", "Сесія при старті", config.session ?? "resume");
   if (agent.status?.pid) add(launch, "pid", "Процес", agent.status.pid, agent.status.alive ? "працює" : "не працює");
