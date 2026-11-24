@@ -992,3 +992,14 @@ test("manager settings: an OpenCode model with its level pasted in says where th
   const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
   assert.throws(() => writeAgentSettings(agent, root, { model: "litellm/main-model#high" }), (e: Error & { field?: string }) => e.field === "model" && /у полі Effort/.test(e.message));
 });
+
+test("manager settings: OpenCode effort alone builds on the model inherited from opencode.jsonc (antigravity-alexey, 3506)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  writeFileSync(join(root, "opencode", "opencode.jsonc"), '{ "model": "litellm/main-model#high", // the profile\n}');
+  const agent = discover(root).find((a) => a.agent.folder === "opencode")!.agent;
+  writeAgentSettings(agent, root, { effort: "max" });
+  assert.equal(JSON.parse(readFileSync(join(root, "opencode", "aichat.config.json"), "utf8")).model, "litellm/main-model#max");
+  assert.ok(readFileSync(join(root, "opencode", "opencode.jsonc"), "utf8").includes("// the profile"), "opencode.jsonc untouched");
+});

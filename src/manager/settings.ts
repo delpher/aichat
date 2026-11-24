@@ -542,7 +542,10 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
   }
   // OpenCode: model and effort are one reference, provider/model#variant
   if ("model" in ocRef || "effort" in ocRef) {
-    const current = String((readJson(join(agent.dir, "aichat.config.json")) ?? {}).model ?? "");
+    // what the form showed: aichat.config.json's model, else the one inherited from opencode.jsonc (antigravity, 3506)
+    const own = str((readJson(join(agent.dir, "aichat.config.json")) ?? {}).model);
+    const inherited = str((parseJsonc(readText(join(agent.dir, "opencode.jsonc")) ?? readText(join(agent.dir, "opencode.json")) ?? "") ?? {}).model);
+    const current = own ?? inherited ?? "";
     const [base, variant] = current ? current.split("#") : ["", ""];
     const m = "model" in ocRef ? ocRef.model : base || null;
     const e = "effort" in ocRef ? ocRef.effort : variant || null;
