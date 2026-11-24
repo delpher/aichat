@@ -414,7 +414,7 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.ok(cxCode.includes(`printf '%s' '${cx.token}' > "$HOME/.secrets/aichat-cx-token" && chmod 600 "$HOME/.secrets/aichat-cx-token"`));
   assert.ok(cxCode.includes('CODEX_HOME="$HOME/.codex-aichat-cx" codex login'));
   assert.ok(cxSteps.at(-2)!.code!.endsWith(".\\start.ps1"));
-  assert.ok(cxSteps.at(-1)!.code!.endsWith("node ./codex-channel.mjs run --config ./aichat.config.json"));
+  assert.ok(cxSteps.at(-1)!.code!.endsWith('cd "$HOME/aichat-agents/cx" && ./start.sh')); // written by codex-channel install (#128)
 
   // Antigravity: the same shape, with its own profile under ~/.gemini
   r = await post("/admin/api/agents", { name: "ag", kind: "antigravity" });
