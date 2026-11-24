@@ -11,8 +11,10 @@ import { NAME_RE, ROOM_RE } from "../protocol.js";
 import { discover } from "./agents.js";
 import { fetchBytes, fetchManifest, makePrivate, readManagerConfig, sha256, type ClientManifest, type Fetch } from "./self.js";
 import { SettingError } from "./settings.js";
+import { CLAUDE_START_PS1, hasStartScript } from "./claude-start.js";
 
 export type WizardType = "claude" | "codex" | "agy" | "opencode";
+
 const TYPES: WizardType[] = ["claude", "codex", "agy", "opencode"];
 
 /** What the page needs to draw the wizard. `{name}` in the defaults is the agent's name, filled in by the page. */
@@ -238,6 +240,12 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
       cfg.attachPort = attachPort;
       writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
       steps.push(`Порт інтерактивної сесії: ${attachPort}.`);
+    }
+    // Claude Code keeps the session, not the adapter: the start script resumes it and tells the adapter how it began
+    // (the Claude command itself stays "claude" until the person changes it in the settings)
+    if (type === "claude" && !hasStartScript(dir)) {
+      writeFileSync(join(dir, "start.ps1"), CLAUDE_START_PS1);
+      steps.push("Додано start.ps1: «Запустити» продовжує останню сесію (або нову з -Fresh).");
     }
   } catch (e) {
     // a half-made agent is worse than none: take back what this run made

@@ -4,7 +4,7 @@ import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { Actions, type Runner } from "../manager/actions.js";
+import { Actions, readSettings, startCommand, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
 import { parseJsonc, parseTomlLite, readAgentSettings, writeAgentSettings } from "../manager/settings.js";
@@ -659,4 +659,57 @@ test("manager wizard: one installation at a time (codex-alexey, 3415)", async (t
   assert.equal((await first).folder, "agy-bot");
   // and the next one may go
   assert.equal((await installAgent(root, { type: "agy", name: "claude-bot", token: "tok-claude" }, deps)).folder, "claude-bot");
+});
+
+test("manager wizard: a Claude Code agent gets the start script that resumes its session (opencode-alexey, 3434)", async (t) => {
+  const broker = await fakeBroker(); // tok-claude belongs to claude-bot
+  t.after(() => broker.server.close());
+  const root = mkdtempSync(join(tmpdir(), "aichat-wizard-claude-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".manager"));
+  writeFileSync(join(root, ".manager", "config.json"), JSON.stringify({ broker: broker.url }));
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { other: "x" } }));
+  const files: Record<string, Buffer> = { "claude-channel.mjs": Buffer.from("// claude"), "aichat-hook.mjs": Buffer.from("// hook") };
+  const get = async (url: string) =>
+    url.endsWith("manifest.json")
+      ? Buffer.from(JSON.stringify({ version: "9.9.9", files: Object.fromEntries(Object.entries(files).map(([n, d]) => [n, { sha256: sha256(d), size: d.length }])) }))
+      : files[url.split("/client/")[1]];
+  // what claude-channel's installer does: the agent's .mcp.json naming the adapter
+  const run = async (args: string[], cwd: string) => {
+    writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { aichat: { command: "node", args: [args[0]], env: { AICHAT_URL: "ws://x" } } } }));
+    return { code: 0, output: "" };
+  };
+  const done = await installAgent(root, { type: "claude", name: "claude-bot", token: "tok-claude" }, { get, run, secretsDir: join(root, "secrets"), home: root });
+  const script = readFileSync(join(root, "claude-bot", "start.ps1"), "utf8");
+  assert.match(script, /\$env:AICHAT_START = if \(\$session\) \{ 'resumed' \} elseif \(\$ownSession\) \{ '' \} else \{ 'new' \}/);
+  assert.match(script, /@\('--resume', \$session\.BaseName\)/);
+  assert.match(script, /'\.aichat\\fresh'/);
+  assert.ok(script.includes("\r\n"), "Windows line ends");
+  // the command lives in .manager.json only (opencode-alexey, 3448): the script reads it from there, "claude" by default
+  assert.match(script, /\$settings\.start\.\$folder/);
+  assert.match(script, /\$command = 'claude'/);
+  // quoted values stay whole; the channel flag and its value each once; a command's own session is kept (3453-3455)
+  assert.match(script, /PSParser\]::Tokenize\(\$command/);
+  assert.match(script, /elseif \(-not \$extra\.Contains\('server:aichat'\)\) \{ \$extra\.Insert\(\$flag \+ 1, 'server:aichat'\) \}/);
+  assert.match(script, /\$_ -in '--resume', '-r', '--continue', '-c', '--session-id'/);
+  assert.match(script, /Could not resume that session: starting a new one/);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: { other: "x" } }, "the wizard writes no command");
+  assert.match(done.steps.join(" "), /start\.ps1/);
+
+  // the manager starts it through the script and shows the person's command, not the script
+  const agent = discover(root).find((a) => a.agent.folder === "claude-bot")!.agent;
+  assert.equal(startCommand(agent, readSettings(root)), ".\\start.ps1");
+  const launch = readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items;
+  assert.equal(launch.find((i) => i.key === "command")?.value, "claude");
+  assert.match(String(launch.find((i) => i.key === "startScript")?.value), /^start\.ps1 → claude --resume/);
+  writeAgentSettings(agent, root, { command: "claude --model opus" }, [agent]);
+  assert.equal(readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items.find((i) => i.key === "command")?.value, "claude --model opus");
+  assert.equal(startCommand(agent, readSettings(root)), ".\\start.ps1", "still the script, which reads the new command");
+  // an old entry naming the script (claude-alexey's) means the default command
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { "claude-bot": ".\\start.ps1" } }));
+  assert.equal(readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items.find((i) => i.key === "command")?.value, "claude");
+  // without a script: the command with the channel flags, once
+  rmSync(join(root, "claude-bot", "start.ps1"));
+  writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { "claude-bot": "claude --model opus" } }));
+  assert.equal(startCommand(agent, readSettings(root)), "claude --model opus --dangerously-load-development-channels server:aichat");
 });
