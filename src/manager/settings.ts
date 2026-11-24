@@ -565,7 +565,9 @@ export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown
   }
   if (Object.keys(toml).length) {
     const config = readJson(join(agent.dir, "aichat.config.json")) ?? {};
-    const file = join(str(config.codexHome) ? expand(String(config.codexHome), agent.dir) : join(homedir(), ".codex"), "config.toml");
+    // never the person's own ~/.codex: that is Codex Desktop's profile, not this agent's (codex-alexey, 3463)
+    if (!str(config.codexHome)) throw new SettingError("у цього агента немає окремого codexHome: модель Codex тут не змінюється", Object.keys(toml)[0] === "model" ? "model" : "effort");
+    const file = join(expand(String(config.codexHome), agent.dir), "config.toml");
     let text = readText(file) ?? "";
     for (const [k, v] of Object.entries(toml)) text = withTomlTop(text, k, v);
     writeAtomic(file, text);
@@ -627,7 +629,8 @@ export function withTomlTop(text: string, key: string, value: string | undefined
   const lines = text.length ? text.split(/\r?\n/) : [];
   const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
   const end = firstTable < 0 ? lines.length : firstTable;
-  const at = lines.slice(0, end).findIndex((l) => new RegExp(`^\\s*${key}\\s*=`).test(l));
+  // the key bare or quoted ("model" = …, 'model' = …), so a second one is never added next to it (codex-alexey, 3463)
+  const at = lines.slice(0, end).findIndex((l) => new RegExp(`^\\s*(?:${key}|"${key}"|'${key}')\\s*=`).test(l));
   const line = value === undefined ? null : `${key} = ${JSON.stringify(value)}`;
   if (at >= 0) {
     if (line === null) lines.splice(at, 1);

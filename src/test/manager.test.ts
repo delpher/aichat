@@ -762,6 +762,10 @@ test("manager settings: model and effort for every kind, each in its own place (
   writeAgentSettings(agent("agy"), root, { model: "gemini-x-high" });
   assert.equal(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).model, "gemini-x-high");
   assert.equal(item("agy", "model")?.edit?.type, "text");
+
+  // a Codex agent without its own CODEX_HOME: never the person's ~/.codex (Codex Desktop's profile; codex-alexey, 3463)
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url }));
+  assert.throws(() => writeAgentSettings(agent("codex"), root, { model: "gpt-y" }), (e: Error & { field?: string }) => e.field === "model" && /немає окремого codexHome/.test(e.message));
 });
 
 test("manager settings: command words and TOML lines", () => {
@@ -769,5 +773,8 @@ test("manager settings: command words and TOML lines", () => {
   assert.equal(joinCommand(withFlag(splitCommand('claude --add-dir "C:/My Dir" --model=opus'), "--model", "sonnet")), 'claude --add-dir "C:/My Dir" --model sonnet');
   assert.equal(flagValue(["claude", "--effort", "max"], "--effort"), "max");
   assert.equal(withTomlTop("", "model", "x"), 'model = "x"');
+  // a quoted key is the same key: replaced, never a second one next to it
+  assert.equal(withTomlTop('"model" = "old"\n[t]', "model", "new"), 'model = "new"\n[t]');
+  assert.equal(withTomlTop("'model' = 'old'\n", "model", undefined), "");
   assert.equal(withTomlTop('a = 1\r\n[t]\r\nmodel = "in table"', "model", "top"), 'a = 1\r\nmodel = "top"\r\n[t]\r\nmodel = "in table"');
 });
