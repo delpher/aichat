@@ -11,6 +11,7 @@ import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
 import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
+import { replaceToken } from "./token.js";
 import { installAgent, installInfo, type NodeRunner } from "./wizard.js";
 import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
 import { spawn } from "node:child_process";
@@ -33,6 +34,8 @@ export interface ManagerOptions {
   /** For tests: how the agent wizard runs adapter installers and where it keeps tokens. */
   runNode?: NodeRunner;
   secretsDir?: string;
+  /** For tests: who a token belongs to at the broker. */
+  whoIs?: (broker: string, token: string) => Promise<string | null>;
 }
 
 /** What the broker says about one agent (GET /api/agents), by its AIChat name. */
@@ -158,6 +161,14 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
           // answer first, then hand over to the new file
           res.once("finish", () => setTimeout(() => opts.onRestart?.(), 100));
           return send(200, { ok: true, message: `Менеджер оновлено до ${version}, стара версія збережена поруч (.bak). Перезапускаюсь…` });
+        }
+        const replace = /^\/api\/agents\/([^/]+)\/token$/.exec(url.pathname);
+        if (replace) {
+          const found = discover(opts.root).find((a) => a.agent.folder === decodeURIComponent(replace[1]));
+          if (!found) return send(404, { error: "немає такого агента" });
+          const message = await replaceToken(found.agent, found.secrets, body.token, { whoIs: opts.whoIs, secretsDir: opts.secretsDir });
+          // the token itself never goes back: only what was done
+          return send(200, { ok: true, message });
         }
         const save = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
         if (save) {
