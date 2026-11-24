@@ -14,6 +14,11 @@ export interface SetupStep {
 
 export interface Setup {
   kind: string;
+  /**
+   * The new token itself, when one was just made (not when the instructions are shown again): the web UI shows it on
+   * top, apart from the commands that also carry it (alexey, AIChat 3553).
+   */
+  token?: string;
   steps: SetupStep[];
 }
 
@@ -51,6 +56,11 @@ export function hookSettings(hookPath: string) {
 }
 
 export function buildSetup(c: SetupContext): Setup {
+  const setup = buildSteps(c);
+  return c.token && c.token !== TOKEN_PLACEHOLDER ? { ...setup, token: c.token } : setup;
+}
+
+function buildSteps(c: SetupContext): Setup {
   const http = c.httpUrl.replace(/\/+$/, "");
   const ws = http.replace(/^http/i, "ws");
   const dir = (c.projectDir || DIR_PLACEHOLDER).replace(/\\/g, "/").replace(/\/+$/, "");
