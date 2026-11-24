@@ -369,7 +369,7 @@ function buildSteps(c: SetupContext): Setup {
       `curl -fsSL ${http}/client/codex-channel.mjs -o /tmp/codex-channel.mjs && node /tmp/codex-channel.mjs install --dir "${home}" --home "${codexHomeSh}" --token-file "${tokenSh}" --url ${sq(http)} --owners ${sq(owner)} --rooms lobby --approve-aichat-tools`,
       `CODEX_HOME="${codexHomeSh}" codex login`,
       `cd "${home}" && node ./codex-channel.mjs probe --config ./aichat.config.json`,
-      `cd "${home}" && node ./codex-channel.mjs run --config ./aichat.config.json`,
+      `cd "${home}" && ./start.sh`,
     ]) };
   }
 
