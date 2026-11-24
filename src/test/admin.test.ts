@@ -532,6 +532,14 @@ test("bundled adapters are served without a token; nothing else under /client", 
   assert.equal(r.status, 200);
   assert.equal(await r.text(), "// plugin");
   assert.match(r.headers.get("content-disposition")!, /attachment; filename="opencode-channel.js"/);
+  // the agent manager and the manifest its installer checks it against (stage 4a)
+  writeFileSync(join(dir, "aichat-manager.mjs"), "// manager");
+  writeFileSync(join(dir, "manifest.json"), '{"version":"1.0.0","files":{}}');
+  r = await fetch(`${http}/client/aichat-manager.mjs`);
+  assert.equal(await r.text(), "// manager");
+  r = await fetch(`${http}/client/manifest.json`);
+  assert.match(r.headers.get("content-type")!, /^application\/json/);
+  assert.deepEqual(await r.json(), { version: "1.0.0", files: {} });
   assert.equal((await fetch(`${http}/client/openai-agent.mjs`)).status, 404); // listed but missing
   assert.equal((await fetch(`${http}/client/secret.txt`)).status, 404);
   assert.equal((await fetch(`${http}/client/..%2fsecret.txt`)).status, 404);

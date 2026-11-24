@@ -5,12 +5,14 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
 import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
+import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
+import { spawn } from "node:child_process";
 import type { AdapterInfo } from "../protocol.js";
 
 export interface ManagerOptions {
@@ -23,6 +25,10 @@ export interface ManagerOptions {
   /** For tests: how terminals and adapter commands run, and how adapters are downloaded. */
   runner?: Runner;
   fetchText?: (url: string) => Promise<string>;
+  /** For tests: how the manager downloads itself, which file it runs from, and how it restarts after an update. */
+  fetchBytes?: Fetch;
+  self?: string | null;
+  onRestart?: () => void;
 }
 
 /** What the broker says about one agent (GET /api/agents), by its AIChat name. */
@@ -94,6 +100,10 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
   const key = opts.key ?? randomBytes(16).toString("hex");
   const timeout = opts.brokerTimeoutMs ?? 3000;
   const actions = new Actions(opts.root, opts.runner, opts.fetchText);
+  const get = opts.fetchBytes ?? fetchBytes;
+  const self = opts.self === undefined ? installedFile() : opts.self;
+  // the broker to update from when the manager was not installed with --broker: the one its agents use
+  const firstBroker = () => discover(opts.root).find((a) => a.agent.brokerUrl)?.agent.brokerUrl ?? null;
   const readBody = (req: IncomingMessage) =>
     new Promise<Record<string, unknown>>((resolve, reject) => {
       let raw = "";
@@ -133,6 +143,14 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
         // a page on another site may post a form here, but cannot add this header without our consent (CORS)
         if (req.headers["x-aichat-manager"] !== "1") return send(403, { error: "missing x-aichat-manager header" });
         const body = await readBody(req);
+        if (url.pathname === "/api/manager/update") {
+          const version = await updateSelf(opts.root, firstBroker(), self, get).catch((e: Error) => {
+            throw new ActionError(e.message, 502);
+          });
+          // answer first, then hand over to the new file
+          res.once("finish", () => setTimeout(() => opts.onRestart?.(), 100));
+          return send(200, { ok: true, message: `Менеджер оновлено до ${version}, стара версія збережена поруч (.bak). Перезапускаюсь…` });
+        }
         const save = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
         if (save) {
           const all = discover(opts.root).map((a) => a.agent);
@@ -172,6 +190,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
       if (req.method !== "GET") return send(405, { error: "method not allowed" });
       if (url.pathname === "/api/removed") return send(200, { removed: actions.removed() });
       if (url.pathname === "/") return send(200, PAGE, "text/html; charset=utf-8", { "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" });
+      if (url.pathname === "/api/manager") return send(200, await updateInfo(opts.root, firstBroker(), get, self));
       if (url.pathname === "/api/agents") return send(200, { root: opts.root, agents: await overview(opts.root, timeout) });
       const settings = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
       if (settings) {
@@ -207,14 +226,46 @@ function arg(name: string): string | undefined {
   return i > 0 ? process.argv[i + 1] : undefined;
 }
 
+/** Listens on `port`; after a self-update the old process may still hold it for a moment. */
+async function startWithRetry(opts: ManagerOptions, tries = 20) {
+  for (let n = 1; ; n++) {
+    try {
+      return await startManager(opts);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EADDRINUSE" || n >= tries) throw e;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const root = arg("root") ?? join(homedir(), "aichat-agents");
+  const root = resolve(arg("root") ?? join(homedir(), "aichat-agents"));
   const port = Number(arg("port") ?? 8790);
-  startManager({ root, port }).then(
-    ({ url }) => console.log(`Менеджер агентів AIChat: ${url}\nТека агентів: ${root}`),
-    (e) => {
-      console.error(`Не вдалося запустити менеджер: ${(e as Error).message}`);
-      process.exit(1);
-    },
-  );
+  const command = process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : "run";
+  (async () => {
+    if (command === "install") {
+      const broker = arg("broker");
+      if (!broker) throw new Error("потрібно --broker <адреса брокера>");
+      for (const line of await install(root, broker, installedFile())) console.log(line);
+    } else if (command !== "run") throw new Error(`невідома команда «${command}»: run або install`);
+    const key = pageKey(root);
+    let server: Server | undefined;
+    // after a self-update: the new file takes over in this same console, this process waits for it and leaves with it
+    const onRestart = () => {
+      server?.close();
+      const child = spawn(process.execPath, process.argv.slice(1).filter((a, i, all) => a !== "install" && all[i - 1] !== "--broker" && a !== "--broker"), {
+        stdio: "inherit",
+      });
+      child.on("exit", (code) => process.exit(code ?? 0));
+    };
+    const started = await startWithRetry({ root, port, key, onRestart });
+    server = started.server;
+    console.log(`Менеджер агентів AIChat: ${started.url}\nТека агентів: ${root}`);
+    // a fresh install opens the page at once
+    if (command === "install" && process.platform === "win32" && !process.argv.includes("--no-open"))
+      spawn("cmd", ["/c", "start", "", started.url], { stdio: "ignore", detached: true, windowsHide: true }).unref();
+  })().catch((e) => {
+    console.error(`Не вдалося запустити менеджер: ${(e as Error).message}`);
+    process.exit(1);
+  });
 }

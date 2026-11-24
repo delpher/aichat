@@ -8,6 +8,7 @@ import { Actions, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
 import { parseJsonc, parseTomlLite, readAgentSettings, writeAgentSettings } from "../manager/settings.js";
+import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -454,4 +455,59 @@ test("manager settings: the page changes only what may be changed, checked first
   // Claude Code lives in its terminal: the manager only says so
   const claude = await post("/api/agents/claude/settings", { set: { command: "claude" }, restart: true });
   assert.match(String(claude.body.message), /Перезапустіть агента там, де він працює/);
+});
+
+test("manager delivery: install checks the file against the broker's manifest, update replaces it and keeps a .bak", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aichat-manager-self-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const build = (version: string) => Buffer.from(`var VERSION = true ? "${version}" : "0.0.0-dev"; // manager ${version}`);
+  let served = build(MANAGER_VERSION);
+  let manifest = () => ({ version: MANAGER_VERSION, files: { "aichat-manager.mjs": { sha256: sha256(served), size: served.length } } });
+  const requested: string[] = [];
+  const get = async (url: string) => {
+    requested.push(url.replace("http://broker.test:8787", ""));
+    if (url.endsWith("/client/manifest.json")) return Buffer.from(JSON.stringify(manifest()));
+    if (url.endsWith("/client/aichat-manager.mjs")) return served;
+    throw new Error("404 " + url);
+  };
+  // the install command downloads into <root>/.manager first
+  mkdirSync(join(root, ".manager"));
+  const self = join(root, ".manager", "aichat-manager.mjs");
+  writeFileSync(self, served);
+
+  await assert.rejects(install(root, "not a url", self, get), /потрібна адреса брокера/);
+  const lines = await install(root, "ws://broker.test:8787/ws", self, get);
+  assert.match(lines[0], new RegExp(`Менеджер ${MANAGER_VERSION.replace(/\./g, "\\.")} встановлено з http://broker.test:8787`));
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager", "config.json"), "utf8")), { broker: "http://broker.test:8787" });
+  assert.match(readFileSync(join(root, "aichat-manager.cmd"), "utf8"), /node "%~dp0\.manager\\aichat-manager\.mjs" %\*/);
+
+  // a file that is not what the manifest names is refused
+  writeFileSync(self, build(MANAGER_VERSION).toString() + " tampered");
+  await assert.rejects(install(root, "http://broker.test:8787", self, get), /SHA-256 не збігається/);
+  writeFileSync(self, served);
+
+  const none = await updateInfo(root, null, get, self);
+  assert.deepEqual([none.latest, none.updateAvailable, none.canUpdate], [MANAGER_VERSION, false, true]);
+
+  served = build("99.0.0");
+  manifest = () => ({ version: "99.0.0", files: { "aichat-manager.mjs": { sha256: sha256(served), size: served.length } } });
+  const info = await updateInfo(root, null, get, self);
+  assert.deepEqual([info.broker, info.latest, info.updateAvailable], ["http://broker.test:8787", "99.0.0", true]);
+  assert.equal(await updateSelf(root, null, self, get), "99.0.0");
+  assert.equal(readFileSync(self, "utf8"), served.toString());
+  assert.equal(fileVersion(readFileSync(`${self}.bak-${MANAGER_VERSION}`, "utf8")), MANAGER_VERSION);
+  await assert.rejects(updateSelf(root, null, null, get), /не з встановленого файлу/);
+
+  // a broker whose file does not match its own manifest: nothing is replaced
+  const before = readFileSync(self, "utf8");
+  manifest = () => ({ version: "99.0.1", files: { "aichat-manager.mjs": { sha256: "0".repeat(64), size: 1 } } });
+  await assert.rejects(updateSelf(root, null, self, get), /SHA-256/);
+  assert.equal(readFileSync(self, "utf8"), before);
+  assert.ok(requested.every((u) => u.startsWith("/client/")));
+
+  // the page key outlives a restart
+  const key = pageKey(root);
+  assert.match(key, /^[0-9a-f]{32}$/);
+  assert.equal(pageKey(root), key);
+  assert.equal(installedFile("C:\\x\\dist\\manager\\server.js"), null);
 });
