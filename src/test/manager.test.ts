@@ -7,7 +7,7 @@ import test from "node:test";
 import { Actions, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
-import { parseJsonc, parseTomlLite, readAgentSettings } from "../manager/settings.js";
+import { parseJsonc, parseTomlLite, readAgentSettings, writeAgentSettings } from "../manager/settings.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -380,4 +380,78 @@ test("manager settings: what each agent is set up for, from its own files, with 
 test("manager settings: JSON with comments and a little TOML", () => {
   assert.deepEqual(parseJsonc('{ "a": "http://x//y", /* c */ "b": [1, 2,], // end\n }'), { a: "http://x//y", b: [1, 2] });
   assert.deepEqual(parseTomlLite('top = 1\n[t.x]\nk = "v" # c\narr = ["a", \'b\']\nbad = { x = 1 }\n'), { "": { top: 1 }, "t.x": { k: "v", arr: ["a", "b"] } });
+});
+
+test("manager settings: the page changes only what may be changed, checked first, with a backup", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const configFile = join(root, "agy", "aichat.config.json");
+  writeFileSync(configFile, JSON.stringify({ url: broker.url, tokenFile: "token.txt", owners: ["me"], wake: "always", attachPort: 60620 }, null, 2));
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, attachPort: 60610 }));
+  const agents = () => discover(root).map((a) => a.agent);
+  const agent = (folder: string) => agents().find((a) => a.folder === folder)!;
+  const read = () => JSON.parse(readFileSync(configFile, "utf8"));
+
+  const view = readAgentSettings(agent("agy"), root);
+  const edits = Object.fromEntries(view.sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => [i.key, i.edit!.type]));
+  assert.deepEqual(edits, {
+    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int",
+  });
+  const claudeEdits = readAgentSettings(agent("claude"), root).sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => i.key);
+  assert.deepEqual(claudeEdits, ["command"]);
+
+  assert.match(writeAgentSettings(agent("agy"), root, { wake: "mention", rooms: "#dev, lobby dev", attachPort: null, maxWakesPerMinute: "20" }, agents()), /Збережено/);
+  assert.deepEqual(read(), { url: broker.url, tokenFile: "token.txt", owners: ["me"], wake: "mention", rooms: ["dev", "lobby"], maxWakesPerMinute: 20 });
+  assert.equal(JSON.parse(readFileSync(configFile + ".bak", "utf8")).attachPort, 60620, "the previous file is kept");
+
+  const before = readFileSync(configFile, "utf8");
+  const fails = (set: unknown, field: string | undefined, why: RegExp) =>
+    assert.throws(() => writeAgentSettings(agent("agy"), root, set, agents()), (e: Error & { field?: string }) => e.field === field && why.test(e.message));
+  fails({ wake: "sometimes" }, "wake", /always, mention, never/);
+  fails({ owners: ["someone"] }, "owners", /не змінюється/);
+  fails({ paused: true, attachPort: 60610 }, "attachPort", /уже має codex/);
+  fails({ attachPort: 80 }, "attachPort", /від 1024 до 65535/);
+  fails({ rooms: ["ok", "not ok!"] }, "rooms", /назву кімнати/);
+  fails({ sessionTitle: "two\nlines" }, "sessionTitle", /один рядок/);
+  fails({ session: null }, "session", /потрібне значення/);
+  fails({}, undefined, /немає змін/);
+  assert.equal(readFileSync(configFile, "utf8"), before, "nothing is written when one value is wrong");
+
+  writeAgentSettings(agent("claude"), root, { command: " .\\start.ps1 " }, agents());
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: { claude: ".\\start.ps1" } });
+  writeAgentSettings(agent("claude"), root, { command: "" }, agents());
+  assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: {} });
+  assert.throws(() => writeAgentSettings(agent("claude"), root, { wake: "never" }, agents()), /не змінюється/);
+
+  const { calls, runner } = fakeRunner();
+  const { server } = await startManager({ root, port: 0, key: "abc789", runner });
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const post = (path: string, body: unknown, header = true) =>
+    new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
+      const headers: Record<string, string> = { cookie: "aichat_manager=abc789", "content-type": "application/json" };
+      if (header) headers["x-aichat-manager"] = "1";
+      const req = request({ host: "127.0.0.1", port, path, method: "POST", headers }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c)).on("end", () => resolve({ status: res.statusCode!, body: JSON.parse(text || "{}") }));
+      });
+      req.on("error", reject).end(JSON.stringify(body));
+    });
+  assert.equal((await post("/api/agents/agy/settings", { set: { wake: "never" } }, false)).status, 403);
+  const ok = await post("/api/agents/agy/settings", { set: { wake: "never" } });
+  assert.equal(ok.status, 200);
+  assert.ok((ok.body.settings as { sections: unknown[] }).sections.length);
+  assert.equal(read().wake, "never");
+  const bad = await post("/api/agents/agy/settings", { set: { delivery: "fast" } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.field, "delivery");
+  // a running agy agent: save, stop, start again in the background
+  const restarted = await post("/api/agents/agy/settings", { set: { paused: true }, restart: true });
+  assert.equal(restarted.status, 200);
+  assert.match(String(restarted.body.message), /Збережено: paused\. .*запущено у фоні/);
+  assert.deepEqual(calls, ["node agy agy-channel.mjs stop", "background agy agy-channel.mjs run > background.log"]);
+  // Claude Code lives in its terminal: the manager only says so
+  const claude = await post("/api/agents/claude/settings", { set: { command: "claude" }, restart: true });
+  assert.match(String(claude.body.message), /Перезапустіть агента там, де він працює/);
 });

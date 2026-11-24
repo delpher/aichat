@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
-import { readAgentSettings } from "./settings.js";
+import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
 import type { AdapterInfo } from "../protocol.js";
 
 export interface ManagerOptions {
@@ -133,7 +133,21 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
         // a page on another site may post a form here, but cannot add this header without our consent (CORS)
         if (req.headers["x-aichat-manager"] !== "1") return send(403, { error: "missing x-aichat-manager header" });
         const body = await readBody(req);
-        const act = /^\/api\/agents\/([^/]+)\/(start|stop|session|update|remove)$/.exec(url.pathname);
+        const save = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
+        if (save) {
+          const all = discover(opts.root).map((a) => a.agent);
+          const agent = all.find((a) => a.folder === decodeURIComponent(save[1]));
+          if (!agent) return send(404, { error: "немає такого агента" });
+          let message = writeAgentSettings(agent, opts.root, body.set, all);
+          // codex and agy run in the background, so the manager can restart them; the others restart in their terminal
+          if (body.restart === true && (agent.type === "codex" || agent.type === "agy") && agent.status?.alive) {
+            await actions.stop(agent.folder);
+            message += " " + (await actions.start(agent.folder));
+          } else if (body.restart === true) message += " Перезапустіть агента там, де він працює.";
+          const fresh = discover(opts.root).find((a) => a.agent.folder === agent.folder)!.agent;
+          return send(200, { ok: true, message, settings: readAgentSettings(fresh, opts.root) });
+        }
+        const act =/^\/api\/agents\/([^/]+)\/(start|stop|session|update|remove)$/.exec(url.pathname);
         if (act) {
           const folder = decodeURIComponent(act[1]);
           const view = (await overview(opts.root, timeout)).find((a) => a.folder === folder);
@@ -176,7 +190,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
       }
       return send(404, { error: "not found" });
     } catch (e) {
-      return send(e instanceof ActionError ? e.status : 500, { error: (e as Error).message });
+      return send(e instanceof ActionError ? e.status : 500, { error: (e as Error).message, ...(e instanceof SettingError && e.field ? { field: e.field } : {}) });
     }
   });
   return new Promise((resolve, reject) => {
