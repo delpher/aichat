@@ -321,6 +321,12 @@ try {
     padding: 0 10px;
     border-radius: var(--r-sm);
   }
+  .btn.xs {
+    height: 24px;
+    padding: 0 8px;
+    font-size: var(--text-xs);
+    border-radius: var(--r-sm);
+  }
   .btn.primary {
     background: var(--accent);
     color: var(--on-accent);
@@ -388,7 +394,7 @@ try {
   .icon-btn.plain {
     border-color: transparent;
   }
-  input[type="text"], select {
+  input[type="text"], input[type="number"], select {
     height: var(--control-h-sm);
     padding: 0 10px;
     border: 1px solid var(--line-2);
@@ -397,12 +403,12 @@ try {
     font-size: var(--text-sm);
     transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
   }
-  input[type="text"]:focus, select:focus {
+  input[type="text"]:focus, input[type="number"]:focus, select:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
-  input[type="text"]::placeholder {
+  input[type="text"]::placeholder, input[type="number"]::placeholder {
     color: var(--muted);
   }
   input[type="checkbox"] {
@@ -701,6 +707,12 @@ try {
     padding-top: var(--space-3);
     border-top: 1px solid var(--line);
   }
+  .tabs-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
   .tabs {
     display: inline-flex;
     align-items: center;
@@ -762,7 +774,7 @@ try {
   }
   .settings-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
     gap: var(--space-4);
     align-items: start;
   }
@@ -784,6 +796,7 @@ try {
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
+    min-height: 24px;
   }
   .settings-sec-head h3 {
     font-size: var(--text-sm);
@@ -798,7 +811,7 @@ try {
   }
   .kv-row {
     display: grid;
-    grid-template-columns: minmax(110px, 40%) minmax(0, 1fr);
+    grid-template-columns: minmax(150px, 44%) minmax(0, 1fr);
     gap: 4px var(--space-3);
     align-items: baseline;
     padding-top: var(--space-2);
@@ -807,6 +820,9 @@ try {
   .kv-row:first-child {
     padding-top: 0;
     border-top: 0;
+  }
+  .kv-row.kv-editing {
+    align-items: start;
   }
   .kv-row.kv-block {
     grid-template-columns: minmax(0, 1fr);
@@ -820,6 +836,12 @@ try {
     font-size: var(--text-xs);
     color: var(--muted);
     min-width: 0;
+  }
+  .kv-row.kv-editing .kv-key {
+    padding-top: 5px;
+  }
+  .kv-row.kv-editing.kv-block .kv-key {
+    padding-top: 0;
   }
   .kv-val {
     margin: 0;
@@ -901,6 +923,138 @@ try {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+
+  /* ---------- settings edit controls ---------- */
+  .edit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+  }
+  .edit-input {
+    width: 100%;
+  }
+  .kv-row.changed .edit-input,
+  .kv-row.changed .list-editor {
+    border-color: var(--warn);
+  }
+  .kv-row.bad .edit-input,
+  .kv-row.bad .list-editor {
+    border-color: var(--bad);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bad) 18%, transparent);
+  }
+  .field-hint {
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .field-error {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    color: var(--bad);
+  }
+  .toggle-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--control-h-sm);
+    padding: 0 10px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    user-select: none;
+    width: fit-content;
+  }
+  .kv-row.changed .toggle-field {
+    border-color: var(--warn);
+  }
+  .list-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+  }
+  .list-editor:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .edit-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .edit-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 4px 0 9px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    font-size: var(--text-xs);
+    color: var(--text);
+  }
+  .edit-chip button {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .edit-chip button:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--bad);
+  }
+  .list-add-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .list-add-row input {
+    flex: 1;
+    min-width: 110px;
+    height: 26px;
+    padding: 0 6px;
+    border: 0;
+    background: transparent;
+    font-size: var(--text-sm);
+  }
+  .list-add-row input:focus {
+    outline: none;
+    box-shadow: none;
+  }
+  .settings-edit-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    animation: rise-in var(--dur-fast) var(--ease-out);
+  }
+  .settings-edit-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
   .mcp-list {
     list-style: none;
     margin: 0;
@@ -1110,7 +1264,10 @@ try {
         </button>
         <button id="tab-logs" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-logs">Логи</button>
       </div>
-      <button id="settings-refresh" class="btn ghost sm" type="button">Оновити налаштування</button>
+      <div class="tabs-actions">
+        <button id="settings-edit" class="btn soft sm" type="button" hidden>Редагувати</button>
+        <button id="settings-refresh" class="btn ghost sm" type="button">Оновити налаштування</button>
+      </div>
     </div>
 
     <div id="panel-settings" class="settings-panel" role="tabpanel" aria-labelledby="tab-settings">
@@ -1118,7 +1275,16 @@ try {
         <span class="dot warn" aria-hidden="true"></span>
         <span>Конфіг змінено після запуску процесу — перезапустіть агента, щоб зміни набрали чинності.</span>
       </div>
+      <div id="settings-msg" class="msg-banner" role="status" aria-live="polite"></div>
       <div id="settings-body"></div>
+      <div id="settings-edit-bar" class="settings-edit-bar" hidden>
+        <span id="settings-dirty-label" class="small muted">Змініть потрібні поля</span>
+        <div class="settings-edit-actions">
+          <button id="settings-cancel" class="btn quiet sm" type="button">Скасувати</button>
+          <button id="settings-save" class="btn primary sm" type="button" disabled>Зберегти</button>
+          <button id="settings-save-restart" class="btn soft sm" type="button" hidden disabled>Зберегти і перезапустити</button>
+        </div>
+      </div>
     </div>
 
     <div id="panel-logs" class="log-panel" role="tabpanel" aria-labelledby="tab-logs" hidden>
@@ -1160,6 +1326,8 @@ const el = (tag, text, cls) => { const e = document.createElement(tag); if (text
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 const ago = (iso) => { if (!iso) return ""; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? s + " с тому" : s < 3600 ? Math.round(s / 60) + " хв тому" : Math.round(s / 3600) + " год тому"; };
 let agents = [], selected = null, busy = false, watchTimer = null, activeTab = "settings", settingsSeq = 0, logSeq = 0;
+let lastSettings = null, editingSettings = false, savingSettings = false;
+let editOriginal = {}, editDraft = {}, editSpecs = {}, editControls = {};
 
 /** Matches web/src/lib/format.ts so every agent keeps the same avatar colour and initials as in AIChat. */
 function hueFor(name) {
@@ -1298,11 +1466,16 @@ function render() {
   }
 }
 
-async function post(path, body) {
+async function postJson(path, body) {
   const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-aichat-manager": "1" }, body: JSON.stringify(body || {}) });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || r.status + " " + r.statusText);
-  return d.message || "Готово.";
+  return { ok: r.ok, status: r.status, statusText: r.statusText, data: d };
+}
+
+async function post(path, body) {
+  const res = await postJson(path, body);
+  if (!res.ok) throw new Error(res.data.error || res.status + " " + res.statusText);
+  return res.data.message || "Готово.";
 }
 
 function say(text, cls, id) {
@@ -1326,7 +1499,7 @@ async function act(label, path, body) {
     updateInspectorHeader(a);
     actionsFor(a);
     syncLogFiles(a, false);
-    loadSettings(selected, true);
+    if (!editingSettings) loadSettings(selected, true);
   }
   watchSoon();
 }
@@ -1427,6 +1600,17 @@ function actionsFor(a) {
 }
 
 /* ---------- inspector tabs & settings ---------- */
+function hasEditableSettings(d) {
+  return Boolean(d && Array.isArray(d.sections) && d.sections.some((s) => (s.items || []).some((it) => it && it.edit)));
+}
+
+function syncTabToolbar() {
+  const isSettings = activeTab === "settings";
+  $("settings-refresh").hidden = !isSettings || editingSettings;
+  $("settings-edit").hidden = !isSettings || editingSettings || !hasEditableSettings(lastSettings);
+  $("settings-edit-bar").hidden = !isSettings || !editingSettings;
+}
+
 function applyTab(tab) {
   activeTab = tab === "logs" ? "logs" : "settings";
   const isSettings = activeTab === "settings";
@@ -1436,7 +1620,7 @@ function applyTab(tab) {
   $("tab-logs").setAttribute("aria-selected", String(!isSettings));
   $("panel-settings").hidden = !isSettings;
   $("panel-logs").hidden = isSettings;
-  $("settings-refresh").hidden = !isSettings;
+  syncTabToolbar();
 }
 
 function setTab(tab) {
@@ -1446,6 +1630,275 @@ function setTab(tab) {
 
 function looksLikePath(s) {
   return s.includes("\\\\") || s.includes("://") || s.startsWith("/") || s.startsWith("~");
+}
+
+function sameSettingValue(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => v === b[i]);
+  return a === b;
+}
+
+function initialEditValue(item) {
+  const spec = item.edit;
+  if (spec.type === "list") return Array.isArray(item.value) ? [...item.value] : [];
+  if (spec.type === "bool") return item.value === true;
+  if (spec.type === "int") return typeof item.value === "number" ? item.value : null;
+  if (spec.type === "enum") {
+    if (item.value === null || item.value === undefined) return spec.optional ? null : (spec.options && spec.options[0]) || "";
+    return String(item.value);
+  }
+  if (item.key === "command" && item.note === "типова") return null;
+  if (item.value === null || item.value === undefined) return spec.optional ? null : "";
+  return String(item.value);
+}
+
+function setFieldError(key, message) {
+  const ctrl = editControls[key];
+  if (!ctrl) return;
+  ctrl.row.classList.toggle("bad", Boolean(message));
+  ctrl.errEl.textContent = message || "";
+  ctrl.errEl.hidden = !message;
+}
+
+function clearAllFieldErrors() {
+  for (const key of Object.keys(editControls)) setFieldError(key, "");
+}
+
+function canRestartSelected() {
+  const a = agents.find((x) => x.folder === selected);
+  return Boolean(a && (a.type === "agy" || a.type === "codex") && a.status && a.status.alive);
+}
+
+function updateEditBar() {
+  let dirty = 0;
+  let pending = false;
+  for (const key of Object.keys(editSpecs)) {
+    const ctrl = editControls[key];
+    const isDirty = !sameSettingValue(editDraft[key], editOriginal[key]) || Boolean(ctrl && ctrl.hasRawDiff && ctrl.hasRawDiff());
+    if (ctrl) ctrl.row.classList.toggle("changed", isDirty);
+    if (isDirty) dirty++;
+    if (ctrl && ctrl.hasPending && ctrl.hasPending()) pending = true;
+  }
+  const hasChanges = dirty > 0 || pending;
+  const label = $("settings-dirty-label");
+  if (dirty > 0) {
+    label.textContent = "Змінено полів: " + dirty;
+    label.className = "small warn";
+  } else if (pending) {
+    label.textContent = "Є незбережений елемент у списку";
+    label.className = "small warn";
+  } else {
+    label.textContent = "Змініть потрібні поля";
+    label.className = "small muted";
+  }
+  $("settings-save").disabled = !hasChanges || savingSettings;
+  const restartBtn = $("settings-save-restart");
+  restartBtn.hidden = !canRestartSelected();
+  restartBtn.disabled = !hasChanges || savingSettings;
+  $("settings-cancel").disabled = savingSettings;
+}
+
+function buildEditControl(item, row) {
+  const spec = item.edit;
+  const key = item.key;
+  const init = initialEditValue(item);
+  editOriginal[key] = Array.isArray(init) ? [...init] : init;
+  editDraft[key] = Array.isArray(init) ? [...init] : init;
+  editSpecs[key] = spec;
+
+  const wrap = el("div", null, "edit-field");
+  const errEl = el("div", "", "field-error");
+  errEl.hidden = true;
+  let focusEl = null;
+  let hasRawDiff = null;
+  let hasPending = null;
+  let flushPending = null;
+  let validate = null;
+  let block = false;
+
+  if (spec.type === "enum") {
+    const sel = el("select", null, "edit-input");
+    if (spec.optional || editDraft[key] === null) sel.append(el("option", "— не задано —", null));
+    if (spec.optional || editDraft[key] === null) sel.firstChild.value = "";
+    for (const opt of spec.options || []) {
+      const o = el("option", String(opt));
+      o.value = String(opt);
+      sel.append(o);
+    }
+    sel.value = editDraft[key] === null ? "" : String(editDraft[key]);
+    sel.addEventListener("change", () => {
+      editDraft[key] = sel.value === "" && spec.optional ? null : sel.value;
+      setFieldError(key, "");
+      updateEditBar();
+    });
+    focusEl = sel;
+    wrap.append(sel);
+  } else if (spec.type === "bool") {
+    const lbl = el("label", null, "toggle-field");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = editDraft[key] === true;
+    const txt = el("span", cb.checked ? "так" : "ні");
+    cb.addEventListener("change", () => {
+      editDraft[key] = cb.checked;
+      txt.textContent = cb.checked ? "так" : "ні";
+      setFieldError(key, "");
+      updateEditBar();
+    });
+    lbl.append(cb, txt);
+    focusEl = cb;
+    wrap.append(lbl);
+  } else if (spec.type === "int") {
+    const inp = el("input", null, "edit-input num");
+    inp.type = "number";
+    inp.step = "1";
+    if (typeof spec.min === "number") inp.min = String(spec.min);
+    if (typeof spec.max === "number") inp.max = String(spec.max);
+    inp.placeholder = spec.optional ? "не задано" : "";
+    const initStr = editDraft[key] === null ? "" : String(editDraft[key]);
+    inp.value = initStr;
+    const parseIntInput = () => {
+      if (inp.validity && inp.validity.badInput) return { ok: false, error: "Введіть ціле число" };
+      const raw = inp.value.trim();
+      if (raw === "") {
+        if (spec.optional) return { ok: true, value: null };
+        return { ok: false, error: "Введіть ціле число" };
+      }
+      if (!/^-?\\d+$/.test(raw)) return { ok: false, error: "Введіть ціле число" };
+      const n = Number(raw);
+      if (!Number.isSafeInteger(n)) return { ok: false, error: "Некоректне число" };
+      if (typeof spec.min === "number" && n < spec.min) return { ok: false, error: "Мінімум: " + spec.min };
+      if (typeof spec.max === "number" && n > spec.max) return { ok: false, error: "Максимум: " + spec.max };
+      return { ok: true, value: n };
+    };
+    inp.addEventListener("input", () => {
+      const parsed = parseIntInput();
+      if (parsed.ok) {
+        editDraft[key] = parsed.value;
+        setFieldError(key, "");
+      } else {
+        setFieldError(key, parsed.error);
+      }
+      updateEditBar();
+    });
+    hasRawDiff = () => Boolean(inp.validity && inp.validity.badInput) || inp.value.trim() !== initStr;
+    validate = () => {
+      const parsed = parseIntInput();
+      if (!parsed.ok) return parsed.error;
+      editDraft[key] = parsed.value;
+      return "";
+    };
+    focusEl = inp;
+    wrap.append(inp);
+    const hints = [];
+    if (typeof spec.min === "number" && typeof spec.max === "number") hints.push("діапазон " + spec.min + "–" + spec.max);
+    else if (typeof spec.min === "number") hints.push("від " + spec.min);
+    else if (typeof spec.max === "number") hints.push("до " + spec.max);
+    if (spec.optional) hints.push("порожнє — прибрати");
+    if (hints.length) wrap.append(el("span", hints.join(" · "), "field-hint"));
+  } else if (spec.type === "list") {
+    block = true;
+    const editor = el("div", null, "list-editor");
+    const chipsBox = el("div", null, "edit-chips");
+    const addRow = el("div", null, "list-add-row");
+    const inp = el("input");
+    inp.type = "text";
+    inp.placeholder = "назва кімнати + Enter…";
+    const addBtn = el("button", "Додати", "btn ghost xs");
+    addBtn.type = "button";
+
+    const renderChips = () => {
+      chipsBox.replaceChildren();
+      for (let i = 0; i < editDraft[key].length; i++) {
+        const val = editDraft[key][i];
+        const ch = el("span", null, "edit-chip");
+        ch.append(el("span", val));
+        const rm = el("button", "×");
+        rm.type = "button";
+        rm.setAttribute("aria-label", "Прибрати " + val);
+        rm.addEventListener("click", () => {
+          editDraft[key] = editDraft[key].filter((_, idx) => idx !== i);
+          renderChips();
+          setFieldError(key, "");
+          updateEditBar();
+        });
+        ch.append(rm);
+        chipsBox.append(ch);
+      }
+      chipsBox.hidden = editDraft[key].length === 0;
+    };
+
+    const commitInput = () => {
+      const raw = inp.value;
+      if (!raw.trim()) return;
+      const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+      const next = [...editDraft[key]];
+      for (const p of parts) if (!next.includes(p)) next.push(p);
+      editDraft[key] = next;
+      inp.value = "";
+      renderChips();
+      setFieldError(key, "");
+      updateEditBar();
+    };
+
+    addBtn.addEventListener("click", commitInput);
+    inp.addEventListener("input", () => {
+      if (inp.value.includes(",")) commitInput();
+      else updateEditBar();
+    });
+    inp.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        commitInput();
+      } else if (ev.key === "Backspace" && !inp.value && editDraft[key].length) {
+        editDraft[key] = editDraft[key].slice(0, -1);
+        renderChips();
+        updateEditBar();
+      }
+    });
+
+    renderChips();
+    addRow.append(inp, addBtn);
+    editor.append(chipsBox, addRow);
+    focusEl = inp;
+    hasPending = () => inp.value.trim().length > 0;
+    flushPending = commitInput;
+    wrap.append(editor);
+  } else {
+    // text
+    const inp = el("input", null, "edit-input" + (key === "command" || CODE_KEYS.has(key) ? " mono" : ""));
+    inp.type = "text";
+    if (typeof spec.max === "number") inp.maxLength = spec.max;
+    if (key === "command" && item.note === "типова") {
+      inp.placeholder = "типова: " + String(item.value || "");
+      block = true;
+    } else if (spec.optional) {
+      inp.placeholder = "не задано";
+    }
+    inp.value = editDraft[key] === null ? "" : String(editDraft[key]);
+    if (key === "command") block = true;
+    inp.addEventListener("input", () => {
+      const v = inp.value;
+      const trimmed = v.trim();
+      editDraft[key] = trimmed === "" && spec.optional ? null : v;
+      setFieldError(key, "");
+      updateEditBar();
+    });
+    validate = () => {
+      const v = inp.value;
+      if (v.trim() === "" && !spec.optional) return "Поле не може бути порожнім";
+      if (typeof spec.max === "number" && v.length > spec.max) return "Не більше " + spec.max + " символів";
+      editDraft[key] = v.trim() === "" && spec.optional ? null : v;
+      return "";
+    };
+    focusEl = inp;
+    wrap.append(inp);
+    if (key === "command") wrap.append(el("span", "Залиште порожнім, щоб повернути типову команду запуску.", "field-hint"));
+    else if (spec.optional) wrap.append(el("span", "Порожнє значення прибирає параметр із конфігу.", "field-hint"));
+  }
+
+  wrap.append(errEl);
+  editControls[key] = { row, focusEl, errEl, hasRawDiff, hasPending, flushPending, validate };
+  return { node: wrap, block };
 }
 
 function renderSettingValue(item) {
@@ -1475,7 +1928,121 @@ function renderSettingValue(item) {
   return { node: el("span", s), block: false };
 }
 
+function enterEditMode(focusSectionId) {
+  if (!lastSettings || !hasEditableSettings(lastSettings)) return;
+  editingSettings = true;
+  say("", "", "settings-msg");
+  renderSettings(lastSettings);
+  if (focusSectionId) {
+    const sec = (lastSettings.sections || []).find((s) => s.id === focusSectionId);
+    const first = sec && (sec.items || []).find((it) => it && it.edit);
+    if (first && editControls[first.key] && editControls[first.key].focusEl) editControls[first.key].focusEl.focus();
+  } else {
+    const firstKey = Object.keys(editControls)[0];
+    if (firstKey && editControls[firstKey].focusEl) editControls[firstKey].focusEl.focus();
+  }
+}
+
+function exitEditMode() {
+  editingSettings = false;
+  savingSettings = false;
+  say("", "", "settings-msg");
+  if (lastSettings) renderSettings(lastSettings);
+  else syncTabToolbar();
+}
+
+function setFormDisabled(disabled) {
+  for (const elNode of $("settings-body").querySelectorAll("input, select, button")) elNode.disabled = disabled;
+}
+
+async function saveSettings(restart) {
+  if (!selected || !editingSettings || savingSettings) return;
+  clearAllFieldErrors();
+  say("", "", "settings-msg");
+
+  for (const ctrl of Object.values(editControls)) {
+    if (ctrl.flushPending) ctrl.flushPending();
+  }
+
+  const set = {};
+  let firstBad = null;
+  for (const key of Object.keys(editSpecs)) {
+    const ctrl = editControls[key];
+    const rawChanged = ctrl && ctrl.hasRawDiff && ctrl.hasRawDiff();
+    const valChanged = !sameSettingValue(editDraft[key], editOriginal[key]);
+    if (!rawChanged && !valChanged) continue;
+    if (ctrl && ctrl.validate) {
+      const err = ctrl.validate();
+      if (err) {
+        setFieldError(key, err);
+        if (!firstBad) firstBad = { key, err };
+        continue;
+      }
+    }
+    if (!sameSettingValue(editDraft[key], editOriginal[key])) set[key] = editDraft[key];
+  }
+
+  if (firstBad) {
+    say("Перевірте підсвічені поля перед збереженням.", "bad", "settings-msg");
+    if (editControls[firstBad.key] && editControls[firstBad.key].focusEl) editControls[firstBad.key].focusEl.focus();
+    updateEditBar();
+    return;
+  }
+
+  if (!Object.keys(set).length) {
+    updateEditBar();
+    return;
+  }
+
+  savingSettings = true;
+  setFormDisabled(true);
+  updateEditBar();
+  say(restart ? "Зберігаю і перезапускаю агента…" : "Зберігаю налаштування…", "", "settings-msg");
+
+  const folder = selected;
+  try {
+    const res = await postJson("/api/agents/" + encodeURIComponent(folder) + "/settings", { set, restart: Boolean(restart) });
+    if (selected !== folder) return;
+    if (!res.ok) {
+      savingSettings = false;
+      setFormDisabled(false);
+      const errMsg = res.data.error || res.status + " " + res.statusText;
+      say(errMsg, "bad", "settings-msg");
+      if (res.data.field && editControls[res.data.field]) {
+        setFieldError(res.data.field, errMsg);
+        if (editControls[res.data.field].focusEl) editControls[res.data.field].focusEl.focus();
+      }
+      updateEditBar();
+      return;
+    }
+    editingSettings = false;
+    savingSettings = false;
+    if (res.data.settings) {
+      lastSettings = res.data.settings;
+      renderSettings(lastSettings);
+    } else {
+      syncTabToolbar();
+      loadSettings(folder, true);
+    }
+    say(res.data.message || "Налаштування збережено.", "ok", "settings-msg");
+    await load();
+    if (restart) watchSoon();
+  } catch (e) {
+    if (selected !== folder) return;
+    savingSettings = false;
+    setFormDisabled(false);
+    say(e.message || "Не вдалося зберегти налаштування.", "bad", "settings-msg");
+    updateEditBar();
+  }
+}
+
 function renderSettings(d) {
+  lastSettings = d;
+  editOriginal = {};
+  editDraft = {};
+  editSpecs = {};
+  editControls = {};
+
   const needRestart = d && d.restartNeeded === true;
   $("settings-restart").hidden = !needRestart;
   $("tab-restart-dot").hidden = !needRestart;
@@ -1485,6 +2052,8 @@ function renderSettings(d) {
   const mcp = Array.isArray(d && d.mcp) ? d.mcp : null;
 
   if (!sections.length && !mcp) {
+    editingSettings = false;
+    syncTabToolbar();
     body.append(el("div", "Для цього агента налаштувань не знайдено.", "settings-state"));
     return;
   }
@@ -1492,14 +2061,23 @@ function renderSettings(d) {
   const grid = el("div", null, "settings-grid");
 
   for (const sec of sections) {
+    const secEditable = (sec.items || []).some((it) => it && it.edit);
     const card = el("section", null, "settings-section" + (sec.id === "workspace" ? " span-full" : ""));
     const head = el("div", null, "settings-sec-head");
     head.append(el("h3", sec.title || sec.id));
+    if (!editingSettings && secEditable) {
+      const editBtn = el("button", "Змінити", "btn quiet xs");
+      editBtn.type = "button";
+      editBtn.addEventListener("click", () => enterEditMode(sec.id));
+      head.append(editBtn);
+    }
     card.append(head);
     const dl = el("dl", null, "kv-list");
     for (const item of sec.items || []) {
-      const rendered = renderSettingValue(item);
-      const row = el("div", null, "kv-row" + (rendered.block ? " kv-block" : ""));
+      const canEdit = editingSettings && item && item.edit;
+      const row = el("div", null, "kv-row" + (canEdit ? " kv-editing" : ""));
+      const rendered = canEdit ? buildEditControl(item, row) : renderSettingValue(item);
+      if (rendered.block) row.classList.add("kv-block");
       const dt = el("dt", null, "kv-key");
       dt.append(el("span", item.label || item.key));
       if (item.note) dt.append(el("span", item.note, "note-tag" + (item.note === "фактично" ? " effective" : "")));
@@ -1542,6 +2120,8 @@ function renderSettings(d) {
   }
 
   body.append(grid);
+  syncTabToolbar();
+  if (editingSettings) updateEditBar();
 }
 
 async function loadSettings(folder, silent) {
@@ -1549,8 +2129,12 @@ async function loadSettings(folder, silent) {
   const seq = ++settingsSeq;
   const body = $("settings-body");
   if (!silent) {
+    lastSettings = null;
+    editingSettings = false;
+    savingSettings = false;
     $("settings-restart").hidden = true;
     $("tab-restart-dot").hidden = true;
+    syncTabToolbar();
     body.replaceChildren(el("div", "Завантаження налаштувань…", "settings-state"));
   }
   try {
@@ -1558,11 +2142,15 @@ async function loadSettings(folder, silent) {
     const d = await r.json().catch(() => ({}));
     if (seq !== settingsSeq || selected !== folder) return;
     if (!r.ok) throw new Error(d.error || r.status + " " + r.statusText);
+    if (editingSettings) return;
     renderSettings(d);
   } catch (e) {
     if (seq !== settingsSeq || selected !== folder) return;
+    lastSettings = null;
+    editingSettings = false;
     $("settings-restart").hidden = true;
     $("tab-restart-dot").hidden = true;
+    syncTabToolbar();
     const box = el("div", null, "settings-state");
     box.append(el("span", "Не вдалося завантажити налаштування: " + e.message));
     const retry = el("button", "Спробувати знову", "btn ghost sm");
@@ -1579,11 +2167,13 @@ function refreshSelected() {
   const a = agents.find((x) => x.folder === selected);
   if (!a) {
     selected = null;
+    editingSettings = false;
     $("logs").hidden = true;
     return;
   }
   updateInspectorHeader(a);
   syncLogFiles(a, false);
+  if (editingSettings) updateEditBar();
   if (busy) return;
   const confirming = [...$("actions").querySelectorAll("input")].some((i) => !i.hidden);
   if (!confirming) actionsFor(a);
@@ -1673,12 +2263,15 @@ function syncLogFiles(a, forceReload) {
 
 async function select(folder) {
   selected = folder;
+  editingSettings = false;
+  savingSettings = false;
   render();
   const a = agents.find((x) => x.folder === folder);
   if (!a) return;
   $("logs").hidden = false;
   $("logs-title").textContent = "Лог";
   say("");
+  say("", "", "settings-msg");
   updateInspectorHeader(a);
   actionsFor(a);
   applyTab(activeTab);
@@ -1737,15 +2330,20 @@ syncThemeIcon();
 
 $("tab-settings").addEventListener("click", () => setTab("settings"));
 $("tab-logs").addEventListener("click", () => setTab("logs"));
+$("settings-edit").addEventListener("click", () => enterEditMode(null));
+$("settings-cancel").addEventListener("click", exitEditMode);
+$("settings-save").addEventListener("click", () => saveSettings(false));
+$("settings-save-restart").addEventListener("click", () => saveSettings(true));
 $("settings-refresh").addEventListener("click", () => loadSettings(selected, false));
 $("close-inspector").addEventListener("click", () => {
   selected = null;
+  editingSettings = false;
   $("logs").hidden = true;
   render();
 });
 $("refresh").addEventListener("click", () => {
   load();
-  if (selected && activeTab === "settings") loadSettings(selected, true);
+  if (selected && activeTab === "settings" && !editingSettings) loadSettings(selected, true);
 });
 $("log-refresh").addEventListener("click", showLog);
 $("log-file").addEventListener("change", showLog);
