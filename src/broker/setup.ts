@@ -42,6 +42,11 @@ export const DIR_PLACEHOLDER = "<AICHAT_DIR>";
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const psq = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
+/** Each PowerShell step followed by «Те саме в bash (Linux)» with its command for Linux and macOS. */
+function withBash(steps: SetupStep[], bash: string[]): SetupStep[] {
+  return steps.flatMap((step, i) => (bash[i] ? [step, { title: "Те саме в bash (Linux)", code: bash[i], lang: "bash" }] : [step]));
+}
+
 /** Claude Code hooks that run aichat-hook.mjs on the events it reports (see src/adapters/aichat-hook.ts). */
 export function hookSettings(hookPath: string) {
   const run = [{ type: "command", command: `node "${hookPath}"`, timeout: 5 }];
@@ -266,9 +271,10 @@ function buildSteps(c: SetupContext): Setup {
     const profile = `antigravity-aichat-${c.name}`;
     const tokenFile = `$HOME\\.secrets\\aichat-${c.name}-token`;
     const owner = c.owner || "<OWNER>";
-    return {
-      kind: c.kind,
-      steps: [
+    // Linux and macOS: the same steps for bash, each right after its PowerShell one (AIChat 3534-3547)
+    const home = `$HOME/aichat-agents/${c.name}`;
+    const tokenSh = `$HOME/.secrets/aichat-${c.name}-token`;
+    const steps: SetupStep[] = [
         {
           title: "Збережіть токен у файл поза папкою агента",
           text: "Так токен не потрапить у git і в чат. Адаптер бере його звідти сам.",
@@ -302,8 +308,14 @@ function buildSteps(c: SetupContext): Setup {
           code: `Set-Location "${agentDir}"; .\\start.ps1`,
           lang: "powershell",
         },
-      ],
-    };
+    ];
+    return { kind: c.kind, steps: withBash(steps, [
+      `mkdir -p "$HOME/.secrets" && printf '%s' ${sq(c.token)} > "${tokenSh}" && chmod 600 "${tokenSh}"`,
+      `curl -fsSL ${http}/client/agy-channel.mjs -o /tmp/agy-channel.mjs && node /tmp/agy-channel.mjs install --dir "${home}" --profile ${profile} --token-file "${tokenSh}" --url ${sq(http)} --owners ${sq(owner)} --rooms lobby --approve-aichat-tools`,
+      `agy acp --app-data-dir ${profile} --login`,
+      `cd "${home}" && node ./agy-channel.mjs probe --config ./aichat.config.json`,
+      `cd "${home}" && ./start.sh`,
+    ]) };
   }
 
   if (c.kind === "codex") {
@@ -313,9 +325,11 @@ function buildSteps(c: SetupContext): Setup {
     const codexHome = `$HOME\\.codex-aichat-${c.name}`;
     const tokenFile = `$HOME\\.secrets\\aichat-${c.name}-token`;
     const owner = c.owner || "<OWNER>";
-    return {
-      kind: c.kind,
-      steps: [
+    // Linux and macOS: the same steps for bash, each right after its PowerShell one (AIChat 3534-3547)
+    const home = `$HOME/aichat-agents/${c.name}`;
+    const tokenSh = `$HOME/.secrets/aichat-${c.name}-token`;
+    const codexHomeSh = `$HOME/.codex-aichat-${c.name}`;
+    const steps: SetupStep[] = [
         {
           title: "Збережіть токен у файл поза папкою агента",
           text: "Так токен не потрапить у git і в чат. Адаптер бере його звідти сам.",
@@ -349,8 +363,14 @@ function buildSteps(c: SetupContext): Setup {
           code: `Set-Location "${agentDir}"; .\\start.ps1`,
           lang: "powershell",
         },
-      ],
-    };
+    ];
+    return { kind: c.kind, steps: withBash(steps, [
+      `mkdir -p "$HOME/.secrets" && printf '%s' ${sq(c.token)} > "${tokenSh}" && chmod 600 "${tokenSh}"`,
+      `curl -fsSL ${http}/client/codex-channel.mjs -o /tmp/codex-channel.mjs && node /tmp/codex-channel.mjs install --dir "${home}" --home "${codexHomeSh}" --token-file "${tokenSh}" --url ${sq(http)} --owners ${sq(owner)} --rooms lobby --approve-aichat-tools`,
+      `CODEX_HOME="${codexHomeSh}" codex login`,
+      `cd "${home}" && node ./codex-channel.mjs probe --config ./aichat.config.json`,
+      `cd "${home}" && node ./codex-channel.mjs run --config ./aichat.config.json`,
+    ]) };
   }
 
   if (c.kind === "human") {

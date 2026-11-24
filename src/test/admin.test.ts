@@ -405,8 +405,16 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.ok(cxCode.includes('install --dir "$HOME\\aichat-agents\\cx" --home "$HOME\\.codex-aichat-cx" --token-file "$HOME\\.secrets\\aichat-cx-token"'));
   assert.ok(cxCode.includes("--url 'http://aichat.lan:8787' --owners 'boss'"));
   assert.ok(cxCode.includes('$env:CODEX_HOME = "$HOME\\.codex-aichat-cx"; codex login'));
-  assert.equal(cx.setup.steps.filter((s) => s.code?.includes(cx.token)).length, 1); // the token is only in the token file
-  assert.ok(cx.setup.steps.at(-1)!.code!.endsWith(".\\start.ps1"));
+  // the token is only in the token file: one step for PowerShell, its bash twin for Linux
+  assert.deepEqual(cx.setup.steps.filter((s) => s.code?.includes(cx.token)).map((s) => s.lang), ["powershell", "bash"]);
+  // every PowerShell step is followed by the same in bash (Linux and macOS)
+  const cxSteps = cx.setup.steps;
+  for (let i = 0; i < cxSteps.length; i += 2) assert.deepEqual([cxSteps[i].lang, cxSteps[i + 1].lang, cxSteps[i + 1].title], ["powershell", "bash", "Те саме в bash (Linux)"]);
+  assert.ok(cxCode.includes(`curl -fsSL http://aichat.lan:8787/client/codex-channel.mjs -o /tmp/codex-channel.mjs && node /tmp/codex-channel.mjs install --dir "$HOME/aichat-agents/cx" --home "$HOME/.codex-aichat-cx" --token-file "$HOME/.secrets/aichat-cx-token"`));
+  assert.ok(cxCode.includes(`printf '%s' '${cx.token}' > "$HOME/.secrets/aichat-cx-token" && chmod 600 "$HOME/.secrets/aichat-cx-token"`));
+  assert.ok(cxCode.includes('CODEX_HOME="$HOME/.codex-aichat-cx" codex login'));
+  assert.ok(cxSteps.at(-2)!.code!.endsWith(".\\start.ps1"));
+  assert.ok(cxSteps.at(-1)!.code!.endsWith("node ./codex-channel.mjs run --config ./aichat.config.json"));
 
   // Antigravity: the same shape, with its own profile under ~/.gemini
   r = await post("/admin/api/agents", { name: "ag", kind: "antigravity" });
@@ -418,8 +426,10 @@ test("admin adds AI agents with ready-made setup steps; tokens and removal work 
   assert.ok(agCode.includes('install --dir "$HOME\\aichat-agents\\ag" --profile antigravity-aichat-ag --token-file "$HOME\\.secrets\\aichat-ag-token"'));
   assert.ok(agCode.includes("--url 'http://aichat.lan:8787' --owners 'boss'"));
   assert.ok(agCode.includes("agy acp --app-data-dir antigravity-aichat-ag --login"));
-  assert.equal(ag.setup.steps.filter((s) => s.code?.includes(ag.token)).length, 1);
-  assert.ok(ag.setup.steps.at(-1)!.code!.endsWith(".\\start.ps1"));
+  assert.deepEqual(ag.setup.steps.filter((s) => s.code?.includes(ag.token)).map((s) => s.lang), ["powershell", "bash"]);
+  assert.ok(agCode.includes(`node /tmp/agy-channel.mjs install --dir "$HOME/aichat-agents/ag" --profile antigravity-aichat-ag --token-file "$HOME/.secrets/aichat-ag-token"`));
+  assert.ok(ag.setup.steps.at(-2)!.code!.endsWith(".\\start.ps1"));
+  assert.ok(ag.setup.steps.at(-1)!.code!.endsWith('cd "$HOME/aichat-agents/ag" && ./start.sh'));
 
   r = await post("/admin/api/agents", { name: "hook", kind: "service", webhook: "http://127.0.0.1:9/hook" });
   assert.equal(r.status, 201);
