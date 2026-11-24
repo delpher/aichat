@@ -157,7 +157,7 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     };
   };
 
-  const makeCtx = (dir: string, storage: Record<string, unknown>) => {
+  const makeCtx = (dir: string, storage: Record<string, unknown>, sessionModel: unknown = null) => {
     const created: string[] = [];
     const got: string[] = [];
     const saved: Record<string, unknown> = {};
@@ -178,7 +178,7 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
         },
         get: async ({ sessionID }: { sessionID: string }) => {
           got.push(sessionID);
-          return { id: sessionID, title: "T", model: null, location: { directory: dir } };
+          return { id: sessionID, title: "T", model: sessionModel, location: { directory: dir } };
         },
         switchModel: async () => {},
       },
@@ -209,6 +209,8 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
       assert.equal(status.surface, "server");
       assert.equal(status.start, "new");
       assert.equal(status.sessionID, "ses_new");
+      // a session whose model is unknown says nothing rather than inventing one
+      assert.equal(status.model, undefined);
       assert.equal(status.effective.sandbox, false);
       assert.deepEqual(status.effective.writableRoots, ["*"]);
       assert.equal(created.length, 1, "created a new session");
@@ -230,14 +232,20 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
   const resumeDir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
   try {
     const plugin = await buildBundle(resumeDir);
-    const { ctx, created, got } = makeCtx(resumeDir, {
-      "aichat/session": { id: "ses_old" },
-    });
+    const { ctx, created, got } = makeCtx(
+      resumeDir,
+      {
+        "aichat/session": { id: "ses_old" },
+      },
+      { providerID: "litellm", id: "main-model", variant: "high" },
+    );
     const dispose = await plugin.setup(ctx);
     try {
       const status = JSON.parse(readFileSync(join(resumeDir, ".aichat", "status.json"), "utf8"));
       assert.equal(status.start, "resumed");
       assert.equal(status.sessionID, "ses_old");
+      // the running model, in the same provider/model#variant form the manager's setting uses
+      assert.equal(status.model, "litellm/main-model#high");
       assert.deepEqual(got, ["ses_old"], "resumed the saved session");
       assert.equal(created.length, 0, "did not create a session");
     } finally {
