@@ -6,7 +6,7 @@
 // Incoming messages are pushed into the session as <channel source="aichat" ...> events;
 // Claude answers with the send_message tool.
 //
-// Env: AICHAT_URL (default ws://127.0.0.1:8787), AICHAT_TOKEN (required).
+// Env: AICHAT_URL (default ws://127.0.0.1:8787), AICHAT_TOKEN or AICHAT_TOKEN_FILE (a file holding it).
 // stdout belongs to MCP, so all logging goes to stderr.
 //
 // `node claude-channel.mjs install --url ws://host:8787 --token <token>` instead writes .mcp.json in the
@@ -46,9 +46,16 @@ const FILES_DIR = resolve(process.env.AICHAT_FILES_DIR ?? join(tmpdir(), "aichat
 const MAX_INLINE_IMAGE = 5 * 1024 * 1024;
 
 const url = process.env.AICHAT_URL ?? "ws://127.0.0.1:8787";
-const token = process.env.AICHAT_TOKEN;
+// the token itself, or the file that holds it (AICHAT_TOKEN_FILE: so it need not sit in .mcp.json)
+const token =
+  process.env.AICHAT_TOKEN ||
+  (process.env.AICHAT_TOKEN_FILE ? await readFile(process.env.AICHAT_TOKEN_FILE, "utf8").then((t) => t.trim(), () => "") : "");
 if (!token) {
-  console.error("[aichat-channel] AICHAT_TOKEN is not set");
+  console.error(
+    process.env.AICHAT_TOKEN_FILE
+      ? `[aichat-channel] no token in AICHAT_TOKEN_FILE (${process.env.AICHAT_TOKEN_FILE})`
+      : "[aichat-channel] neither AICHAT_TOKEN nor AICHAT_TOKEN_FILE is set",
+  );
   process.exit(1);
 }
 
