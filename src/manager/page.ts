@@ -1192,6 +1192,215 @@ try {
     flex-wrap: wrap;
   }
 
+  /* ---------- new agent wizard ---------- */
+  .wizard {
+    padding: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+    animation: rise-in var(--dur) var(--ease-out);
+  }
+  .wizard-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .wizard-head h2 { font-size: var(--text-lg); }
+  .wiz-steps {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .wiz-step-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 11px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    cursor: default;
+    transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+  }
+  .wiz-step-pill.done {
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .wiz-step-pill.done:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .wiz-step-pill.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-soft-fg);
+  }
+  .wiz-pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    animation: rise-in var(--dur-fast) var(--ease-out);
+  }
+  .type-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: var(--space-3);
+  }
+  .type-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-md);
+    background: var(--side);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--dur-fast), background var(--dur-fast), box-shadow var(--dur-fast);
+  }
+  .type-card:hover {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2));
+    background: var(--hover);
+  }
+  .type-card.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .type-card strong { font-size: var(--text-base); font-weight: var(--weight-strong); }
+  .type-card span { font-size: var(--text-xs); color: var(--muted); line-height: 1.4; }
+  .type-card.on span { color: var(--text-2); }
+  .wiz-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .wiz-field > label {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--text);
+  }
+  .wiz-field input[type="text"],
+  .wiz-field input[type="password"],
+  .wiz-field input[type="number"] {
+    height: var(--control-h);
+    padding: 0 11px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    font-size: var(--text-sm);
+    width: 100%;
+    max-width: 520px;
+    transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+  }
+  .wiz-field input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .wiz-field.bad input,
+  .wiz-field.bad .list-editor {
+    border-color: var(--bad);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bad) 18%, transparent);
+  }
+  .wiz-field .list-editor { max-width: 520px; }
+  .wiz-pass-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: 520px;
+  }
+  .wiz-pass-row input { flex: 1; }
+  .wiz-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--r-md);
+    background: var(--side);
+    border: 1px solid var(--line);
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+  .wiz-callout a {
+    color: var(--accent-fg);
+    font-weight: var(--weight-medium);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .wiz-callout a:hover { text-decoration: underline; }
+  .wiz-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--r-md);
+    background: var(--side);
+    border: 1px solid var(--line);
+    font-size: var(--text-xs);
+    color: var(--text-2);
+  }
+  .wiz-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+  }
+  .wiz-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line);
+  }
+  .wiz-foot-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .wiz-done-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--space-4);
+  }
+  .wiz-done-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--r-md);
+    border: 1px solid var(--line);
+    background: var(--side);
+  }
+  .wiz-done-box.next-box {
+    background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+    border-color: color-mix(in srgb, var(--warn) 28%, var(--line));
+  }
+  .wiz-done-box h3 { font-size: var(--text-sm); }
+  .wiz-list {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+
   @media (max-width: 720px) {
     .topbar-inner { padding: var(--space-3); }
     main { padding: var(--space-4) var(--space-3) var(--space-6); }
@@ -1223,6 +1432,12 @@ try {
       <div id="mgr-update" class="mgr-update" hidden></div>
       <div class="summary" id="summary"></div>
       <span class="muted small num" id="when"></span>
+      <button id="add-agent-btn" class="btn primary sm" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+        Додати агента
+      </button>
       <button id="refresh" class="btn ghost sm" type="button">
         <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
@@ -1240,6 +1455,132 @@ try {
 
 <main>
   <div id="mgr-msg" class="msg-banner" role="status" aria-live="polite"></div>
+
+  <section class="card wizard" id="wizard" hidden aria-label="Підключити нового агента">
+    <div class="wizard-head">
+      <h2>Підключити нового агента</h2>
+      <button id="wiz-close" class="icon-btn plain" type="button" title="Закрити" aria-label="Закрити">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="wiz-loading" class="settings-state" hidden></div>
+
+    <div id="wiz-body" hidden>
+      <div class="wiz-steps" role="list" aria-label="Кроки майстра">
+        <button id="wiz-pill-1" class="wiz-step-pill active" type="button">1. Тип і назва</button>
+        <button id="wiz-pill-2" class="wiz-step-pill" type="button">2. Токен</button>
+        <button id="wiz-pill-3" class="wiz-step-pill" type="button">3. Додатково</button>
+      </div>
+      <div id="wiz-msg" class="msg-banner" role="status" aria-live="polite" style="margin-top:12px"></div>
+
+      <div id="wiz-step-1" class="wiz-pane" style="margin-top:16px">
+        <div class="wiz-field" id="wiz-field-type">
+          <label>Оберіть тип адаптера</label>
+          <div class="type-grid" id="wiz-types"></div>
+          <div id="wiz-err-type" class="field-error" hidden></div>
+        </div>
+        <div class="wiz-field" id="wiz-field-name">
+          <label for="wiz-name">Ім'я агента в AIChat</label>
+          <input id="wiz-name" type="text" maxlength="64" placeholder="наприклад, my-codex" autocomplete="off">
+          <span id="wiz-folder-preview" class="field-hint mono"></span>
+          <div id="wiz-err-name" class="field-error" hidden></div>
+        </div>
+      </div>
+
+      <div id="wiz-step-2" class="wiz-pane" style="margin-top:16px" hidden>
+        <div class="wiz-callout">
+          <span>Агента спершу створює <strong>сам користувач</strong> у вебчаті брокера («Агенти й люди» → «Додати агента»). Менеджер агентів у брокері не створює — вставте виданий там токен нижче.</span>
+          <a id="wiz-broker-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Відкрити брокер →</a>
+        </div>
+        <div class="wiz-field" id="wiz-field-token">
+          <label for="wiz-token">Токен агента</label>
+          <div class="wiz-pass-row">
+            <input id="wiz-token" type="password" autocomplete="off" placeholder="вставте токен із брокера…">
+            <button id="wiz-token-eye" class="btn ghost sm" type="button">Показати</button>
+          </div>
+          <span id="wiz-token-hint" class="field-hint"></span>
+          <div id="wiz-err-token" class="field-error" hidden></div>
+        </div>
+      </div>
+
+      <div id="wiz-step-3" class="wiz-pane" style="margin-top:16px" hidden>
+        <div id="wiz-summary" class="wiz-summary"></div>
+        <div class="wiz-grid" id="wiz-extra-grid">
+          <div class="wiz-field" id="wiz-field-owners">
+            <label>Власники (owners, необов'язково)</label>
+            <div id="wiz-owners-editor"></div>
+            <span class="field-hint">Хто може давати агенту робочі задачі на цьому комп'ютері.</span>
+            <div id="wiz-err-owners" class="field-error" hidden></div>
+          </div>
+          <div class="wiz-field" id="wiz-field-rooms">
+            <label>Кімнати при старті (rooms, необов'язково)</label>
+            <div id="wiz-rooms-editor"></div>
+            <span class="field-hint">Порожньо — використаються типові кімнати.</span>
+            <div id="wiz-err-rooms" class="field-error" hidden></div>
+          </div>
+          <div class="wiz-field" id="wiz-field-codexHome" hidden>
+            <label for="wiz-codexHome">Тека CODEX_HOME</label>
+            <input id="wiz-codexHome" type="text" class="mono" autocomplete="off">
+            <span class="field-hint">Окремий профіль Codex (не має перетинатися з текою агента).</span>
+            <div id="wiz-err-codexHome" class="field-error" hidden></div>
+          </div>
+          <div class="wiz-field" id="wiz-field-profile" hidden>
+            <label for="wiz-profile">Профіль Antigravity (--profile)</label>
+            <input id="wiz-profile" type="text" class="mono" maxlength="64" autocomplete="off">
+            <span class="field-hint">Ім'я профілю в <code>~/.gemini/</code> (не <code>antigravity-cli</code>).</span>
+            <div id="wiz-err-profile" class="field-error" hidden></div>
+          </div>
+          <div class="wiz-field" id="wiz-field-attachPort" hidden>
+            <label for="wiz-attachPort">Порт інтерактивної сесії (attachPort)</label>
+            <input id="wiz-attachPort" type="number" class="num" step="1" min="1024" max="65535" placeholder="не задано">
+            <span class="field-hint">Вільний локальний порт 1024–65535 для кнопки «Відкрити сесію».</span>
+            <div id="wiz-err-attachPort" class="field-error" hidden></div>
+          </div>
+        </div>
+        <p id="wiz-claude-note" class="small muted" style="margin:0" hidden>
+          Для Claude Code додаткових параметрів не потрібно: менеджер завантажить адаптер і хук, збереже токен у файл і налаштує <code>.mcp.json</code>.
+        </p>
+      </div>
+
+      <div class="wiz-foot" style="margin-top:16px">
+        <button id="wiz-back" class="btn ghost sm" type="button" hidden>Назад</button>
+        <div class="wiz-foot-right">
+          <button id="wiz-cancel" class="btn quiet sm" type="button">Скасувати</button>
+          <button id="wiz-next" class="btn primary sm" type="button">Далі</button>
+          <button id="wiz-submit" class="btn primary sm" type="button" hidden>Встановити агента</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="wiz-done" class="wiz-pane" hidden>
+      <div class="msg-banner ok show" id="wiz-done-title"></div>
+      <div class="wiz-done-grid">
+        <div class="wiz-done-box">
+          <h3>Що зроблено</h3>
+          <ul class="wiz-list" id="wiz-done-steps"></ul>
+        </div>
+        <div class="wiz-done-box next-box" id="wiz-done-next-box" hidden>
+          <h3>Що зробити далі</h3>
+          <ul class="wiz-list" id="wiz-done-next"></ul>
+        </div>
+      </div>
+      <div id="wiz-start-msg" class="msg-banner" role="status" aria-live="polite"></div>
+      <div class="wiz-foot">
+        <div class="wiz-foot-right">
+          <button id="wiz-done-start" class="btn primary sm" type="button">Запустити агента</button>
+          <button id="wiz-done-open" class="btn soft sm" type="button">Перейти до агента</button>
+        </div>
+        <div class="wiz-foot-right">
+          <button id="wiz-done-another" class="btn ghost sm" type="button">Додати ще одного</button>
+          <button id="wiz-done-close" class="btn quiet sm" type="button">Закрити</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="card">
     <div class="table-wrap">
       <table>
@@ -2457,6 +2798,469 @@ async function updateManager(targetVersion) {
     say(e.message || "Не вдалося оновити менеджер.", "bad", "mgr-msg");
   }
 }
+
+/* ---------- new agent wizard (stage 4b) ---------- */
+const WIZ_TYPES = [
+  { id: "claude", title: "Claude Code", desc: "Термінальний агент через MCP-канал (claude-channel)." },
+  { id: "codex", title: "Codex", desc: "Фоновий адаптер з інтерактивною сесією (codex-channel)." },
+  { id: "agy", title: "Antigravity", desc: "Фоновий адаптер ACP з інтерактивною сесією (agy-channel)." },
+  { id: "opencode", title: "OpenCode", desc: "Серверний плагін OpenCode (opencode-channel)." },
+];
+const AGENT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,63}$/;
+
+let wizInfo = null;
+let wizStep = 1;
+let wizType = "claude";
+let wizInstalling = false;
+let wizInstalledFolder = null;
+let wizCodexDirty = false;
+let wizProfileDirty = false;
+let wizOwnersCtrl = null;
+let wizRoomsCtrl = null;
+
+function createChipInput(host, placeholder) {
+  let items = [];
+  host.replaceChildren();
+  const editor = el("div", null, "list-editor");
+  const chipsBox = el("div", null, "edit-chips");
+  const addRow = el("div", null, "list-add-row");
+  const inp = el("input");
+  inp.type = "text";
+  inp.placeholder = placeholder;
+  const addBtn = el("button", "Додати", "btn ghost xs");
+  addBtn.type = "button";
+
+  const renderChips = () => {
+    chipsBox.replaceChildren();
+    for (let i = 0; i < items.length; i++) {
+      const val = items[i];
+      const ch = el("span", null, "edit-chip");
+      ch.append(el("span", val));
+      const rm = el("button", "×");
+      rm.type = "button";
+      rm.setAttribute("aria-label", "Прибрати " + val);
+      rm.addEventListener("click", () => {
+        items = items.filter((_, idx) => idx !== i);
+        renderChips();
+      });
+      ch.append(rm);
+      chipsBox.append(ch);
+    }
+    chipsBox.hidden = items.length === 0;
+  };
+
+  const commit = () => {
+    const raw = inp.value;
+    if (!raw.trim()) return;
+    for (const p of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (!items.includes(p)) items.push(p);
+    }
+    inp.value = "";
+    renderChips();
+  };
+
+  addBtn.addEventListener("click", commit);
+  inp.addEventListener("input", () => { if (inp.value.includes(",")) commit(); });
+  inp.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+    else if (ev.key === "Backspace" && !inp.value && items.length) { items.pop(); renderChips(); }
+  });
+  renderChips();
+  addRow.append(inp, addBtn);
+  editor.append(chipsBox, addRow);
+  host.append(editor);
+  return {
+    get: () => { commit(); return [...items]; },
+    reset: () => { items = []; inp.value = ""; renderChips(); },
+    focus: () => inp.focus(),
+  };
+}
+
+function wizSetError(field, message) {
+  const wrap = $("wiz-field-" + field);
+  const err = $("wiz-err-" + field);
+  if (wrap) wrap.classList.toggle("bad", Boolean(message));
+  if (err) {
+    err.textContent = message || "";
+    err.hidden = !message;
+  }
+}
+
+function wizClearErrors() {
+  for (const f of ["type", "name", "token", "owners", "rooms", "codexHome", "profile", "attachPort"]) wizSetError(f, "");
+  say("", "", "wiz-msg");
+}
+
+function wizJoinPath(root, folder) {
+  if (!root) return folder;
+  const sep = root.endsWith("\\\\") || root.endsWith("/") ? "" : "\\\\";
+  return root + sep + folder;
+}
+
+function wizApplyNameDefaults() {
+  const name = $("wiz-name").value.trim();
+  const root = (wizInfo && wizInfo.root) || "";
+  $("wiz-folder-preview").textContent = name ? "Тека агента: " + wizJoinPath(root, name) : (root ? "Тека буде створена всередині " + root : "");
+  const defs = (wizInfo && wizInfo.defaults) || {};
+  if (!wizCodexDirty && defs.codexHome) {
+    $("wiz-codexHome").value = name ? defs.codexHome.split("{name}").join(name) : defs.codexHome;
+  }
+  if (!wizProfileDirty && defs.profile) {
+    $("wiz-profile").value = name ? defs.profile.split("{name}").join(name) : defs.profile;
+  }
+  const tokenHint = $("wiz-token-hint");
+  tokenHint.textContent = name
+    ? "Менеджер перевірить токен через /api/me (ім'я має збігтися з «" + name + "») і збереже його в ~\\\\.secrets\\\\aichat-" + name + ".token з правами лише для власника."
+    : "Менеджер перевірить токен через /api/me і збереже його у файл із правами лише для власника. Назад у браузер токен не повертається.";
+}
+
+function wizRenderTypes() {
+  const grid = $("wiz-types");
+  grid.replaceChildren();
+  for (const t of WIZ_TYPES) {
+    const btn = el("button", null, "type-card" + (wizType === t.id ? " on" : ""));
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(wizType === t.id));
+    btn.append(el("strong", t.title), el("span", t.desc));
+    btn.addEventListener("click", () => {
+      wizType = t.id;
+      wizRenderTypes();
+      wizSetError("type", "");
+      if (wizStep === 3) wizSyncStep3();
+    });
+    grid.append(btn);
+  }
+}
+
+function wizSyncStep3() {
+  const name = $("wiz-name").value.trim();
+  const root = (wizInfo && wizInfo.root) || "";
+  const sum = $("wiz-summary");
+  sum.replaceChildren(
+    pill(TYPES[wizType] || wizType, "accent"),
+    pill(name || "—", "neutral"),
+    el("span", wizJoinPath(root, name), "mono"),
+  );
+  if (wizInfo && wizInfo.broker) sum.append(el("span", "· " + wizInfo.broker, "muted"));
+
+  const isClaude = wizType === "claude";
+  const isCodex = wizType === "codex";
+  const isAgy = wizType === "agy";
+  $("wiz-field-owners").hidden = isClaude;
+  $("wiz-field-rooms").hidden = isClaude;
+  $("wiz-field-codexHome").hidden = !isCodex;
+  $("wiz-field-profile").hidden = !isAgy;
+  $("wiz-field-attachPort").hidden = !(isCodex || isAgy);
+  $("wiz-extra-grid").hidden = isClaude;
+  $("wiz-claude-note").hidden = !isClaude;
+}
+
+function wizShowStep(step) {
+  wizStep = step;
+  for (let i = 1; i <= 3; i++) {
+    $("wiz-step-" + i).hidden = i !== step;
+    const p = $("wiz-pill-" + i);
+    p.classList.toggle("active", i === step);
+    p.classList.toggle("done", i < step);
+  }
+  $("wiz-back").hidden = step === 1;
+  $("wiz-next").hidden = step === 3;
+  $("wiz-submit").hidden = step !== 3;
+  if (step === 2) {
+    wizApplyNameDefaults();
+    $("wiz-token").focus();
+  } else if (step === 3) {
+    wizApplyNameDefaults();
+    wizSyncStep3();
+  }
+}
+
+function wizValidateStep1() {
+  wizSetError("type", "");
+  wizSetError("name", "");
+  const name = $("wiz-name").value.trim();
+  if (!name) {
+    wizSetError("name", "Введіть ім'я агента (таке саме, як у брокері).");
+    $("wiz-name").focus();
+    return false;
+  }
+  if (!AGENT_NAME_RE.test(name)) {
+    wizSetError("name", "Дозволено латиницю, цифри, «-» і «_» (до 64 символів, початок з літери або цифри).");
+    $("wiz-name").focus();
+    return false;
+  }
+  const existing = (wizInfo && Array.isArray(wizInfo.folders) ? wizInfo.folders : []).map((f) => f.toLowerCase());
+  if (existing.includes(name.toLowerCase())) {
+    wizSetError("name", "Тека «" + name + "» уже існує.");
+    $("wiz-name").focus();
+    return false;
+  }
+  return true;
+}
+
+function wizValidateStep2() {
+  wizSetError("token", "");
+  const tok = $("wiz-token").value.trim();
+  if (!tok) {
+    wizSetError("token", "Вставте токен агента з брокера.");
+    $("wiz-token").focus();
+    return false;
+  }
+  return true;
+}
+
+function wizValidateStep3() {
+  for (const f of ["owners", "rooms", "codexHome", "profile", "attachPort"]) wizSetError(f, "");
+  if (wizType === "agy") {
+    const prof = $("wiz-profile").value.trim();
+    if (prof) {
+      if (!PROFILE_NAME_RE.test(prof)) {
+        wizSetError("profile", "Профіль: 2–64 символи (латиниця, цифри, «.», «_», «-»).");
+        $("wiz-profile").focus();
+        return false;
+      }
+      if (prof.toLowerCase() === "antigravity-cli") {
+        wizSetError("profile", "Не можна використовувати стандартний профіль «antigravity-cli».");
+        $("wiz-profile").focus();
+        return false;
+      }
+    }
+  }
+  if (wizType === "codex" || wizType === "agy") {
+    const inp = $("wiz-attachPort");
+    if (inp.validity && inp.validity.badInput) {
+      wizSetError("attachPort", "Введіть ціле число від 1024 до 65535.");
+      inp.focus();
+      return false;
+    }
+    const raw = inp.value.trim();
+    if (raw !== "") {
+      if (!/^-?\\d+$/.test(raw) || Number(raw) < 1024 || Number(raw) > 65535) {
+        wizSetError("attachPort", "Порт має бути цілим числом від 1024 до 65535.");
+        inp.focus();
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function wizSetBusy(on) {
+  wizInstalling = on;
+  for (const b of $("wiz-body").querySelectorAll("button, input")) b.disabled = on;
+  $("wiz-submit").textContent = on ? "Встановлюю…" : "Встановити агента";
+}
+
+function wizClearSecret() {
+  const tok = $("wiz-token");
+  tok.value = "";
+  tok.type = "password";
+  $("wiz-token-eye").textContent = "Показати";
+}
+
+function wizResetForm() {
+  wizClearErrors();
+  wizClearSecret();
+  wizType = "claude";
+  wizInstalledFolder = null;
+  wizCodexDirty = false;
+  wizProfileDirty = false;
+  $("wiz-name").value = "";
+  $("wiz-codexHome").value = "";
+  $("wiz-profile").value = "";
+  $("wiz-attachPort").value = wizInfo && wizInfo.defaults && wizInfo.defaults.attachPort ? String(wizInfo.defaults.attachPort) : "";
+  if (wizOwnersCtrl) wizOwnersCtrl.reset();
+  if (wizRoomsCtrl) wizRoomsCtrl.reset();
+  const broker = wizInfo && wizInfo.broker;
+  const link = $("wiz-broker-link");
+  if (broker) {
+    link.href = broker.replace(/\\/+$/, "") + "/#people/new";
+    link.hidden = false;
+  } else {
+    link.hidden = true;
+  }
+  wizRenderTypes();
+  wizApplyNameDefaults();
+  $("wiz-done").hidden = true;
+  $("wiz-body").hidden = false;
+  wizShowStep(1);
+}
+
+async function openWizard() {
+  const card = $("wizard");
+  card.hidden = false;
+  $("wiz-body").hidden = true;
+  $("wiz-done").hidden = true;
+  const loading = $("wiz-loading");
+  loading.hidden = false;
+  loading.replaceChildren(el("span", "Завантаження параметрів встановлення…"));
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  try {
+    const r = await fetch("/api/install");
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.status + " " + r.statusText);
+    wizInfo = d;
+    loading.hidden = true;
+    if (!wizOwnersCtrl) wizOwnersCtrl = createChipInput($("wiz-owners-editor"), "ім'я власника + Enter…");
+    if (!wizRoomsCtrl) wizRoomsCtrl = createChipInput($("wiz-rooms-editor"), "назва кімнати + Enter…");
+    wizResetForm();
+    $("wiz-name").focus();
+  } catch (e) {
+    loading.replaceChildren(el("span", "Не вдалося відкрити майстер: " + e.message));
+    const retry = el("button", "Спробувати знову", "btn ghost sm");
+    retry.type = "button";
+    retry.addEventListener("click", openWizard);
+    loading.append(retry);
+  }
+}
+
+function closeWizard() {
+  wizClearSecret();
+  wizInstalling = false;
+  $("wizard").hidden = true;
+}
+
+async function submitWizard() {
+  if (wizInstalling) return;
+  if (!wizValidateStep1()) return wizShowStep(1);
+  if (!wizValidateStep2()) return wizShowStep(2);
+  if (!wizValidateStep3()) return;
+  say("", "", "wiz-msg");
+
+  const payload = {
+    type: wizType,
+    name: $("wiz-name").value.trim(),
+    token: $("wiz-token").value.trim(),
+  };
+  if (wizType !== "claude") {
+    const owners = wizOwnersCtrl ? wizOwnersCtrl.get() : [];
+    const rooms = wizRoomsCtrl ? wizRoomsCtrl.get() : [];
+    if (owners.length) payload.owners = owners;
+    if (rooms.length) payload.rooms = rooms;
+  }
+  if (wizType === "codex") {
+    const ch = $("wiz-codexHome").value.trim();
+    if (ch) payload.codexHome = ch;
+  }
+  if (wizType === "agy") {
+    const prof = $("wiz-profile").value.trim();
+    if (prof) payload.profile = prof;
+  }
+  if (wizType === "codex" || wizType === "agy") {
+    const portRaw = $("wiz-attachPort").value.trim();
+    if (portRaw !== "") payload.attachPort = Number(portRaw);
+  }
+
+  wizSetBusy(true);
+  say("Перевіряю токен, завантажую адаптер і налаштовую агента…", "", "wiz-msg");
+
+  try {
+    const res = await postJson("/api/install", payload);
+    wizSetBusy(false);
+    if (!res.ok) {
+      const errMsg = res.data.error || res.status + " " + res.statusText;
+      const field = res.data.field;
+      say(errMsg, "bad", "wiz-msg");
+      if (field === "type" || field === "name") {
+        wizShowStep(1);
+        wizSetError(field, errMsg);
+        if (field === "name") $("wiz-name").focus();
+      } else if (field === "token") {
+        wizShowStep(2);
+        wizSetError("token", errMsg);
+        $("wiz-token").focus();
+      } else if (field && $("wiz-field-" + field)) {
+        wizShowStep(3);
+        wizSetError(field, errMsg);
+        const inp = $("wiz-" + field);
+        if (inp) inp.focus();
+      }
+      return;
+    }
+
+    wizClearSecret();
+    wizInstalledFolder = res.data.folder || payload.name;
+    $("wiz-body").hidden = true;
+    $("wiz-done").hidden = false;
+    $("wiz-done-title").textContent = "Агента «" + wizInstalledFolder + "» встановлено!";
+    say("", "", "wiz-start-msg");
+    $("wiz-done-start").disabled = false;
+    $("wiz-done-start").textContent = "Запустити агента";
+
+    const stepsUl = $("wiz-done-steps");
+    stepsUl.replaceChildren();
+    for (const s of res.data.steps || []) stepsUl.append(el("li", String(s)));
+    if (!stepsUl.childElementCount) stepsUl.append(el("li", "Файли адаптера й конфігурацію створено."));
+
+    const nextItems = Array.isArray(res.data.next) ? res.data.next : [];
+    const nextUl = $("wiz-done-next");
+    nextUl.replaceChildren();
+    for (const n of nextItems) nextUl.append(el("li", String(n)));
+    $("wiz-done-next-box").hidden = nextItems.length === 0;
+
+    await load();
+  } catch (e) {
+    wizSetBusy(false);
+    say(e.message || "Не вдалося встановити агента.", "bad", "wiz-msg");
+  }
+}
+
+$("add-agent-btn").addEventListener("click", openWizard);
+$("wiz-close").addEventListener("click", closeWizard);
+$("wiz-cancel").addEventListener("click", closeWizard);
+$("wiz-done-close").addEventListener("click", closeWizard);
+$("wiz-done-another").addEventListener("click", openWizard);
+$("wiz-name").addEventListener("input", () => { wizSetError("name", ""); wizApplyNameDefaults(); });
+$("wiz-name").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); $("wiz-next").click(); } });
+$("wiz-token").addEventListener("input", () => wizSetError("token", ""));
+$("wiz-token").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); $("wiz-next").click(); } });
+$("wiz-codexHome").addEventListener("input", () => { wizCodexDirty = true; wizSetError("codexHome", ""); });
+$("wiz-profile").addEventListener("input", () => { wizProfileDirty = true; wizSetError("profile", ""); });
+$("wiz-attachPort").addEventListener("input", () => wizSetError("attachPort", ""));
+$("wiz-token-eye").addEventListener("click", () => {
+  const inp = $("wiz-token");
+  const show = inp.type === "password";
+  inp.type = show ? "text" : "password";
+  $("wiz-token-eye").textContent = show ? "Сховати" : "Показати";
+});
+for (let i = 1; i <= 3; i++) {
+  $("wiz-pill-" + i).addEventListener("click", () => {
+    if (!wizInstalling && i < wizStep) wizShowStep(i);
+  });
+}
+$("wiz-back").addEventListener("click", () => { if (wizStep > 1) wizShowStep(wizStep - 1); });
+$("wiz-next").addEventListener("click", () => {
+  say("", "", "wiz-msg");
+  if (wizStep === 1 && wizValidateStep1()) wizShowStep(2);
+  else if (wizStep === 2 && wizValidateStep2()) wizShowStep(3);
+});
+$("wiz-submit").addEventListener("click", submitWizard);
+$("wiz-done-open").addEventListener("click", async () => {
+  const folder = wizInstalledFolder;
+  closeWizard();
+  await load();
+  if (folder) select(folder);
+});
+$("wiz-done-start").addEventListener("click", async () => {
+  if (!wizInstalledFolder) return;
+  const btn = $("wiz-done-start");
+  btn.disabled = true;
+  btn.textContent = "Запускаю…";
+  say("Запускаю агента…", "", "wiz-start-msg");
+  try {
+    const msg = await post("/api/agents/" + encodeURIComponent(wizInstalledFolder) + "/start");
+    say(msg, "ok", "wiz-start-msg");
+    btn.textContent = "Запущено";
+    await load();
+    watchSoon();
+  } catch (e) {
+    say(e.message, "bad", "wiz-start-msg");
+    btn.disabled = false;
+    btn.textContent = "Запустити агента";
+  }
+});
 
 $("refresh").addEventListener("click", () => {
   load();
