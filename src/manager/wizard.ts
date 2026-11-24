@@ -111,7 +111,23 @@ function checked(name: string, data: Buffer, manifest: ClientManifest): Buffer {
   return data;
 }
 
+/**
+ * One installation at a time: a rollback decides what it owns by what existed before it began, so two installs
+ * sharing a CODEX_HOME or a profile must not overlap (codex-alexey, 3415). The manager is the only writer here.
+ */
+let busy = false;
+
 export async function installAgent(root: string, req: InstallRequest, deps: WizardDeps = {}): Promise<InstallResult> {
+  if (busy) fail("уже триває інше встановлення: дочекайтеся його кінця");
+  busy = true;
+  try {
+    return await installOne(root, req, deps);
+  } finally {
+    busy = false;
+  }
+}
+
+async function installOne(root: string, req: InstallRequest, deps: WizardDeps): Promise<InstallResult> {
   const get = deps.get ?? fetchBytes;
   const run = deps.run ?? runNode;
   const home = deps.home ?? homedir();
