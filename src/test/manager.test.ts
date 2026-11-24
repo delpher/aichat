@@ -268,8 +268,14 @@ test("manager actions: start in a terminal or in the background, stop only what 
   // «Зупинити» for OpenCode disconnects only its channel, with the plugin's marker; «Запустити» brings it back (#135)
   const marker = (name: string) => existsSync(join(root, "opencode", ".aichat", name));
   await assert.rejects(actions.stop("opencode", false), /не в мережі/);
-  await assert.rejects(actions.stop("opencode", true), /оновіть адаптер до 0\.26\.2/, "an old plugin would not come back");
+  await assert.rejects(actions.stop("opencode", true), /невідомої версії.*оновіть адаптер до 0\.26\.2/, "an old plugin would not come back");
+  // an updated file does not count while the server still runs the old plugin (opencode-alexey, 3670)
+  const status = join(root, "opencode", ".aichat", "status.json");
   writeFileSync(join(root, "opencode", ".opencode", "plugins", "aichat-channel", "index.js"), 'var VERSION = true ? "0.26.2" : "0.0.0-dev";');
+  writeFileSync(status, JSON.stringify({ version: "0.26.1" }));
+  await assert.rejects(actions.stop("opencode", true), /запущений плагін 0\.26\.1.*opencode reload/);
+  assert.ok(!marker("stop"));
+  writeFileSync(status, JSON.stringify({ version: "0.26.2" }));
   assert.match(await actions.stop("opencode", true), /Канал відключено/);
   assert.ok(marker("stop") && !marker("start"));
   calls.length = 0;
