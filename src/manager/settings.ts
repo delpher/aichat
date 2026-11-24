@@ -18,7 +18,9 @@ export type EditSpec =
   | { type: "int"; min: number; max: number; optional?: boolean }
   /** `suggestions`: known values to offer; others are allowed (a model's own names and levels, AIChat 3460). */
   | { type: "text"; max: number; optional?: boolean; suggestions?: string[] }
-  | { type: "list" };
+  | { type: "list" }
+  /** Write-only: the page sends a new value to POST /api/agents/<folder>/token and never sees the old one (3c.1). */
+  | { type: "secret" };
 
 export interface SettingItem {
   key: string;
@@ -210,7 +212,7 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     const f = str(file);
     if (!f) return;
     const path = expand(f, agent.dir);
-    connection.push({ key: "tokenFile", label: "Токен", value: path, note: existsSync(path) ? "у файлі" : "файлу немає" });
+    connection.push({ key: "tokenFile", label: "Токен", value: path, note: existsSync(path) ? "у файлі" : "файлу немає", edit: { type: "secret" } });
   };
 
   if (agent.type === "claude") {
@@ -226,7 +228,8 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     add(workspace, "allow", "Дозволено без питання", strs(perms.allow)?.length ?? 0);
     add(workspace, "deny", "Заборонено", strs(perms.deny)?.length ?? 0);
     add(connection, "url", "Брокер", env.AICHAT_URL ?? null);
-    if (env.AICHAT_TOKEN) connection.push({ key: "token", label: "Токен", value: "у .mcp.json", note: "лежить відкрито в конфігу: краще AICHAT_TOKEN_FILE" });
+    if (env.AICHAT_TOKEN)
+      connection.push({ key: "token", label: "Токен", value: "у .mcp.json", note: "лежить відкрито в конфігу: заміна перенесе його у файл", edit: { type: "secret" } });
     else tokenFile(env.AICHAT_TOKEN_FILE);
     // other AICHAT_* settings of the channel, never anything that looks like a secret
     for (const [k, v] of Object.entries(env))
@@ -249,7 +252,7 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
   } else {
     add(connection, "url", "Брокер", config.url ?? null);
     tokenFile(config.tokenFile);
-    if (!str(config.tokenFile)) connection.push({ key: "tokenFile", label: "Токен", value: null, note: "tokenFile не задано" });
+    if (!str(config.tokenFile)) connection.push({ key: "tokenFile", label: "Токен", value: null, note: "tokenFile не задано", edit: { type: "secret" } });
   }
 
   if (agent.type !== "claude") {

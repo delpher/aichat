@@ -10,6 +10,7 @@ import { overview, startManager } from "../manager/server.js";
 import { flagValue, joinCommand, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
+import { replaceToken } from "../manager/token.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -398,10 +399,10 @@ test("manager settings: the page changes only what may be changed, checked first
   const view = readAgentSettings(agent("agy"), root);
   const edits = Object.fromEntries(view.sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => [i.key, i.edit!.type]));
   assert.deepEqual(edits, {
-    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text",
+    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text", tokenFile: "secret",
   });
   const claudeEdits = readAgentSettings(agent("claude"), root).sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => i.key);
-  assert.deepEqual(claudeEdits.sort(), ["command", "effort", "model"]);
+  assert.deepEqual(claudeEdits.sort(), ["command", "effort", "model", "token"]);
 
   assert.match(writeAgentSettings(agent("agy"), root, { wake: "mention", rooms: "#dev, lobby dev", attachPort: null, maxWakesPerMinute: "20" }, agents()), /Збережено/);
   assert.deepEqual(read(), { url: broker.url, tokenFile: "token.txt", owners: ["me"], wake: "mention", rooms: ["dev", "lobby"], maxWakesPerMinute: 20 });
@@ -777,4 +778,68 @@ test("manager settings: command words and TOML lines", () => {
   assert.equal(withTomlTop('"model" = "old"\n[t]', "model", "new"), 'model = "new"\n[t]');
   assert.equal(withTomlTop("'model' = 'old'\n", "model", undefined), "");
   assert.equal(withTomlTop('a = 1\r\n[t]\r\nmodel = "in table"', "model", "top"), 'a = 1\r\nmodel = "top"\r\n[t]\r\nmodel = "in table"');
+});
+
+test("manager token: replaced only with one the broker gives this agent, written owner-only, never shown back (3c.1)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const secretsDir = join(root, "secrets");
+  // who each token belongs to; "old-agy" stands for a revoked one
+  const owners: Record<string, string> = { "tok-agy": "agy-bot", "new-agy": "agy-bot", "tok-claude": "claude-bot", "new-claude": "claude-bot", "for-codex": "codex" };
+  const whoIs = async (_broker: string, token: string) => owners[token] ?? null;
+  const found = (folder: string) => discover(root).find((a) => a.agent.folder === folder)!;
+  const replace = (folder: string, token: unknown) => replaceToken(found(folder).agent, found(folder).secrets, token, { whoIs, secretsDir });
+  const fails = (folder: string, token: unknown, why: RegExp) =>
+    assert.rejects(replace(folder, token), (e: Error & { field?: string }) => e.field === "token" && why.test(e.message));
+
+  await fails("agy", "", /потрібен новий токен/);
+  await fails("agy", "two words", /без пробілів/);
+  await fails("agy", "nobody", /не прийняв/);
+  await fails("agy", "new-claude", /агента «claude-bot», а не «agy-bot»/);
+  const message = await replace("agy", " new-agy ");
+  assert.ok(!message.includes("new-agy"));
+  assert.equal(readFileSync(join(root, "agy", "token.txt"), "utf8"), "new-agy\n");
+  assert.ok(!existsSync(join(root, "agy", "token.txt.bak")) && !existsSync(join(root, "agy", "token.txt.tmp")), "no copy of a secret");
+
+  // Claude Code with the token inline in .mcp.json: it moves into a file of its own, and a stale backup goes too
+  writeFileSync(join(root, "claude", ".mcp.json.bak"), "old copy with tok-claude");
+  assert.match(await replace("claude", "new-claude"), /перенесено з \.mcp\.json/);
+  const mcpText = readFileSync(join(root, "claude", ".mcp.json"), "utf8");
+  assert.ok(!mcpText.includes("tok-claude") && !mcpText.includes("new-claude"));
+  const env = JSON.parse(mcpText).mcpServers.aichat.env;
+  assert.deepEqual(env, { AICHAT_URL: broker.url, AICHAT_TOKEN_FILE: join(secretsDir, "aichat-claude.token").replace(/\\/g, "/") });
+  assert.equal(readFileSync(join(secretsDir, "aichat-claude.token"), "utf8"), "new-claude\n");
+  assert.ok(!existsSync(join(root, "claude", ".mcp.json.bak")));
+
+  // the current token no longer works (that is why one replaces it): the folder's name is the agent's name
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url }));
+  assert.match(await replace("codex", "for-codex"), /aichat\.config\.json тепер посилається/);
+  assert.equal(JSON.parse(readFileSync(join(root, "codex", "aichat.config.json"), "utf8")).tokenFile, join(secretsDir, "aichat-codex.token"));
+
+  // the settings mark the token as write-only
+  const tokenItem = readAgentSettings(found("agy").agent, root).sections.find((s) => s.id === "connection")!.items.find((i) => i.key === "tokenFile");
+  assert.deepEqual(tokenItem?.edit, { type: "secret" });
+
+  // through the page: the header is needed, and the answer never carries the token
+  const { server } = await startManager({ root, port: 0, key: "abc0123", whoIs, secretsDir });
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const post = (body: unknown, header = true) =>
+    new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const headers: Record<string, string> = { cookie: "aichat_manager=abc0123", "content-type": "application/json" };
+      if (header) headers["x-aichat-manager"] = "1";
+      const req = request({ host: "127.0.0.1", port, path: "/api/agents/agy/token", method: "POST", headers }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c)).on("end", () => resolve({ status: res.statusCode!, text }));
+      });
+      req.on("error", reject).end(JSON.stringify(body));
+    });
+  assert.equal((await post({ token: "tok-agy" }, false)).status, 403);
+  const ok = await post({ token: "tok-agy" });
+  assert.equal(ok.status, 200);
+  assert.ok(!ok.text.includes("tok-agy"));
+  const bad = await post({ token: "new-claude" });
+  assert.equal(bad.status, 400);
+  assert.equal(JSON.parse(bad.text).field, "token");
 });
