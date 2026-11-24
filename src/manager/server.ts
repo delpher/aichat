@@ -13,6 +13,7 @@ import { PAGE } from "./page.js";
 import { readAgentSettings, SettingError, writeAgentSettings } from "./settings.js";
 import { replaceToken } from "./token.js";
 import { toggleMcp } from "./mcp.js";
+import { changeDirs } from "./dirs.js";
 import { installAgent, installInfo, type NodeRunner } from "./wizard.js";
 import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
 import { spawn } from "node:child_process";
@@ -162,6 +163,13 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
           // answer first, then hand over to the new file
           res.once("finish", () => setTimeout(() => opts.onRestart?.(), 100));
           return send(200, { ok: true, message: `Менеджер оновлено до ${version}, стара версія збережена поруч (.bak). Перезапускаюсь…` });
+        }
+        const folders = /^\/api\/agents\/([^/]+)\/dirs$/.exec(url.pathname);
+        if (folders) {
+          const agent = discover(opts.root).find((a) => a.agent.folder === decodeURIComponent(folders[1]))?.agent;
+          if (!agent) return send(404, { error: "немає такого агента" });
+          const message = changeDirs(agent, body);
+          return send(200, { ok: true, message, settings: readAgentSettings(agent, opts.root) });
         }
         const switchMcp = /^\/api\/agents\/([^/]+)\/mcp$/.exec(url.pathname);
         if (switchMcp) {
