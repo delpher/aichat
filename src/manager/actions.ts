@@ -1,11 +1,11 @@
 // What the agent manager can do with an installed agent (alexey, AIChat 3145-3157): update its adapter from the
 // broker, start and stop it, move a stale one out of the way and bring it back. Nothing is deleted for good: that
 // stays with the user (alexey, AIChat 3158).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { adapterVersion, readAgent, type LocalAgent } from "./agents.js";
-import { CLAUDE_CHANNEL_FLAGS, CLAUDE_START_PS1, claudeCommand, hasStartScript } from "./claude-start.js";
+import { CLAUDE_CHANNEL_FLAGS, claudeCommand, hasStartScript, startScriptCommand, writeStartScript } from "./claude-start.js";
 
 /** The file each adapter is served as by the broker (GET /client/<name>). */
 const CLIENT_FILE: Record<LocalAgent["type"], string> = {
@@ -64,7 +64,19 @@ export const systemRunner: Runner = {
           resolve();
         });
       };
-      if (process.platform !== "win32") return reject(new ActionError("запуск у терміналі поки лише для Windows", 501));
+      if (process.platform !== "win32") {
+        // elsewhere a detached tmux session: it lives on a desktop and on a server over SSH alike, and closing the window
+        // that is attached to it only detaches (AIChat 3535-3541)
+        const session = tmuxSession(title);
+        const tmux = (args: string[]) => spawnSync("tmux", args, { stdio: "pipe", encoding: "utf8" });
+        const probe = tmux(["-V"]);
+        if (probe.error) return reject(new ActionError("потрібен tmux: встановіть його (наприклад, sudo apt install tmux)", 501));
+        if (tmux(["has-session", "-t", `=${session}`]).status === 0)
+          return reject(new ActionError(`tmux-сесія ${session} уже є: tmux attach -t ${session}`, 409));
+        const started = tmux(["new-session", "-d", "-s", session, "-c", dir, command]);
+        if (started.status !== 0) return reject(new ActionError(`tmux не запустив сесію: ${(started.stderr || "").trim()}`, 502));
+        return resolve();
+      }
       tryStart("wt.exe", ["-w", "0", "nt", "-d", dir, "--title", title, ...ps], () =>
         tryStart("cmd.exe", ["/c", "start", JSON.stringify(title), "/D", dir, ...ps]),
       );
@@ -125,7 +137,7 @@ export function startCommand(agent: LocalAgent, settings: ManagerSettings): stri
   // Claude Code: the agent's start script runs the person's Claude command (AIChat 3443-3450); without one, the
   // command itself with the channel flags
   if (agent.type === "claude") {
-    if (hasStartScript(agent.dir)) return ".\\start.ps1";
+    if (hasStartScript(agent.dir)) return startScriptCommand();
     const command = claudeCommand(own);
     return command.includes("--dangerously-load-development-channels") ? command : `${command} ${CLAUDE_CHANNEL_FLAGS}`;
   }
@@ -173,7 +185,7 @@ export class Actions {
     const command = startCommand(a, readSettings(this.root));
     if (command) {
       await this.runner.openTerminal(a.dir, folder, command);
-      return "Відкрито термінал з агентом.";
+      return `Відкрито термінал з агентом.${terminalNote(folder)}`;
     }
     const pid = await this.runner.background(a.dir, [a.adapterFile, "run", "--config", join(a.dir, "aichat.config.json")], join(a.dir, ".aichat", BACKGROUND_LOG));
     // the adapter writes its pid to .aichat/status.json once it is up; an early exit means it could not start
@@ -192,7 +204,7 @@ export class Actions {
     const how = sessionCommand(a);
     if ("why" in how) throw new ActionError(how.why, 400);
     await this.runner.openTerminal(a.dir, `${folder}: сесія`, how.command);
-    return "Відкрито сесію в терміналі. Закриття вкладки агента не зупиняє.";
+    return `Відкрито сесію в терміналі. Закриття вкладки агента не зупиняє.${terminalNote(`${folder}: сесія`)}`;
   }
 
   async stop(folder: string): Promise<string> {
@@ -239,7 +251,7 @@ export class Actions {
       renameSync(tmp, target);
     }
     // a Claude Code agent set up before the wizard wrote start scripts gets one now (never over its own)
-    if (a.type === "claude" && !hasStartScript(a.dir)) writeFileSync(join(a.dir, "start.ps1"), CLAUDE_START_PS1);
+    if (a.type === "claude") writeStartScript(a.dir);
     if (restart) await this.start(folder);
     const done = `Адаптер оновлено до ${brokerVersion}, стара версія збережена поруч (.bak).`;
     return restart ? `${done} Агента перезапущено.` : stoppable(a) ? done : `${done} Перезапустіть агента в його терміналі.`;
@@ -280,4 +292,19 @@ export class Actions {
     renameSync(from, to);
     return `Теку ${folder} повернуто.`;
   }
+}
+
+/** The tmux session of a terminal opened for `title` (an agent's folder, or "<folder>: сесія"): aichat-<folder>[-session]. */
+export function tmuxSession(title: string): string {
+  const [folder, rest] = title.split(": ");
+  const name = `aichat-${folder}${rest ? "-session" : ""}`;
+  // tmux takes no . or : in a session name
+  return name.replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+/** What the page says after opening a terminal: Windows opens a tab; elsewhere it names the tmux session to attach to. */
+export function terminalNote(title: string, platform = process.platform): string {
+  if (platform === "win32") return "";
+  const session = tmuxSession(title);
+  return ` Сесія tmux ${session}: tmux attach -t ${session} (Ctrl+B, D — від'єднатися, агент працює далі).`;
 }

@@ -6,7 +6,7 @@ import { ROOM_RE } from "../protocol.js";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { ActionError, readSettings, startCommand } from "./actions.js";
-import { CLAUDE_CHANNEL_FLAGS, claudeCommand, hasStartScript } from "./claude-start.js";
+import { CLAUDE_CHANNEL_FLAGS, claudeCommand, hasStartScript, startScriptName } from "./claude-start.js";
 import type { LocalAgent } from "./agents.js";
 
 export type SettingValue = string | number | boolean | string[] | null;
@@ -348,13 +348,14 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
   const own = readSettings(root).start?.[agent.folder];
   if (agent.type === "claude") {
     // the person's Claude command; the start script adds the channel flags and the session (AIChat 3443-3450)
-    const mine = own && !/start\.ps1/i.test(own);
+    const mine = own && !/start\.(ps1|sh)/i.test(own);
+    const script = startScriptName();
     launch.push({ key: "command", label: "Команда запуску", value: claudeCommand(own), note: mine ? ".manager.json" : "типова" });
     launch.push({
       key: "startScript",
       label: "Як запускається",
-      value: hasStartScript(agent.dir) ? `start.ps1 → ${claudeCommand(own)} --resume <остання сесія> ${CLAUDE_CHANNEL_FLAGS}` : `${command}`,
-      note: hasStartScript(agent.dir) ? "start.ps1" : "без start.ps1: сесія не продовжується",
+      value: hasStartScript(agent.dir) ? `${script} → ${claudeCommand(own)} --resume <остання сесія> ${CLAUDE_CHANNEL_FLAGS}` : `${command}`,
+      note: hasStartScript(agent.dir) ? script : `без ${script}: сесія не продовжується`,
     });
   } else
     // a background agent has no command by default: null, so saving the form unchanged does not invent one
