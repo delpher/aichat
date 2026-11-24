@@ -1,13 +1,22 @@
 // Stage 3a of the agent manager (AIChat #aichat-manager-dev, 3324-3336): what an agent is set up to do, read from
 // its own configuration files, for the page to show. Read-only, and nothing secret leaves here: MCP servers go out
 // as name, kind and state only (a key may hide in args, env, headers or a URL), the broker token as where it lives.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { ROOM_RE } from "../protocol.js";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { readSettings, startCommand } from "./actions.js";
+import { ActionError, readSettings, startCommand } from "./actions.js";
 import type { LocalAgent } from "./agents.js";
 
 export type SettingValue = string | number | boolean | string[] | null;
+
+/** How the page may change a setting (stage 3b, AIChat 3345); a setting without it is read-only. */
+export type EditSpec =
+  | { type: "enum"; options: string[] }
+  | { type: "bool" }
+  | { type: "int"; min: number; max: number; optional?: boolean }
+  | { type: "text"; max: number; optional?: boolean }
+  | { type: "list" };
 
 export interface SettingItem {
   key: string;
@@ -15,6 +24,7 @@ export interface SettingItem {
   value: SettingValue;
   /** "налаштовано" (from a file), "фактично" (what the running adapter reports), or a warning. */
   note?: string;
+  edit?: EditSpec;
 }
 
 export interface SettingsSection {
@@ -316,11 +326,25 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
   }
 
   const command = startCommand(agent, readSettings(root));
-  launch.push({ key: "command", label: "Команда запуску", value: command ?? "у фоні: node <адаптер> run", note: readSettings(root).start?.[agent.folder] ? ".manager.json" : "типова" });
+  const own = readSettings(root).start?.[agent.folder];
+  // a background agent has no command by default: null, so saving the form unchanged does not invent one
+  launch.push({ key: "command", label: "Команда запуску", value: command, note: own ? ".manager.json" : command ? "типова" : "типова: у фоні, node <адаптер> run" });
   if (agent.type === "codex" || agent.type === "agy") add(launch, "attachPort", "Порт інтерактивної сесії", config.attachPort ?? null);
   if (agent.type !== "claude") add(launch, "session", "Сесія при старті", config.session ?? "resume");
   if (agent.status?.pid) add(launch, "pid", "Процес", agent.status.pid, agent.status.alive ? "працює" : "не працює");
   add(launch, "start", "Як почалась сесія", str(status.start) ?? undefined, ACTUAL);
+
+  // what the page may change (3b): every editable setting is there, set or not, with how to edit it
+  const lists = { connection, behavior, launch } as const;
+  for (const [key, field] of Object.entries(editableFields(agent))) {
+    const list = lists[field.section];
+    let entry = list.find((i) => i.key === key);
+    if (!entry) {
+      entry = { key, label: field.label, value: null, note: CONFIGURED };
+      list.push(entry);
+    }
+    entry.edit = field.edit;
+  }
 
   const started = processStart(agent);
   const changed = Math.max(...configFiles.map((f) => mtime(f) ?? 0));
@@ -336,4 +360,142 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     ] as SettingsSection[]
   ).filter((s) => s.items.length);
   return { sections, mcp, restartNeeded };
+}
+
+interface EditableField {
+  section: "connection" | "behavior" | "launch";
+  label: string;
+  edit: EditSpec;
+  /** Where it is written: the agent's aichat.config.json, or the manager's own .manager.json. */
+  file: "config" | "manager";
+}
+
+/** The settings the page may change for this agent (AIChat 3343-3345); owners, permissions, token, instructions stay manual. */
+export function editableFields(agent: LocalAgent): Record<string, EditableField> {
+  const fields: Record<string, EditableField> = {
+    command: { section: "launch", label: "Команда запуску", edit: { type: "text", max: 500, optional: true }, file: "manager" },
+  };
+  if (agent.type === "claude") return fields;
+  Object.assign(fields, {
+    rooms: { section: "connection", label: "Кімнати (при старті)", edit: { type: "list" }, file: "config" },
+    wake: { section: "behavior", label: "Будити", edit: { type: "enum", options: ["always", "mention", "never"] }, file: "config" },
+    paused: { section: "behavior", label: "На паузі", edit: { type: "bool" }, file: "config" },
+    maxWakesPerMinute: { section: "behavior", label: "Пробуджень за хвилину, не більше", edit: { type: "int", min: 1, max: 600, optional: true }, file: "config" },
+    sessionTitle: { section: "behavior", label: "Назва сесії", edit: { type: "text", max: 100, optional: true }, file: "config" },
+    session: { section: "launch", label: "Сесія при старті", edit: { type: "enum", options: ["resume", "new"] }, file: "config" },
+  } satisfies Record<string, EditableField>);
+  if (agent.type === "codex" || agent.type === "agy")
+    Object.assign(fields, {
+      delivery: { section: "behavior", label: "Доставка", edit: { type: "enum", options: ["steer", "queue"] }, file: "config" },
+      attachPort: { section: "launch", label: "Порт інтерактивної сесії", edit: { type: "int", min: 1024, max: 65535, optional: true }, file: "config" },
+    } satisfies Record<string, EditableField>);
+  return fields;
+}
+
+/** A setting the page sent that cannot be saved; `field` lets the form mark it. */
+export class SettingError extends ActionError {
+  constructor(
+    message: string,
+    readonly field?: string,
+  ) {
+    super(message, 400);
+  }
+}
+
+/** The value checked against its spec: what goes into the file, or undefined to remove the key. */
+function checked(key: string, spec: EditSpec, raw: unknown): unknown {
+  const fail = (why: string): never => {
+    throw new SettingError(`${key}: ${why}`, key);
+  };
+  const optional = "optional" in spec && spec.optional;
+  if (raw === null || raw === "") {
+    if (optional) return undefined;
+    fail("потрібне значення");
+  }
+  switch (spec.type) {
+    case "enum":
+      if (typeof raw !== "string" || !spec.options.includes(raw)) fail(`одне з ${spec.options.join(", ")}`);
+      return raw;
+    case "bool":
+      if (typeof raw !== "boolean") fail("так або ні");
+      return raw;
+    case "int": {
+      const n = typeof raw === "string" ? Number(raw.trim()) : raw;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < spec.min || n > spec.max) fail(`ціле число від ${spec.min} до ${spec.max}`);
+      return n;
+    }
+    case "text": {
+      if (typeof raw !== "string") return fail("має бути текст");
+      if (raw.length > spec.max) fail(`не довше ${spec.max} знаків`);
+      if (/[\r\n\0]/.test(raw)) fail("в один рядок");
+      return raw.trim() || (optional ? undefined : fail("потрібне значення"));
+    }
+    case "list": {
+      const items = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,]+/) : fail("список");
+      const out = [...new Set(items.map((x) => String(x).trim().replace(/^#/, "")).filter(Boolean))];
+      const bad = out.find((r) => !ROOM_RE.test(r));
+      if (bad !== undefined) fail(`«${bad}» не схоже на назву кімнати`);
+      return out;
+    }
+  }
+}
+
+/** Writes `file` through a temporary file, keeping the previous one as `<file>.bak`. */
+function writeAtomic(file: string, text: string) {
+  if (existsSync(file)) copyFileSync(file, `${file}.bak`);
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, file);
+}
+
+/**
+ * Saves the settings the page changed (`set`: key → value, null to remove). Everything is checked before anything
+ * is written; other keys of the files stay as they were.
+ */
+export function writeAgentSettings(agent: LocalAgent, root: string, set: unknown, others: LocalAgent[] = []): string {
+  if (!set || typeof set !== "object" || Array.isArray(set) || !Object.keys(set).length) throw new SettingError("немає змін");
+  const fields = editableFields(agent);
+  const config: Record<string, unknown> = {};
+  let command: string | null | undefined;
+  for (const [key, raw] of Object.entries(set as Record<string, unknown>)) {
+    const field = fields[key];
+    if (!field) throw new SettingError(`${key}: це налаштування тут не змінюється`, key);
+    const value = checked(key, field.edit, raw);
+    if (field.file === "manager") command = (value as string | undefined) ?? null;
+    else config[key] = value;
+  }
+  // an attach port another agent here already uses would make one of the two terminals talk to the wrong agent
+  const port = config.attachPort;
+  if (typeof port === "number") {
+    const taken = others.find((o) => o.folder !== agent.folder && o.attachPort === port);
+    if (taken) throw new SettingError(`attachPort: порт ${port} уже має ${taken.folder}`, "attachPort");
+  }
+
+  if (Object.keys(config).length) {
+    const file = join(agent.dir, "aichat.config.json");
+    const text = readText(file);
+    let current: Record<string, unknown> = {};
+    if (text !== null) {
+      try {
+        current = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        throw new SettingError("aichat.config.json не читається як JSON: виправте його вручну");
+      }
+    }
+    for (const [k, v] of Object.entries(config)) {
+      if (v === undefined) delete current[k];
+      else current[k] = v;
+    }
+    writeAtomic(file, JSON.stringify(current, null, 2) + "\n");
+  }
+  if (command !== undefined) {
+    const file = join(root, ".manager.json");
+    const settings = readSettings(root) as { start?: Record<string, string> } & Record<string, unknown>;
+    const start = { ...(settings.start ?? {}) };
+    if (command === null) delete start[agent.folder];
+    else start[agent.folder] = command;
+    writeAtomic(file, JSON.stringify({ ...settings, start }, null, 2) + "\n");
+  }
+  const names = Object.keys(set as object).join(", ");
+  return `Збережено: ${names}.`;
 }
