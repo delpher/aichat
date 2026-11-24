@@ -1179,6 +1179,19 @@ try {
     font-size: var(--text-sm);
   }
 
+  .brand-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .mgr-update {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
   @media (max-width: 720px) {
     .topbar-inner { padding: var(--space-3); }
     main { padding: var(--space-4) var(--space-3) var(--space-6); }
@@ -1199,11 +1212,15 @@ try {
         </svg>
       </span>
       <div class="brand-title">
-        <h1>Агенти AIChat</h1>
+        <div class="brand-head">
+          <h1>Агенти AIChat</h1>
+          <span id="mgr-ver" class="pill neutral mono" hidden></span>
+        </div>
         <span class="brand-path" id="root"></span>
       </div>
     </div>
     <div class="topbar-controls">
+      <div id="mgr-update" class="mgr-update" hidden></div>
       <div class="summary" id="summary"></div>
       <span class="muted small num" id="when"></span>
       <button id="refresh" class="btn ghost sm" type="button">
@@ -1222,6 +1239,7 @@ try {
 </header>
 
 <main>
+  <div id="mgr-msg" class="msg-banner" role="status" aria-live="polite"></div>
   <section class="card">
     <div class="table-wrap">
       <table>
@@ -2341,13 +2359,114 @@ $("close-inspector").addEventListener("click", () => {
   $("logs").hidden = true;
   render();
 });
+/* ---------- manager version & self-update ---------- */
+let updatingManager = false, managerVersion = null;
+
+function renderManagerInfo(d) {
+  const ver = $("mgr-ver");
+  if (d && d.version) {
+    managerVersion = d.version;
+    ver.textContent = "v" + d.version;
+    ver.hidden = false;
+  } else {
+    ver.hidden = true;
+  }
+  const box = $("mgr-update");
+  box.replaceChildren();
+  if (d && d.updateAvailable && d.latest) {
+    box.append(pill("є " + d.latest, "warn"));
+    if (d.canUpdate) {
+      const btn = el("button", updatingManager ? "Оновлюю…" : "Оновити менеджер", "btn soft sm");
+      btn.id = "mgr-update-btn";
+      btn.type = "button";
+      btn.disabled = updatingManager;
+      btn.addEventListener("click", () => updateManager(d.latest));
+      box.append(btn);
+    } else {
+      box.append(el("span", "оновлюйте через git", "small muted"));
+    }
+    box.hidden = false;
+  } else {
+    box.hidden = true;
+  }
+}
+
+async function loadManager() {
+  try {
+    const r = await fetch("/api/manager");
+    if (!r.ok) {
+      $("mgr-ver").hidden = true;
+      $("mgr-update").hidden = true;
+      return null;
+    }
+    const d = await r.json();
+    renderManagerInfo(d);
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+async function updateManager(targetVersion) {
+  if (updatingManager) return;
+  updatingManager = true;
+  const btn = $("mgr-update-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Оновлюю…";
+  }
+  say("Оновлюю менеджер…", "", "mgr-msg");
+  try {
+    const res = await postJson("/api/manager/update", {});
+    if (!res.ok) {
+      updatingManager = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Оновити менеджер";
+      }
+      say(res.data.error || res.status + " " + res.statusText, "bad", "mgr-msg");
+      return;
+    }
+    say(res.data.message || "Менеджер оновлено, перезапускається…", "ok", "mgr-msg");
+    await new Promise((r) => setTimeout(r, 2500));
+    for (let i = 0; i < 8; i++) {
+      try {
+        const r = await fetch("/api/manager", { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          if (d && d.version && (d.version === targetVersion || (managerVersion && d.version !== managerVersion))) {
+            window.location.reload();
+            return;
+          }
+          renderManagerInfo(d);
+          await load();
+          updatingManager = false;
+          return;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    say("Перезапуск триває довше, ніж очікувалось — оновіть сторінку.", "warn", "mgr-msg");
+    updatingManager = false;
+  } catch (e) {
+    updatingManager = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Оновити менеджер";
+    }
+    say(e.message || "Не вдалося оновити менеджер.", "bad", "mgr-msg");
+  }
+}
+
 $("refresh").addEventListener("click", () => {
   load();
+  loadManager();
   if (selected && activeTab === "settings" && !editingSettings) loadSettings(selected, true);
 });
 $("log-refresh").addEventListener("click", showLog);
 $("log-file").addEventListener("change", showLog);
 load();
+loadManager();
 setInterval(load, 15000);
 // the open log follows by itself every 10 s (alexey, AIChat 3157)
 setInterval(() => { if (activeTab === "logs" && $("log-auto").checked && !document.hidden) showLog(); }, 10000);
