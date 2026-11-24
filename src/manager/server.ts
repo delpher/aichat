@@ -210,7 +210,7 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
             act[2] === "start"
               ? await actions.start(folder, online)
               : act[2] === "stop"
-                ? await actions.stop(folder)
+                ? await actions.stop(folder, online)
                 : act[2] === "session"
                   ? await actions.session(folder, online)
                   : act[2] === "update"

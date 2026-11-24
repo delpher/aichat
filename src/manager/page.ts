@@ -1926,6 +1926,8 @@ function actionsFor(a) {
   // OpenCode lives in its background server: closing the terminal leaves it online, and a new one joins it again
   if (a.type === "opencode" && b.online) button("Відкрити сесію", () => act("Відкриваю сесію", base + "session"), "primary");
   if (bg && a.status && a.status.alive) button("Зупинити", () => act("Зупиняю", base + "stop"), "ghost");
+  // only its channel: the OpenCode server is shared with other projects; «Запустити» brings it back (#135)
+  if (a.type === "opencode" && b.online) button("Зупинити", () => act("Відключаю канал", base + "stop"), "ghost");
   if (b.version) {
     button(
       a.version === b.version ? "Перевстановити адаптер " + b.version : "Оновити адаптер до " + b.version,

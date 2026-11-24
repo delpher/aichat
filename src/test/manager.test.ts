@@ -5,7 +5,7 @@ import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { Actions, TMUX_PAUSE, attachTerminals, readSettings, startCommand, terminalNote, tmuxSession, type Runner } from "../manager/actions.js";
+import { Actions, TMUX_PAUSE, atLeast, attachTerminals, readSettings, startCommand, terminalNote, tmuxSession, type Runner } from "../manager/actions.js";
 import { CLAUDE_START_PS1, startScriptCommand, startScriptName, writeStartScript } from "../manager/claude-start.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
@@ -264,6 +264,19 @@ test("manager actions: start in a terminal or in the background, stop only what 
   await actions.session("opencode", true);
   assert.equal(calls.at(-1), "terminal opencode opencode: сесія: opencode -c");
   rmSync(join(root, ".manager.json"));
+
+  // «Зупинити» for OpenCode disconnects only its channel, with the plugin's marker; «Запустити» brings it back (#135)
+  const marker = (name: string) => existsSync(join(root, "opencode", ".aichat", name));
+  await assert.rejects(actions.stop("opencode", false), /не в мережі/);
+  await assert.rejects(actions.stop("opencode", true), /оновіть адаптер до 0\.26\.2/, "an old plugin would not come back");
+  writeFileSync(join(root, "opencode", ".opencode", "plugins", "aichat-channel", "index.js"), 'var VERSION = true ? "0.26.2" : "0.0.0-dev";');
+  assert.match(await actions.stop("opencode", true), /Канал відключено/);
+  assert.ok(marker("stop") && !marker("start"));
+  calls.length = 0;
+  await actions.start("opencode");
+  assert.ok(marker("start") && !marker("stop"), "the start marker takes the stop one away");
+  assert.deepEqual(calls, ["terminal opencode opencode: opencode"]);
+  assert.ok(atLeast("0.27.0", "0.26.2") && atLeast("0.26.2", "0.26.2") && !atLeast("0.26.1", "0.26.2") && !atLeast(undefined, "0.26.2"));
 
   await actions.stop("codex");
   await assert.rejects(actions.session("codex"), /не запущений/);
