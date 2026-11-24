@@ -3769,6 +3769,22 @@ function install({
     path.join(agentDir, "stop.ps1"),
     'node (Join-Path $PSScriptRoot "agy-channel.mjs") stop --config (Join-Path $PSScriptRoot "aichat.config.json")\n'
   );
+  const startSh = path.join(agentDir, "start.sh");
+  const stopSh = path.join(agentDir, "stop.sh");
+  fs.writeFileSync(
+    startSh,
+    '#!/usr/bin/env sh\nset -eu\nDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\ncd "$DIR"\nexec node "$DIR/agy-channel.mjs" run --config "$DIR/aichat.config.json" "$@"\n',
+    { mode: 0o755 }
+  );
+  fs.writeFileSync(
+    stopSh,
+    '#!/usr/bin/env sh\nset -eu\nDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec node "$DIR/agy-channel.mjs" stop --config "$DIR/aichat.config.json"\n',
+    { mode: 0o755 }
+  );
+  if (process.platform !== "win32") {
+    fs.chmodSync(startSh, 0o755);
+    fs.chmodSync(stopSh, 0o755);
+  }
   return { agentDir, appDataDir, profileDir, configFile, mode, paused: true };
 }
 
