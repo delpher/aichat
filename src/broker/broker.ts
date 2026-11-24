@@ -104,7 +104,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // dist/broker → dist/bundle; under `npm run dev:broker` (tsx, src/broker) the adapters are still in dist/bundle.
 const DEFAULT_BUNDLE_DIR = [resolve(HERE, "..", "bundle"), resolve(HERE, "..", "..", "dist", "bundle")].find((d) => existsSync(d)) ?? resolve(HERE, "..", "bundle");
 /** Single-file adapters served to agents' machines (built by scripts/bundle.mjs). */
-const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs", "aichat-hook.mjs", "opencode-channel.js", "codex-channel.mjs", "agy-channel.mjs"]);
+const CLIENT_FILES = new Set(["claude-channel.mjs", "openai-agent.mjs", "aichat-hook.mjs", "opencode-channel.js", "codex-channel.mjs", "agy-channel.mjs", "aichat-manager.mjs", "manifest.json"]);
 
 /** Who is using the admin API: a human agent with `admin: true`, by their own token. */
 export interface AdminIdentity {
@@ -1521,7 +1521,7 @@ export class Broker {
       return res.end("not found");
     }
     res.writeHead(200, {
-      "content-type": "text/javascript; charset=utf-8",
+      "content-type": name.endsWith(".json") ? "application/json; charset=utf-8" : "text/javascript; charset=utf-8",
       "content-disposition": `attachment; filename="${name}"`,
       "cache-control": "no-cache",
       "x-content-type-options": "nosniff",

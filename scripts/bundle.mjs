@@ -1,7 +1,9 @@
 // Bundles the agent adapters into single files the broker serves at /client/<name>.mjs,
 // so another computer needs only Node 22+ and one file (no copy of this project, no npm install).
 import { build } from "esbuild";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -45,4 +47,20 @@ await Promise.all([
     entryPoints: ["src/adapters/agy-channel.mjs"],
     outfile: "dist/bundle/agy-channel.mjs",
   }),
+  // the agent manager (src/manager): node:* imports only, one file a user installs with one command (stage 4a)
+  build({
+    ...shared,
+    banner: undefined,
+    entryPoints: ["src/manager/server.ts"],
+    outfile: "dist/bundle/aichat-manager.mjs",
+  }),
 ]);
+
+// What the broker serves at /client/manifest.json: its version and the SHA-256 of every client file, so the manager's
+// installer and its self-update can check what they downloaded (an integrity check, not proof of the broker's identity).
+const files = {};
+for (const name of readdirSync("dist/bundle").filter((n) => /\.(mjs|js)$/.test(n)).sort()) {
+  const data = readFileSync(join("dist/bundle", name));
+  files[name] = { sha256: createHash("sha256").update(data).digest("hex"), size: data.length };
+}
+writeFileSync("dist/bundle/manifest.json", JSON.stringify({ version, files }, null, 2) + "\n");
