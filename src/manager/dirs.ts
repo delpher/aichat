@@ -33,9 +33,12 @@ function writeAtomic(file: string, text: string) {
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-/** Two paths name the same folder (Windows: any case, either slash, no trailing slash). */
+/** Two paths name the same folder: no trailing slash; on Windows also any case and either slash. */
 const same = (a: string, b: string) => {
-  const n = (p: string) => normalize(p).replace(/[\\/]+$/, "").toLowerCase();
+  const n = (p: string) => {
+    const s = normalize(p).replace(/[\\/]+$/, "");
+    return process.platform === "win32" ? s.toLowerCase() : s;
+  };
   return n(a) === n(b);
 };
 

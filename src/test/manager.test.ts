@@ -945,7 +945,9 @@ test("manager folders: added only with the path typed twice, removed freely, eac
   assert.match(changeDirs(agent("agy"), { add: repo, confirm: repo }), /отримав доступ/);
   changeDirs(agent("agy"), { add: other, confirm: other });
   assert.deepEqual(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).addDirs, [repo, other]);
-  fails("agy", { add: repo.toUpperCase(), confirm: repo.toUpperCase() }, "dirs", /уже у списку/);
+  // the same folder written with a trailing slash (any OS; Windows also matches any case)
+  fails("agy", { add: `${repo}/`, confirm: `${repo}/` }, "dirs", /уже у списку/);
+  if (process.platform === "win32") fails("agy", { add: repo.toUpperCase(), confirm: repo.toUpperCase() }, "dirs", /уже у списку/);
   changeDirs(agent("agy"), { remove: repo });
   assert.deepEqual(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).addDirs, [other]);
   const agyItem = readAgentSettings(agent("agy"), root).sections.find((s) => s.id === "workspace")!.items.find((i) => i.key === "addDirs");
