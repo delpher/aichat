@@ -138,7 +138,8 @@ export function startCommand(agent: LocalAgent, settings: ManagerSettings): stri
 export function sessionCommand(agent: LocalAgent): { command: string } | { why: string } {
   if (agent.type !== "codex" && agent.type !== "agy") return { why: "цей агент і так працює в терміналі" };
   if (!agent.attachPort) return { why: "додайте attachPort у aichat.config.json і перезапустіть агента" };
-  return { command: `node .\\${basename(agent.adapterFile)} attach --config .\\aichat.config.json` };
+  // ./ works in PowerShell and in a POSIX shell alike (antigravity-alexey, 3537)
+  return { command: `node ./${basename(agent.adapterFile)} attach --config ./aichat.config.json` };
 }
 
 /** agy and codex run as adapters of their own, which can be stopped; Claude Code and OpenCode live in a terminal. */
