@@ -130,10 +130,10 @@ export function withJsoncServerDisabled(text: string, name: string, disabled: bo
 export function withDisabledFlag(body: string, disabled: boolean): string {
   let next = body;
   const multi = body.includes("\n");
+  // both of OpenCode's switches go: "disabled", and the older "enabled" (opencode-alexey, 3481), so they never disagree
   if (multi) {
     const lines = next.split("\n");
-    const at = lines.findIndex((l) => /^\s*"disabled"\s*:\s*(true|false)\s*,?\s*(\/\/.*)?\r?$/.test(l));
-    if (at >= 0) {
+    for (let at; (at = lines.findIndex((l) => /^\s*"(disabled|enabled)"\s*:\s*(true|false)\s*,?\s*(\/\/.*)?\r?$/.test(l))) >= 0; ) {
       const hadComma = /(true|false)\s*,/.test(lines[at]);
       lines.splice(at, 1);
       // it was the last member: the one before it now ends the object and must lose its comma
@@ -152,7 +152,7 @@ export function withDisabledFlag(body: string, disabled: boolean): string {
     }
     next = lines.join("\n");
   } else {
-    next = next.replace(/\s*"disabled"\s*:\s*(true|false)\s*,?/, "").replace(/,\s*\}$/, " }");
+    next = next.replace(/\s*"(disabled|enabled)"\s*:\s*(true|false)\s*,?/g, "").replace(/,\s*\}$/, " }");
     if (disabled) next = next.replace(/^\{\s*(\}?)/, (_, close) => (close ? '{ "disabled": true }' : '{ "disabled": true, '));
   }
   return next;

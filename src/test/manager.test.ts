@@ -917,4 +917,9 @@ test("manager MCP: TOML table switch and JSONC edits by themselves", () => {
   const multi = '{\n  "type": "remote",\n  "url": "u",\n  "disabled": true\n}';
   assert.equal(withDisabledFlag(multi, false), '{\n  "type": "remote",\n  "url": "u"\n}');
   assert.equal(withDisabledFlag(withDisabledFlag(multi, false), true), '{\n  "disabled": true,\n  "type": "remote",\n  "url": "u"\n}');
+  // OpenCode's older switch, "enabled": false, goes too: on means no flag at all, off means "disabled" only (3481)
+  const legacy = '{\n  "type": "local",\n  "enabled": false\n}';
+  assert.equal(withDisabledFlag(legacy, false), '{\n  "type": "local"\n}');
+  assert.equal(withDisabledFlag(legacy, true), '{\n  "disabled": true,\n  "type": "local"\n}');
+  assert.equal(withDisabledFlag('{ "enabled": false, "type": "local" }', false), '{ "type": "local" }');
 });
