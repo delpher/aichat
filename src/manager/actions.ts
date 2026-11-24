@@ -205,6 +205,9 @@ export class Actions {
   async start(folder: string, online?: boolean): Promise<string> {
     const a = this.agent(folder);
     if (running(a) || online) throw new ActionError("агент уже працює");
+    // OpenCode: a channel disconnected by «Зупинити» while its server runs comes back with the marker; a new server
+    // connects anyway and takes the marker away
+    if (a.type === "opencode") setMarker(a.dir, "start", "stop");
     const command = startCommand(a, readSettings(this.root));
     if (command) {
       await this.runner.openTerminal(a.dir, folder, command);
@@ -231,8 +234,17 @@ export class Actions {
     return `Відкрито сесію в терміналі. Закриття вкладки агента не зупиняє.${terminalNote(`${folder}: сесія`)}`;
   }
 
-  async stop(folder: string): Promise<string> {
+  async stop(folder: string, online?: boolean): Promise<string> {
     const a = this.agent(folder);
+    if (a.type === "opencode") {
+      // the agent lives in OpenCode's background server, shared with other projects: only its channel is disconnected,
+      // with the plugin's own marker; .aichat/start brings it back in the same process (opencode-alexey, 3660, #135)
+      if (!online) throw new ActionError("агент не в мережі");
+      if (!atLeast(a.version, OPENCODE_START_MARKER))
+        throw new ActionError(`оновіть адаптер до ${OPENCODE_START_MARKER} або новішого: старий плагін після зупинки сам не повертається`, 400);
+      setMarker(a.dir, "stop", "start");
+      return "Канал відключено; сервер OpenCode працює далі. «Запустити» підключить агента знову.";
+    }
     if (!stoppable(a)) throw new ActionError("цей агент працює в терміналі: закрийте його там", 400);
     if (!running(a)) throw new ActionError("агент не запущений");
     await this.runner.node(a.dir, [a.adapterFile, "stop", "--config", join(a.dir, "aichat.config.json")]);
@@ -316,6 +328,26 @@ export class Actions {
     renameSync(from, to);
     return `Теку ${folder} повернуто.`;
   }
+}
+
+/** The OpenCode plugin that brings its channel back on .aichat/start (#135). */
+export const OPENCODE_START_MARKER = "0.26.2";
+
+/** Whether version `v` (x.y.z) is `min` or newer; an unknown one is not. */
+export function atLeast(v: string | null | undefined, min: string): boolean {
+  const parse = (s: string) => s.split(".").map((n) => parseInt(n, 10));
+  if (!v || !/^\d+\.\d+\.\d+/.test(v)) return false;
+  const [a, b] = [parse(v), parse(min)];
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return true;
+}
+
+/** Drops the adapter's marker `.aichat/<name>` and takes away the opposite one, so the two never wait together. */
+function setMarker(dir: string, name: string, opposite: string): void {
+  const runtime = join(dir, ".aichat");
+  mkdirSync(runtime, { recursive: true });
+  rmSync(join(runtime, opposite), { force: true });
+  writeFileSync(join(runtime, name), "");
 }
 
 /** The tmux session of a terminal opened for `title` (an agent's folder, or "<folder>: сесія"): aichat-<folder>[-session]. */
