@@ -7,6 +7,7 @@ import test from "node:test";
 import { Actions, type Runner } from "../manager/actions.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
+import { parseJsonc, parseTomlLite, readAgentSettings } from "../manager/settings.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
 async function fakeBroker(): Promise<{ server: Server; url: string }> {
@@ -283,4 +284,100 @@ test("manager: actions are POSTs with the manager's header", async (t) => {
   assert.equal((await post("/api/agents/codex/remove", { confirm: "x" }, h)).status, 400);
   assert.equal((await post("/api/agents/codex/remove", { confirm: "codex" }, h)).status, 200);
   assert.equal((await post("/api/agents/nobody/stop", {}, h)).status, 404);
+});
+
+test("manager settings: what each agent is set up for, from its own files, with no secret in the answer", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const put = (rel: string, text: string) => {
+    mkdirSync(join(root, rel, ".."), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  };
+  put(
+    "agy/aichat.config.json",
+    JSON.stringify({ url: broker.url, tokenFile: "token.txt", addDirs: ["D:\\work"], mode: "accept-edits", sandbox: true, rooms: ["dev"], attachPort: 60620 }),
+  );
+  put("agy/.aichat/status.json", JSON.stringify({ pid: process.pid, start: "resumed", model: "gemini-x", effective: { network: false, mcp: [{ name: "aichat", state: "connected" }] } }));
+  put("codex-home/config.toml", [
+    'sandbox_mode = "workspace-write"',
+    'model = "gpt-x" # the default',
+    "[sandbox_workspace_write]",
+    'writable_roots = [',
+    '  "D:\\\\repo",',
+    "]",
+    "network_access = true",
+    "[mcp_servers.github]",
+    'command = "npx"',
+    'env = { GITHUB_TOKEN = "ghp-secret-1" }',
+    "[mcp_servers.docs]",
+    'url = "https://docs.example/mcp?key=url-secret-2"',
+    "enabled = false",
+  ].join("\n"));
+  put("codex/aichat.config.json", JSON.stringify({ url: broker.url, tokenFile: "missing.txt", codexHome: join(root, "codex-home"), maxBatch: 5 }));
+  put("opencode/opencode.jsonc", [
+    "{",
+    '  "model": "litellm/main", // a comment',
+    "  /* block */",
+    '  "mcp": { "grafana": { "type": "remote", "url": "https://grafana.example//mcp", "headers": { "Authorization": "Bearer hdr-secret-3" } },',
+    '           "gitlab": { "type": "local", "command": ["npx"], "disabled": true }, },',
+    "}",
+  ].join("\n"));
+
+  const settingsOf = (folder: string) => readAgentSettings(discover(root).find((a) => a.agent.folder === folder)!.agent, root);
+  const item = (s: ReturnType<typeof settingsOf>, section: string, key: string) =>
+    s.sections.find((x) => x.id === section)?.items.find((i) => i.key === key);
+
+  const agy = settingsOf("agy");
+  assert.deepEqual(item(agy, "workspace", "addDirs")?.value, ["D:\\work"]);
+  assert.equal(item(agy, "workspace", "effective.network")?.note, "фактично");
+  assert.equal(item(agy, "connection", "tokenFile")?.note, "у файлі");
+  assert.equal(item(agy, "launch", "attachPort")?.value, 60620);
+  assert.equal(item(agy, "launch", "start")?.value, "resumed");
+  assert.deepEqual(agy.mcp.find((m) => m.name === "aichat"), { name: "aichat", kind: "builtin", enabled: true, source: "адаптер (при старті сесії)", state: "connected" });
+  assert.equal(agy.restartNeeded, null, "no adapter.lock: the start time is unknown");
+
+  const codex = settingsOf("codex");
+  assert.equal(item(codex, "workspace", "sandbox_mode")?.value, "workspace-write");
+  assert.deepEqual(item(codex, "workspace", "writable_roots")?.value, ["D:\\repo"]);
+  assert.equal(item(codex, "workspace", "network_access")?.value, true);
+  assert.equal(item(codex, "model", "model")?.value, "gpt-x");
+  assert.equal(item(codex, "behavior", "maxBatch")?.value, 5);
+  assert.equal(item(codex, "connection", "tokenFile")?.note, "файлу немає");
+  assert.deepEqual(codex.mcp, [
+    { name: "github", kind: "local", enabled: true, source: "config.toml" },
+    { name: "docs", kind: "remote", enabled: false, source: "config.toml" },
+  ]);
+
+  const claude = settingsOf("claude");
+  assert.equal(item(claude, "connection", "token")?.value, "у .mcp.json");
+  assert.deepEqual(claude.mcp.filter((m) => m.source === ".mcp.json").map((m) => m.name), ["aichat"]);
+
+  const opencode = settingsOf("opencode");
+  assert.equal(item(opencode, "model", "model")?.value, "litellm/main");
+  assert.deepEqual(opencode.mcp.map((m) => `${m.name}:${m.kind}:${m.enabled}`), ["grafana:remote:true", "gitlab:local:false"]);
+
+  const everything = JSON.stringify([agy, codex, claude, opencode]);
+  for (const secret of ["tok-agy", "tok-claude", "ghp-secret-1", "url-secret-2", "hdr-secret-3"]) assert.ok(!everything.includes(secret), secret);
+
+  const { server } = await startManager({ root, port: 0, key: "abc456" });
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const get = (path: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path, headers: { cookie: "aichat_manager=abc456" } }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c)).on("end", () => resolve({ status: res.statusCode!, body }));
+      });
+      req.on("error", reject).end();
+    });
+  const viaApi = await get("/api/agents/codex/settings");
+  assert.equal(viaApi.status, 200);
+  assert.equal(JSON.parse(viaApi.body).sections[0].id, "workspace");
+  assert.equal((await get("/api/agents/nobody/settings")).status, 404);
+});
+
+test("manager settings: JSON with comments and a little TOML", () => {
+  assert.deepEqual(parseJsonc('{ "a": "http://x//y", /* c */ "b": [1, 2,], // end\n }'), { a: "http://x//y", b: [1, 2] });
+  assert.deepEqual(parseTomlLite('top = 1\n[t.x]\nk = "v" # c\narr = ["a", \'b\']\nbad = { x = 1 }\n'), { "": { top: 1 }, "t.x": { k: "v", arr: ["a", "b"] } });
 });

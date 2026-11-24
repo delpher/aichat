@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { Actions, ActionError, type Runner } from "./actions.js";
 import { discover, tail, type LocalAgent } from "./agents.js";
 import { PAGE } from "./page.js";
+import { readAgentSettings } from "./settings.js";
 import type { AdapterInfo } from "../protocol.js";
 
 export interface ManagerOptions {
@@ -158,6 +159,12 @@ export function startManager(opts: ManagerOptions): Promise<{ server: Server; ur
       if (url.pathname === "/api/removed") return send(200, { removed: actions.removed() });
       if (url.pathname === "/") return send(200, PAGE, "text/html; charset=utf-8", { "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" });
       if (url.pathname === "/api/agents") return send(200, { root: opts.root, agents: await overview(opts.root, timeout) });
+      const settings = /^\/api\/agents\/([^/]+)\/settings$/.exec(url.pathname);
+      if (settings) {
+        const agent = discover(opts.root).find((a) => a.agent.folder === decodeURIComponent(settings[1]))?.agent;
+        if (!agent) return send(404, { error: "немає такого агента" });
+        return send(200, readAgentSettings(agent, opts.root));
+      }
       const log = /^\/api\/agents\/([^/]+)\/logs\/([^/]+)$/.exec(url.pathname);
       if (log) {
         const [folder, file] = [decodeURIComponent(log[1]), decodeURIComponent(log[2])];
