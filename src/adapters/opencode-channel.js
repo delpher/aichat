@@ -1488,10 +1488,12 @@ export default {
       processSession: `opencode-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     };
 
-    // Where the agent drops .aichat/stop (stop the channel) and .aichat/fresh (start a new model session).
+    // Where the owner drops .aichat/stop (disconnect the channel), .aichat/start (connect it again) and
+    // .aichat/fresh (start a new model session).
     const runtimeDir = path.join(ctx.location?.directory || process.cwd(), ".aichat");
     const freshFile = path.join(runtimeDir, "fresh");
     const stopFile = path.join(runtimeDir, "stop");
+    const startFile = path.join(runtimeDir, "start");
     try {
       mkdirSync(runtimeDir, { recursive: true });
     } catch {}
@@ -1526,29 +1528,52 @@ export default {
       // тули aichat_* лишаються робочими для ручної роботи в сесії.
       console.warn(`[aichat] пауза (paused: true) — канал не підключено, тули працюють`);
     } else {
-      stop = startChannel(ctx, cfg, state);
-      // Стан роботи (busy/waiting/idle) для веба — за подіями власної сесії.
-      stopActivity = followActivity(ctx, cfg, state);
-      // Звіт про токени/вартість/контекст для сторінки «Використання».
-      stopUsage = followUsage(ctx, cfg, state);
+      const openChannel = () => {
+        if (stop) return false;
+        stop = startChannel(ctx, cfg, state);
+        // Стан роботи (busy/waiting/idle) для веба — за подіями власної сесії.
+        stopActivity = followActivity(ctx, cfg, state);
+        // Звіт про токени/вартість/контекст для сторінки «Використання».
+        stopUsage = followUsage(ctx, cfg, state);
+        writeStatus(ctx, cfg, state);
+        return true;
+      };
+      let stopping = false;
+      const closeChannel = () => {
+        stopActivity?.();
+        stopUsage?.();
+        stop?.();
+        stop = stopActivity = stopUsage = undefined;
+        stopping = false;
+        writeStatus(ctx, cfg, state);
+      };
+      openChannel();
       // .aichat/stop: the owner asked to disconnect the channel. The OpenCode server keeps running (and the
       // aichat tools stay), but AIChat sees the agent go offline, like the other adapters' stop.ps1.
+      // .aichat/start: the owner asks for it back. The marker brings the channel up again without reloading the
+      // shared OpenCode server, so other projects' agents are not disturbed (AIChat 3660).
       stopWatcher = setInterval(() => {
-        if (!existsSync(stopFile)) return;
-        clearInterval(stopWatcher);
-        try {
-          unlinkSync(stopFile);
-        } catch {}
-        console.warn("[aichat] .aichat/stop — відключаю канал (сервер OpenCode лишається)");
-        // idle first (the contract), then close the socket; activity/usage stop with the channel.
-        void postActivity(cfg, { state: "idle" })
-          .catch(() => {})
-          .finally(() => {
-            stopActivity?.();
-            stopUsage?.();
-            stop?.();
-            writeStatus(ctx, cfg, state);
-          });
+        if (existsSync(stopFile)) {
+          try {
+            unlinkSync(stopFile);
+          } catch {}
+          if (!stop || stopping) return;
+          stopping = true;
+          console.warn("[aichat] .aichat/stop — відключаю канал (сервер OpenCode лишається)");
+          // idle first (the contract), then close the socket; activity/usage stop with the channel.
+          void postActivity(cfg, { state: "idle" })
+            .catch(() => {})
+            .finally(closeChannel);
+          return;
+        }
+        // wait out an in-flight disconnect: its marker stays and is retried on the next tick
+        if (existsSync(startFile) && !stopping) {
+          openChannel();
+          try {
+            unlinkSync(startFile);
+          } catch {}
+          console.warn("[aichat] .aichat/start — підключаю канал знову");
+        }
       }, 1000);
       stopWatcher.unref?.();
     }
