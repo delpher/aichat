@@ -11,7 +11,7 @@ import { NAME_RE, ROOM_RE } from "../protocol.js";
 import { discover } from "./agents.js";
 import { fetchBytes, fetchManifest, makePrivate, readManagerConfig, sha256, type ClientManifest, type Fetch } from "./self.js";
 import { SettingError } from "./settings.js";
-import { CLAUDE_START_PS1, hasStartScript } from "./claude-start.js";
+import { startScriptName, writeStartScript } from "./claude-start.js";
 
 export type WizardType = "claude" | "codex" | "agy" | "opencode";
 
@@ -243,9 +243,9 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
     }
     // Claude Code keeps the session, not the adapter: the start script resumes it and tells the adapter how it began
     // (the Claude command itself stays "claude" until the person changes it in the settings)
-    if (type === "claude" && !hasStartScript(dir)) {
-      writeFileSync(join(dir, "start.ps1"), CLAUDE_START_PS1);
-      steps.push("Додано start.ps1: «Запустити» продовжує останню сесію (або нову з -Fresh).");
+    if (type === "claude" && writeStartScript(dir)) {
+      const fresh = process.platform === "win32" ? "-Fresh" : "--fresh";
+      steps.push(`Додано ${startScriptName()}: «Запустити» продовжує останню сесію (або нову з ${fresh}).`);
     }
   } catch (e) {
     // a half-made agent is worse than none: take back what this run made
@@ -257,10 +257,19 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
     throw e;
   }
 
+  const win = process.platform === "win32";
+  // a single-quoted shell word: PowerShell doubles a quote inside, POSIX shells close, escape and reopen
+  const quoted = win ? `'${codexHome.replace(/'/g, "''")}'` : `'${codexHome.replace(/'/g, `'\\''`)}'`;
   const next: Record<WizardType, string[]> = {
-    claude: ["Натисніть «Запустити»: відкриється вкладка Windows Terminal з Claude Code у теці агента."],
+    claude: [
+      win
+        ? "Натисніть «Запустити»: відкриється вкладка Windows Terminal з Claude Code у теці агента."
+        : `Натисніть «Запустити»: Claude Code запуститься в tmux-сесії aichat-${name} (tmux attach -t aichat-${name}).`,
+    ],
     codex: [
-      `Увійдіть у Codex для цього профілю: у PowerShell $env:CODEX_HOME='${codexHome.replace(/'/g, "''")}'; codex login`,
+      win
+        ? `Увійдіть у Codex для цього профілю: у PowerShell $env:CODEX_HOME=${quoted}; codex login`
+        : `Увійдіть у Codex для цього профілю: CODEX_HOME=${quoted} codex login`,
       "Зніміть паузу: «Налаштування» → «На паузі» → ні.",
       "Натисніть «Запустити».",
     ],

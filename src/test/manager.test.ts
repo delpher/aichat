@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { Actions, readSettings, startCommand, type Runner } from "../manager/actions.js";
+import { Actions, readSettings, startCommand, terminalNote, tmuxSession, type Runner } from "../manager/actions.js";
+import { CLAUDE_START_PS1, startScriptCommand, startScriptName, writeStartScript } from "../manager/claude-start.js";
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
 import { flagValue, joinCommand, opencodeModel, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
@@ -685,7 +687,9 @@ test("manager wizard: a Claude Code agent gets the start script that resumes its
     return { code: 0, output: "" };
   };
   const done = await installAgent(root, { type: "claude", name: "claude-bot", token: "tok-claude" }, { get, run, secretsDir: join(root, "secrets"), home: root });
-  const script = readFileSync(join(root, "claude-bot", "start.ps1"), "utf8");
+  // the wizard writes the script of the OS it runs on; both scripts are checked by content
+  assert.ok(existsSync(join(root, "claude-bot", startScriptName())));
+  const script = CLAUDE_START_PS1;
   assert.match(script, /\$env:AICHAT_START = if \(\$session\) \{ 'resumed' \} elseif \(\$ownSession\) \{ '' \} else \{ 'new' \}/);
   assert.match(script, /@\('--resume', \$session\.BaseName\)/);
   assert.match(script, /'\.aichat\\fresh'/);
@@ -699,22 +703,22 @@ test("manager wizard: a Claude Code agent gets the start script that resumes its
   assert.match(script, /\$_ -in '--resume', '-r', '--continue', '-c', '--session-id'/);
   assert.match(script, /Could not resume that session: starting a new one/);
   assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: { other: "x" } }, "the wizard writes no command");
-  assert.match(done.steps.join(" "), /start\.ps1/);
+  assert.match(done.steps.join(" "), new RegExp(startScriptName().replace(".", "\\.")));
 
   // the manager starts it through the script and shows the person's command, not the script
   const agent = discover(root).find((a) => a.agent.folder === "claude-bot")!.agent;
-  assert.equal(startCommand(agent, readSettings(root)), ".\\start.ps1");
+  assert.equal(startCommand(agent, readSettings(root)), startScriptCommand());
   const launch = readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items;
   assert.equal(launch.find((i) => i.key === "command")?.value, "claude");
-  assert.match(String(launch.find((i) => i.key === "startScript")?.value), /^start\.ps1 → claude --resume/);
+  assert.ok(String(launch.find((i) => i.key === "startScript")?.value).startsWith(`${startScriptName()} → claude --resume`));
   writeAgentSettings(agent, root, { command: "claude --model opus" }, [agent]);
   assert.equal(readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items.find((i) => i.key === "command")?.value, "claude --model opus");
-  assert.equal(startCommand(agent, readSettings(root)), ".\\start.ps1", "still the script, which reads the new command");
+  assert.equal(startCommand(agent, readSettings(root)), startScriptCommand(), "still the script, which reads the new command");
   // an old entry naming the script (claude-alexey's) means the default command
   writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { "claude-bot": ".\\start.ps1" } }));
   assert.equal(readAgentSettings(agent, root).sections.find((s) => s.id === "launch")!.items.find((i) => i.key === "command")?.value, "claude");
   // without a script: the command with the channel flags, once
-  rmSync(join(root, "claude-bot", "start.ps1"));
+  rmSync(join(root, "claude-bot", startScriptName()));
   writeFileSync(join(root, ".manager.json"), JSON.stringify({ start: { "claude-bot": "claude --model opus" } }));
   assert.equal(startCommand(agent, readSettings(root)), "claude --model opus --dangerously-load-development-channels server:aichat");
 });
@@ -1038,4 +1042,51 @@ test("manager delivery: a launcher for each OS, and a page opened only where the
   }
   // a Linux server over SSH has no display: nothing is opened, the printed link is enough
   assert.equal(openInBrowser("http://127.0.0.1:1/", "linux", {}), false);
+});
+
+test("manager on Linux: tmux session names and notes", () => {
+  assert.equal(tmuxSession("claude-test"), "aichat-claude-test");
+  assert.equal(tmuxSession("a.b: сесія"), "aichat-a-b-session");
+  assert.match(terminalNote("claude-test", "linux"), /tmux attach -t aichat-claude-test/);
+  assert.equal(terminalNote("claude-test", "win32"), "");
+});
+
+test("manager on Linux: start.sh does what start.ps1 does", { skip: process.platform === "win32" && "runs where sh is the shell (CI on Linux)" }, () => {
+  const base = mkdtempSync(join(tmpdir(), "aichat-start-sh-"));
+  try {
+    const dir = join(base, "agents", "bot");
+    mkdirSync(dir, { recursive: true });
+    assert.equal(writeStartScript(dir, "linux"), true);
+    assert.equal(writeStartScript(dir, "linux"), false, "never over an existing script");
+    assert.equal(statSync(join(dir, "start.sh")).mode & 0o777, 0o755);
+    // a fake claude that reports its arguments and AICHAT_START
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    const out = join(base, "out.txt");
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nprintf '%s|' "$@" > "${out}"\nprintf 'START=%s' "$AICHAT_START" >> "${out}"\n`, { mode: 0o755 });
+    const run = (...args: string[]) => {
+      const r = spawnSync("sh", [join(dir, "start.sh"), ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(base, "cc") }, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return readFileSync(out, "utf8");
+    };
+    // no settings, no session: a new one with the channel flags
+    assert.equal(run(), "--dangerously-load-development-channels|server:aichat|START=new");
+    // the person's command (a quoted value stays whole, the flag written without its value gets it) and a session
+    writeFileSync(join(base, "agents", ".manager.json"), JSON.stringify({ start: { bot: 'claude --add-dir "/my dir" --dangerously-load-development-channels' } }));
+    const project = join(base, "cc", "projects", dir.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "abc-123.jsonl"), '{"type":"user"}\n');
+    assert.equal(run(), "--resume|abc-123|--add-dir|/my dir|--dangerously-load-development-channels|server:aichat|START=resumed");
+    // --fresh and the marker start a new one
+    assert.equal(run("--fresh"), "--add-dir|/my dir|--dangerously-load-development-channels|server:aichat|START=new");
+    mkdirSync(join(dir, ".aichat"));
+    writeFileSync(join(dir, ".aichat", "fresh"), "");
+    assert.match(run(), /START=new$/);
+    assert.ok(!existsSync(join(dir, ".aichat", "fresh")), "the marker is used up");
+    // a command with its own session keeps it, and says nothing about how it began
+    writeFileSync(join(base, "agents", ".manager.json"), JSON.stringify({ start: { bot: "claude --resume mine" } }));
+    assert.equal(run(), "--resume|mine|--dangerously-load-development-channels|server:aichat|START=");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

@@ -2,7 +2,7 @@
 // not the adapter, so a start script in the agent's folder resumes it and tells the adapter how it began. The person
 // writes only the Claude command (`claude`, perhaps `claude --model opus`) as the agent's start command in the
 // manager's .manager.json; the script adds what AIChat needs. A manual `.\start.ps1` behaves the same.
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The Claude command when the person set none. */
@@ -15,10 +15,26 @@ export const CLAUDE_CHANNEL_FLAGS = "--dangerously-load-development-channels ser
  * script itself (how claude-alexey was set up first) means the default.
  */
 export function claudeCommand(own: string | undefined): string {
-  return own && !/start\.ps1/i.test(own) ? own : CLAUDE_DEFAULT_COMMAND;
+  return own && !/start\.(ps1|sh)/i.test(own) ? own : CLAUDE_DEFAULT_COMMAND;
 }
 
-export const hasStartScript = (dir: string) => existsSync(join(dir, "start.ps1"));
+/** The start script of this OS: start.ps1 on Windows, start.sh elsewhere (Linux, AIChat 3539-3547). */
+export const startScriptName = (platform = process.platform) => (platform === "win32" ? "start.ps1" : "start.sh");
+/** How the manager runs it in the agent's folder. */
+export const startScriptCommand = (platform = process.platform) => (platform === "win32" ? ".\\start.ps1" : "./start.sh");
+export const hasStartScript = (dir: string, platform = process.platform) => existsSync(join(dir, startScriptName(platform)));
+
+/** Writes the agent's start script of this OS, never over one that is there. */
+export function writeStartScript(dir: string, platform = process.platform): boolean {
+  const file = join(dir, startScriptName(platform));
+  if (existsSync(file)) return false;
+  if (platform === "win32") writeFileSync(file, CLAUDE_START_PS1);
+  else {
+    writeFileSync(file, CLAUDE_START_SH, { mode: 0o755 });
+    chmodSync(file, 0o755);
+  }
+  return true;
+}
 
 /**
  * The start script. It reads the command from ..\.manager.json (start.<folder>), adds the channel flags once,
@@ -79,3 +95,63 @@ if ($session -and $LASTEXITCODE -ne 0 -and ((Get-Date) - $started).TotalSeconds 
   & $exe @extra
 }
 `.replace(/\n/g, "\r\n");
+
+/**
+ * The same start script for Linux and macOS: a shell wrapper around a short Node program (Node is there for every
+ * agent anyway), so the command is split like a shell would split it without eval, and the logic matches start.ps1:
+ * the command from ../.manager.json, the channel flags once, the newest session of the folder resumed by id, --fresh
+ * or .aichat/fresh for a new one, AICHAT_START for the adapter, a new session when a resume fails at once. Claude runs
+ * as a child with this terminal, so it stays interactive; `node -e` keeps the terminal's stdin for it.
+ */
+export const CLAUDE_START_SH = String.raw`#!/usr/bin/env sh
+# Starts this Claude Code agent for AIChat: picks up the last session, or starts afresh with --fresh or a .aichat/fresh marker.
+# The Claude command comes from the agent manager's settings (../.manager.json, start.<folder>), "claude" by default.
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+cd "$DIR" || exit 1
+SCRIPT='
+const fs = require("fs"), path = require("path"), os = require("os"), { spawnSync } = require("child_process");
+const dir = process.cwd(), folder = path.basename(dir);
+let fresh = process.argv.includes("--fresh");
+const marker = path.join(dir, ".aichat", "fresh");
+if (fs.existsSync(marker)) { fresh = true; fs.rmSync(marker, { force: true }); }
+let command = "claude";
+try {
+  const own = JSON.parse(fs.readFileSync(path.join(dir, "..", ".manager.json"), "utf8")).start?.[folder];
+  if (own && !/start\.(ps1|sh)/i.test(own)) command = own;
+} catch {}
+// split like a shell: quotes keep spaces and are dropped
+const words = [...command.matchAll(/"([^"]*)"|'"'"'([^'"'"']*)'"'"'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+const exe = words[0], extra = words.slice(1);
+const flag = extra.indexOf("--dangerously-load-development-channels");
+if (flag < 0) extra.push("--dangerously-load-development-channels", "server:aichat");
+else if (!extra.includes("server:aichat")) extra.splice(flag + 1, 0, "server:aichat");
+// a command that chooses its own session keeps it
+const ownSession = extra.some((w) => ["--resume", "-r", "--continue", "-c", "--session-id"].includes(w));
+if (ownSession) fresh = true;
+let session = null;
+if (!fresh) {
+  const config = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const project = path.join(config, "projects", dir.replace(/[^A-Za-z0-9]/g, "-"));
+  try {
+    session = fs.readdirSync(project).filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({ id: f.slice(0, -6), file: path.join(project, f), at: fs.statSync(path.join(project, f)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+      .find((s) => fs.readFileSync(s.file, "utf8").includes("\"type\":\"user\"")) || null;
+  } catch {}
+}
+const env = { ...process.env, AICHAT_START: session ? "resumed" : ownSession ? "" : "new" };
+console.log(session ? "Resuming session " + session.id : ownSession ? "The command chooses its own session" : "Starting a new session");
+// the terminal stops Claude, not this wrapper: it waits for Claude and leaves with it
+process.on("SIGINT", () => {});
+const started = Date.now();
+let r = spawnSync(exe, [...(session ? ["--resume", session.id] : []), ...extra], { stdio: "inherit", env });
+// a session that cannot be resumed: a new one rather than none
+if (session && r.status !== 0 && Date.now() - started < 15000) {
+  console.log("Could not resume that session: starting a new one");
+  r = spawnSync(exe, extra, { stdio: "inherit", env: { ...env, AICHAT_START: "new" } });
+}
+if (r.error) { console.error(String(r.error.message || r.error)); process.exit(127); }
+process.exit(r.status ?? 0);
+'
+exec node -e "$SCRIPT" -- "$@"
+`;
