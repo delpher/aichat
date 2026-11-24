@@ -1055,6 +1055,33 @@ try {
     flex-wrap: wrap;
   }
 
+  /* token and folder actions of the settings tab (3c) */
+  .token-box, .dirs-box {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .inline-form .edit-input {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+  .inline-form .field-hint {
+    flex-basis: 100%;
+  }
+  .dir-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .mcp-list {
     list-style: none;
     margin: 0;
@@ -1959,8 +1986,133 @@ function actionsFor(a) {
 }
 
 /* ---------- inspector tabs & settings ---------- */
+// settings saved together through the form; "secret" (token) and "dirs" (folders) are actions of their own (3c)
+const FORM_TYPES = new Set(["enum", "bool", "int", "text", "list"]);
+const inForm = (it) => Boolean(it && it.edit && FORM_TYPES.has(it.edit.type));
+
 function hasEditableSettings(d) {
-  return Boolean(d && Array.isArray(d.sections) && d.sections.some((s) => (s.items || []).some((it) => it && it.edit)));
+  return Boolean(d && Array.isArray(d.sections) && d.sections.some((s) => (s.items || []).some(inForm)));
+}
+
+/** An action of the settings tab (token, folders, MCP): its answer redraws the tab and says what happened. */
+async function settingsAction(path, body, waitText) {
+  const folder = selected;
+  say(waitText, "", "settings-msg");
+  const res = await postJson("/api/agents/" + encodeURIComponent(folder) + path, body);
+  if (selected !== folder) return res;
+  if (!res.ok) {
+    say(res.data.error || res.status + " " + res.statusText, "bad", "settings-msg");
+    return res;
+  }
+  if (res.data.settings) renderSettings(res.data.settings);
+  else loadSettings(folder, true);
+  say(res.data.message || "Готово.", "ok", "settings-msg");
+  return res;
+}
+
+/** The token row: write-only replacement; the value typed here is sent once and the field is cleared (3c.1). */
+function tokenControl(item) {
+  const box = el("div", null, "token-box");
+  box.append(renderSettingValue(item).node);
+  const open = el("button", "Замінити токен", "btn quiet xs");
+  open.type = "button";
+  const form = el("div", null, "inline-form");
+  form.hidden = true;
+  const inp = el("input", null, "edit-input mono");
+  inp.type = "password";
+  inp.autocomplete = "off";
+  inp.placeholder = "новий токен з вебу брокера";
+  const save = el("button", "Зберегти", "btn primary xs");
+  save.type = "button";
+  const cancel = el("button", "Скасувати", "btn ghost xs");
+  cancel.type = "button";
+  const close = () => {
+    inp.value = "";
+    form.hidden = true;
+    open.hidden = false;
+  };
+  open.addEventListener("click", () => {
+    form.hidden = false;
+    open.hidden = true;
+    inp.focus();
+  });
+  cancel.addEventListener("click", close);
+  const send = async () => {
+    const token = inp.value;
+    inp.value = ""; // the token leaves the page with this request and is not kept in it
+    save.disabled = true;
+    try {
+      const res = await settingsAction("/token", { token }, "Перевіряю токен у брокера…");
+      if (res.ok) close();
+    } finally {
+      save.disabled = false;
+    }
+  };
+  save.addEventListener("click", send);
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+    if (e.key === "Escape") close();
+  });
+  form.append(inp, save, cancel);
+  form.append(el("span", "Менеджер перевірить у брокера, що токен саме цього агента. Старий токен у брокера лишиться дійсним, доки його не відкличете у вебі.", "field-hint"));
+  box.append(open, form);
+  return { node: box, block: true };
+}
+
+/** A folder list: × takes one away at once; adding one needs the path typed twice (3c.3). */
+function dirsControl(item) {
+  const box = el("div", null, "dirs-box");
+  const list = el("div", null, "val-paths");
+  const dirs = Array.isArray(item.value) ? item.value : [];
+  if (!dirs.length) list.append(el("span", "порожньо", "muted"));
+  for (const d of dirs) {
+    const row = el("span", null, "val-path dir-row");
+    row.append(el("span", String(d)));
+    const rm = el("button", "×", "btn quiet xs");
+    rm.type = "button";
+    rm.title = "Прибрати доступ до " + d;
+    rm.setAttribute("aria-label", "Прибрати " + d);
+    rm.addEventListener("click", () => settingsAction("/dirs", { remove: d }, "Прибираю теку…"));
+    row.append(rm);
+    list.append(row);
+  }
+  const open = el("button", "Додати теку", "btn quiet xs");
+  open.type = "button";
+  const form = el("div", null, "inline-form");
+  form.hidden = true;
+  const path = el("input", null, "edit-input mono");
+  path.placeholder = "повний шлях до теки";
+  const again = el("input", null, "edit-input mono");
+  again.placeholder = "той самий шлях ще раз";
+  const add = el("button", "Дати доступ", "btn primary xs");
+  add.type = "button";
+  const cancel = el("button", "Скасувати", "btn ghost xs");
+  cancel.type = "button";
+  const close = () => {
+    path.value = "";
+    again.value = "";
+    form.hidden = true;
+    open.hidden = false;
+  };
+  open.addEventListener("click", () => {
+    form.hidden = false;
+    open.hidden = true;
+    path.focus();
+  });
+  cancel.addEventListener("click", close);
+  add.addEventListener("click", async () => {
+    add.disabled = true;
+    try {
+      const res = await settingsAction("/dirs", { add: path.value, confirm: again.value }, "Додаю теку…");
+      if (res.ok) close();
+    } finally {
+      add.disabled = false;
+    }
+  });
+  form.append(path, again, add, cancel);
+  form.append(el("span", "Агент отримає доступ до цієї теки. Щоб не помилитися, введіть шлях двічі.", "field-hint"));
+  box.append(list, open, form);
+  return { node: box, block: true };
 }
 
 function syncTabToolbar() {
@@ -2235,6 +2387,19 @@ function buildEditControl(item, row) {
     }
     inp.value = editDraft[key] === null ? "" : String(editDraft[key]);
     if (key === "command") block = true;
+    // known values to pick from; others may still be typed (a model's own names and levels)
+    if (Array.isArray(spec.suggestions) && spec.suggestions.length) {
+      const listId = "suggest-" + key;
+      const dl = el("datalist");
+      dl.id = listId;
+      for (const s of spec.suggestions) {
+        const o = el("option");
+        o.value = String(s);
+        dl.append(o);
+      }
+      inp.setAttribute("list", listId);
+      wrap.append(dl);
+    }
     inp.addEventListener("input", () => {
       const v = inp.value;
       const trimmed = v.trim();
@@ -2294,7 +2459,7 @@ function enterEditMode(focusSectionId) {
   renderSettings(lastSettings);
   if (focusSectionId) {
     const sec = (lastSettings.sections || []).find((s) => s.id === focusSectionId);
-    const first = sec && (sec.items || []).find((it) => it && it.edit);
+    const first = sec && (sec.items || []).find(inForm);
     if (first && editControls[first.key] && editControls[first.key].focusEl) editControls[first.key].focusEl.focus();
   } else {
     const firstKey = Object.keys(editControls)[0];
@@ -2420,7 +2585,7 @@ function renderSettings(d) {
   const grid = el("div", null, "settings-grid");
 
   for (const sec of sections) {
-    const secEditable = (sec.items || []).some((it) => it && it.edit);
+    const secEditable = (sec.items || []).some(inForm);
     const card = el("section", null, "settings-section" + (sec.id === "workspace" ? " span-full" : ""));
     const head = el("div", null, "settings-sec-head");
     head.append(el("h3", sec.title || sec.id));
@@ -2433,9 +2598,10 @@ function renderSettings(d) {
     card.append(head);
     const dl = el("dl", null, "kv-list");
     for (const item of sec.items || []) {
-      const canEdit = editingSettings && item && item.edit;
+      const canEdit = editingSettings && inForm(item);
       const row = el("div", null, "kv-row" + (canEdit ? " kv-editing" : ""));
-      const rendered = canEdit ? buildEditControl(item, row) : renderSettingValue(item);
+      const action = !editingSettings && item && item.edit && (item.edit.type === "secret" ? tokenControl : item.edit.type === "dirs" ? dirsControl : null);
+      const rendered = canEdit ? buildEditControl(item, row) : action ? action(item) : renderSettingValue(item);
       if (rendered.block) row.classList.add("kv-block");
       const dt = el("dt", null, "kv-key");
       dt.append(el("span", item.label || item.key));
@@ -2469,6 +2635,17 @@ function renderSettings(d) {
         if (m.state) {
           const st = MCP_STATES[m.state] || [m.state, "neutral", false];
           right.append(pill(st[0], st[1], st[2]));
+        }
+        // switched right here (3c.2), for the servers of the agent's own files
+        if (m.toggle && !editingSettings) {
+          const on = m.enabled !== false;
+          const sw = el("button", on ? "Вимкнути" : "Увімкнути", "btn quiet xs");
+          sw.type = "button";
+          sw.addEventListener("click", () => {
+            sw.disabled = true;
+            settingsAction("/mcp", { name: m.name, enabled: !on }, (on ? "Вимикаю " : "Вмикаю ") + m.name + "…").finally(() => (sw.disabled = false));
+          });
+          right.append(sw);
         }
         li.append(left, right);
         ul.append(li);
