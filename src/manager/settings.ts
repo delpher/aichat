@@ -212,6 +212,7 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     const f = str(file);
     if (!f) return;
     const path = expand(f, agent.dir);
+    configFiles.push(path); // a replaced token also needs a restart
     connection.push({ key: "tokenFile", label: "Токен", value: path, note: existsSync(path) ? "у файлі" : "файлу немає", edit: { type: "secret" } });
   };
 

@@ -40,6 +40,12 @@ function writeJson(file: string, value: unknown) {
   renameSync(tmp, file);
 }
 
+/**
+ * What is left after a replacement (opencode-alexey, 3477): the agent reads its token when it starts, and the old
+ * token stays valid at the broker until the person revokes it there; the manager never does broker admin.
+ */
+const AFTER = "Перезапустіть агента, щоб він узяв новий токен. Старий токен у брокера ще дійсний: якщо міняли через витік, відкличте його у вебі брокера.";
+
 export interface TokenDeps {
   /** Who a token belongs to at the broker: its name, or null when the broker refuses it. */
   whoIs?: (broker: string, token: string) => Promise<string | null>;
@@ -92,9 +98,9 @@ export async function replaceToken(agent: LocalAgent, secrets: AgentSecrets, raw
       env.AICHAT_TOKEN_FILE = file.replace(/\\/g, "/");
       writeJson(mcpFile, { ...mcp, mcpServers: { ...servers, [entry[0]]: { ...entry[1], env } } });
       rmSync(`${mcpFile}.bak`, { force: true }); // an earlier backup may still hold the old token
-      return `Токен замінено й перенесено з .mcp.json у ${file} (доступ лише власнику). Перезапустіть агента.`;
+      return `Токен замінено й перенесено з .mcp.json у ${file} (доступ лише власнику). ${AFTER}`;
     }
-    return `Токен у ${file} замінено. Перезапустіть агента.`;
+    return `Токен у ${file} замінено. ${AFTER}`;
   }
 
   const configFile = join(agent.dir, "aichat.config.json");
@@ -103,11 +109,11 @@ export async function replaceToken(agent: LocalAgent, secrets: AgentSecrets, raw
   if (typeof config.tokenFile === "string" && config.tokenFile) {
     const file = expand(config.tokenFile, agent.dir);
     writeSecret(file, token);
-    return `Токен у ${file} замінено. Перезапустіть агента.`;
+    return `Токен у ${file} замінено. ${AFTER}`;
   }
   const file = join(secretsDir, `aichat-${agent.folder}.token`);
   writeSecret(file, token);
   writeJson(configFile, { ...config, tokenFile: file });
-  return `Токен записано в ${file}, aichat.config.json тепер посилається на нього. Перезапустіть агента.`;
+  return `Токен записано в ${file}, aichat.config.json тепер посилається на нього. ${AFTER}`;
 }
 
