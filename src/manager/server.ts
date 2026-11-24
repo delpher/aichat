@@ -15,7 +15,7 @@ import { replaceToken } from "./token.js";
 import { toggleMcp } from "./mcp.js";
 import { changeDirs } from "./dirs.js";
 import { installAgent, installInfo, type NodeRunner } from "./wizard.js";
-import { fetchBytes, install, installedFile, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
+import { fetchBytes, install, installedFile, openInBrowser, pageKey, updateInfo, updateSelf, type Fetch } from "./self.js";
 import { spawn } from "node:child_process";
 import type { AdapterInfo } from "../protocol.js";
 
@@ -297,9 +297,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const started = await startWithRetry({ root, port, key, onRestart });
     server = started.server;
     console.log(`Менеджер агентів AIChat: ${started.url}\nТека агентів: ${root}`);
-    // a fresh install opens the page at once
-    if (command === "install" && process.platform === "win32" && !process.argv.includes("--no-open"))
-      spawn("cmd", ["/c", "start", "", started.url], { stdio: "ignore", detached: true, windowsHide: true }).unref();
+    // a fresh install opens the page at once, where there is a desktop to open it on
+    if (command === "install" && !process.argv.includes("--no-open")) openInBrowser(started.url);
   })().catch((e) => {
     console.error(`Не вдалося запустити менеджер: ${(e as Error).message}`);
     process.exit(1);

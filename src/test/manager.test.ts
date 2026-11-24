@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -8,7 +8,7 @@ import { Actions, readSettings, startCommand, type Runner } from "../manager/act
 import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.js";
 import { overview, startManager } from "../manager/server.js";
 import { flagValue, joinCommand, opencodeModel, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
-import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
+import { MANAGER_VERSION, fileVersion, install, installedFile, openInBrowser, pageKey, sha256, updateInfo, updateSelf, writeLauncher } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
 import { replaceToken } from "../manager/token.js";
 import { changeDirs, withTomlTableArray } from "../manager/dirs.js";
@@ -233,11 +233,11 @@ test("manager actions: start in a terminal or in the background, stop only what 
   await assert.rejects(actions.session("codex"), /додайте attachPort/);
   writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, tokenFile: "missing.txt", attachPort: 60610 }));
   assert.match(await actions.session("codex"), /Відкрито сесію/);
-  assert.equal(calls.at(-1), "terminal codex codex: сесія: node .\\codex-channel.mjs attach --config .\\aichat.config.json");
+  assert.equal(calls.at(-1), "terminal codex codex: сесія: node ./codex-channel.mjs attach --config ./aichat.config.json");
   await assert.rejects(actions.session("agy"), /додайте attachPort/);
   writeFileSync(join(root, "agy", "aichat.config.json"), JSON.stringify({ url: broker.url, tokenFile: "token.txt", attachPort: 60611 }));
   assert.match(await actions.session("agy"), /Відкрито сесію/);
-  assert.equal(calls.at(-1), "terminal agy agy: сесія: node .\\agy-channel.mjs attach --config .\\aichat.config.json");
+  assert.equal(calls.at(-1), "terminal agy agy: сесія: node ./agy-channel.mjs attach --config ./aichat.config.json");
   await assert.rejects(actions.session("claude"), /не запущений/);
 
   await actions.stop("codex");
@@ -483,7 +483,9 @@ test("manager delivery: install checks the file against the broker's manifest, u
   const lines = await install(root, "ws://broker.test:8787/ws", self, get);
   assert.match(lines[0], new RegExp(`Менеджер ${MANAGER_VERSION.replace(/\./g, "\\.")} встановлено з http://broker.test:8787`));
   assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager", "config.json"), "utf8")), { broker: "http://broker.test:8787" });
-  assert.match(readFileSync(join(root, "aichat-manager.cmd"), "utf8"), /node "%~dp0\.manager\\aichat-manager\.mjs" %\*/);
+  // the launcher of this OS (Windows .cmd, elsewhere .sh; each is checked on its own below)
+  assert.ok(existsSync(join(root, process.platform === "win32" ? "aichat-manager.cmd" : "aichat-manager.sh")));
+  assert.match(lines[2], process.platform === "win32" ? /aichat-manager\.cmd$/ : /aichat-manager\.sh$/);
 
   // a file that is not what the manifest names is refused
   writeFileSync(self, build(MANAGER_VERSION).toString() + " tampered");
@@ -1018,4 +1020,22 @@ test("manager settings: an OpenCode model comes from where the plugin takes it (
   assert.deepEqual([items.find((i) => i.key === "model")?.value, items.find((i) => i.key === "effort")?.value], ["p/agent", "low"]);
   writeAgentSettings(agent, root, { effort: "max" });
   assert.equal(JSON.parse(readFileSync(join(dir, "aichat.config.json"), "utf8")).model, "p/agent#max");
+});
+
+test("manager delivery: a launcher for each OS, and a page opened only where there is a desktop (Linux, 3539-3544)", () => {
+  const root = mkdtempSync(join(tmpdir(), "aichat-launcher-"));
+  try {
+    const cmd = writeLauncher(root, "http://b", "win32");
+    assert.match(readFileSync(cmd, "utf8"), /node "%~dp0\.manager\\aichat-manager\.mjs" %\*/);
+    const sh = writeLauncher(root, "http://b", "linux");
+    assert.equal(basename(sh), "aichat-manager.sh");
+    const text = readFileSync(sh, "utf8");
+    assert.ok(text.startsWith("#!/bin/sh\n"));
+    assert.match(text, /exec node "\$\(dirname "\$0"\)\/\.manager\/aichat-manager\.mjs" "\$@"/);
+    if (process.platform !== "win32") assert.equal(statSync(sh).mode & 0o777, 0o755);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  // a Linux server over SSH has no display: nothing is opened, the printed link is enough
+  assert.equal(openInBrowser("http://127.0.0.1:1/", "linux", {}), false);
 });

@@ -1,9 +1,9 @@
 // Stage 4a of the agent manager (AIChat #aichat-manager-dev, 3371-3378): the manager as one file the broker serves
 // (/client/aichat-manager.mjs), installed with one command, and updating itself from the broker. Files of the manager
 // live in <root>/.manager: the program, its settings (config.json: which broker) and the page key (key).
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
 
@@ -50,7 +50,15 @@ export function brokerHttpOrigin(raw: string): string | null {
  * another tool of that name may come first in PATH.
  */
 export function makePrivate(file: string): void {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") {
+    // a file written earlier keeps its mode on rewrite: set it, not only on creation
+    try {
+      chmodSync(file, 0o600);
+    } catch {
+      // as below
+    }
+    return;
+  }
   const icacls = join(process.env.SystemRoot || "C:\\Windows", "System32", "icacls.exe");
   const user = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : process.env.USERNAME;
   if (!user) return;
@@ -174,8 +182,7 @@ export async function install(root: string, brokerArg: string, self: string | nu
   const target = join(dir, MANAGER_FILE);
   if (resolve(self).toLowerCase() !== resolve(target).toLowerCase()) copyFileSync(self, target);
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...readManagerConfig(root), broker }, null, 2) + "\n");
-  const cmd = join(root, "aichat-manager.cmd");
-  writeFileSync(cmd, `@echo off\r\nrem Starts the AIChat agent manager (installed from ${broker}).\r\nnode "%~dp0.manager\\${MANAGER_FILE}" %*\r\n`);
+  const cmd = writeLauncher(root, broker);
   return [
     `Менеджер ${manifest.version} встановлено з ${broker}: ${target}`,
     `SHA-256 збігається з manifest.json брокера.`,
@@ -183,3 +190,38 @@ export async function install(root: string, brokerArg: string, self: string | nu
   ];
 }
 
+
+/**
+ * The command that starts the manager later, next to the agents' folders: aichat-manager.cmd on Windows,
+ * aichat-manager.sh (executable) elsewhere (AIChat 3539-3544).
+ */
+export function writeLauncher(root: string, broker: string, platform = process.platform): string {
+  if (platform === "win32") {
+    const cmd = join(root, "aichat-manager.cmd");
+    writeFileSync(cmd, `@echo off\r\nrem Starts the AIChat agent manager (installed from ${broker}).\r\nnode "%~dp0.manager\\${MANAGER_FILE}" %*\r\n`);
+    return cmd;
+  }
+  const sh = join(root, "aichat-manager.sh");
+  writeFileSync(sh, `#!/bin/sh\n# Starts the AIChat agent manager (installed from ${broker}).\nexec node "$(dirname "$0")/.manager/${MANAGER_FILE}" "$@"\n`, { mode: 0o755 });
+  chmodSync(sh, 0o755);
+  return sh;
+}
+
+/**
+ * Opens the manager's page in the person's browser after an install: `start` on Windows, `open` on macOS, xdg-open on
+ * a Linux desktop. A server with no display (SSH) gets nothing opened; the printed link is enough there.
+ */
+export function openInBrowser(url: string, platform = process.platform, env = process.env): boolean {
+  const run = (cmd: string, args: string[]) => {
+    try {
+      spawn(cmd, args, { stdio: "ignore", detached: true, windowsHide: true }).on("error", () => {}).unref();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (platform === "win32") return run("cmd", ["/c", "start", "", url]);
+  if (platform === "darwin") return run("open", [url]);
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return false;
+  return run("xdg-open", [url]);
+}
