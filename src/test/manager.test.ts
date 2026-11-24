@@ -11,6 +11,7 @@ import { flagValue, joinCommand, parseJsonc, parseTomlLite, readAgentSettings, s
 import { MANAGER_VERSION, fileVersion, install, installedFile, pageKey, sha256, updateInfo, updateSelf } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
 import { replaceToken } from "../manager/token.js";
+import { changeDirs, withTomlTableArray } from "../manager/dirs.js";
 import { toggleMcp, withDisabledFlag, withJsoncServerDisabled, withTomlServerEnabled } from "../manager/mcp.js";
 
 /** A broker that knows two tokens and answers /health, /api/me and /api/agents. */
@@ -400,10 +401,10 @@ test("manager settings: the page changes only what may be changed, checked first
   const view = readAgentSettings(agent("agy"), root);
   const edits = Object.fromEntries(view.sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => [i.key, i.edit!.type]));
   assert.deepEqual(edits, {
-    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text", tokenFile: "secret",
+    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text", tokenFile: "secret", addDirs: "dirs",
   });
   const claudeEdits = readAgentSettings(agent("claude"), root).sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => i.key);
-  assert.deepEqual(claudeEdits.sort(), ["command", "effort", "model", "token"]);
+  assert.deepEqual(claudeEdits.sort(), ["additionalDirectories", "command", "effort", "model", "token"]);
 
   assert.match(writeAgentSettings(agent("agy"), root, { wake: "mention", rooms: "#dev, lobby dev", attachPort: null, maxWakesPerMinute: "20" }, agents()), /Збережено/);
   assert.deepEqual(read(), { url: broker.url, tokenFile: "token.txt", owners: ["me"], wake: "mention", rooms: ["dev", "lobby"], maxWakesPerMinute: 20 });
@@ -922,4 +923,62 @@ test("manager MCP: TOML table switch and JSONC edits by themselves", () => {
   assert.equal(withDisabledFlag(legacy, false), '{\n  "type": "local"\n}');
   assert.equal(withDisabledFlag(legacy, true), '{\n  "disabled": true,\n  "type": "local"\n}');
   assert.equal(withDisabledFlag('{ "enabled": false, "type": "local" }', false), '{ "type": "local" }');
+});
+
+test("manager folders: added only with the path typed twice, removed freely, each kind in its own file (3c.3)", async (t) => {
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const repo = join(root, "repo");
+  const other = join(root, "other dir");
+  mkdirSync(repo);
+  mkdirSync(other);
+  const agent = (folder: string) => discover(root).find((a) => a.agent.folder === folder)!.agent;
+  const fails = (folder: string, change: Record<string, unknown>, field: string, why: RegExp) =>
+    assert.throws(() => changeDirs(agent(folder), change), (e: Error & { field?: string }) => e.field === field && why.test(e.message));
+
+  // agy: addDirs
+  fails("agy", { add: "relative/dir", confirm: "relative/dir" }, "dirs", /повний шлях/);
+  fails("agy", { add: join(root, "missing"), confirm: join(root, "missing") }, "dirs", /немає/);
+  fails("agy", { add: repo }, "confirm", /ще раз|іще раз/);
+  fails("agy", { add: repo, confirm: other }, "confirm", /іще раз/);
+  assert.match(changeDirs(agent("agy"), { add: repo, confirm: repo }), /отримав доступ/);
+  changeDirs(agent("agy"), { add: other, confirm: other });
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).addDirs, [repo, other]);
+  fails("agy", { add: repo.toUpperCase(), confirm: repo.toUpperCase() }, "dirs", /уже у списку/);
+  changeDirs(agent("agy"), { remove: repo });
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "agy", "aichat.config.json"), "utf8")).addDirs, [other]);
+  const agyItem = readAgentSettings(agent("agy"), root).sections.find((s) => s.id === "workspace")!.items.find((i) => i.key === "addDirs");
+  assert.deepEqual([agyItem?.value, agyItem?.edit], [[other], { type: "dirs" }]);
+
+  // Codex: writable_roots in [sandbox_workspace_write]; a warning when its mode makes them moot
+  const home = join(root, "codex-home");
+  mkdirSync(home);
+  writeFileSync(join(home, "config.toml"), 'sandbox_mode = "read-only"\n\n[tui]\nx = 1\n');
+  writeFileSync(join(root, "codex", "aichat.config.json"), JSON.stringify({ url: broker.url, codexHome: home }));
+  assert.match(changeDirs(agent("codex"), { add: other, confirm: other }), /пісочниця Codex зараз «read-only»/);
+  let toml = readFileSync(join(home, "config.toml"), "utf8");
+  assert.ok(toml.startsWith('sandbox_mode = "read-only"\n\n[tui]\nx = 1\n\n[sandbox_workspace_write]\nwritable_roots = ['), toml);
+  assert.deepEqual(parseTomlLite(toml)["sandbox_workspace_write"].writable_roots, [other]);
+  changeDirs(agent("codex"), { add: repo, confirm: repo });
+  assert.deepEqual(parseTomlLite(readFileSync(join(home, "config.toml"), "utf8"))["sandbox_workspace_write"].writable_roots, [other, repo]);
+  changeDirs(agent("codex"), { remove: other });
+  changeDirs(agent("codex"), { remove: repo });
+  toml = readFileSync(join(home, "config.toml"), "utf8");
+  assert.ok(!toml.includes("writable_roots") && toml.includes("[tui]"));
+
+  // Claude Code: permissions.additionalDirectories, other permissions kept
+  mkdirSync(join(root, "claude", ".claude"));
+  writeFileSync(join(root, "claude", ".claude", "settings.local.json"), JSON.stringify({ permissions: { allow: ["Read"] } }));
+  changeDirs(agent("claude"), { add: repo, confirm: repo });
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "claude", ".claude", "settings.local.json"), "utf8")).permissions, { allow: ["Read"], additionalDirectories: [repo] });
+
+  // OpenCode: no sandbox, nothing to pretend
+  fails("opencode", { add: repo, confirm: repo }, "dirs", /не має пісочниці/);
+});
+
+test("manager folders: a TOML table's array, set or removed", () => {
+  assert.equal(withTomlTableArray("", "t", "k", ["a"]), '\n[t]\nk = ["a"]\n');
+  assert.equal(withTomlTableArray('[t]\nk = [\n  "a",\n]\ny = 1', "t", "k", ["b"]), '[t]\nk = ["b"]\ny = 1');
+  assert.equal(withTomlTableArray('[t]\nk = ["a"]\n[u]', "t", "k", []), "[t]\n[u]");
 });

@@ -20,7 +20,9 @@ export type EditSpec =
   | { type: "text"; max: number; optional?: boolean; suggestions?: string[] }
   | { type: "list" }
   /** Write-only: the page sends a new value to POST /api/agents/<folder>/token and never sees the old one (3c.1). */
-  | { type: "secret" };
+  | { type: "secret" }
+  /** Extra folders: POST /api/agents/<folder>/dirs { add, confirm } or { remove } (3c.3); adding needs the path twice. */
+  | { type: "dirs" };
 
 export interface SettingItem {
   key: string;
@@ -386,6 +388,9 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
       { id: "launch", title: "Запуск", items: launch },
     ] as SettingsSection[]
   ).filter((s) => s.items.length);
+  // the extra folders, changed through POST …/dirs (3c.3); a Codex agent only with its own CODEX_HOME
+  for (const i of workspace)
+    if (["additionalDirectories", "addDirs"].includes(i.key) || (i.key === "writable_roots" && str(config.codexHome))) i.edit = { type: "dirs" };
   // which servers the page may switch (3c.2): the agent's own files only; never AIChat's own channel
   const ownFiles = new Set([".mcp.json", "opencode.jsonc", ...(agent.type === "codex" && str(config.codexHome) ? ["config.toml"] : [])]);
   for (const m of mcp) m.toggle = ownFiles.has(m.source) && m.kind !== "builtin" && m.name !== "aichat";
