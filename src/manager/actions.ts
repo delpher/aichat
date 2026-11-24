@@ -240,8 +240,13 @@ export class Actions {
       // the agent lives in OpenCode's background server, shared with other projects: only its channel is disconnected,
       // with the plugin's own marker; .aichat/start brings it back in the same process (opencode-alexey, 3660, #135)
       if (!online) throw new ActionError("агент не в мережі");
-      if (!atLeast(a.version, OPENCODE_START_MARKER))
-        throw new ActionError(`оновіть адаптер до ${OPENCODE_START_MARKER} або новішого: старий плагін після зупинки сам не повертається`, 400);
+      // the version the RUNNING plugin wrote, not the file's: an updated file in a server not yet reloaded still runs the
+      // old plugin, which would take the marker and never come back (opencode-alexey, 3670)
+      if (!atLeast(a.status?.version, OPENCODE_START_MARKER))
+        throw new ActionError(
+          `запущений плагін ${a.status?.version ?? "невідомої версії"} після зупинки сам не повертається: оновіть адаптер до ${OPENCODE_START_MARKER} або новішого і перезапустіть OpenCode (opencode reload)`,
+          400,
+        );
       setMarker(a.dir, "stop", "start");
       return "Канал відключено; сервер OpenCode працює далі. «Запустити» підключить агента знову.";
     }
