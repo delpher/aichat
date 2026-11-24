@@ -509,6 +509,22 @@ test("install creates config paused=true and refuses overwrite; callTool appends
   assert.ok(fs.existsSync(path.join(agentDir, "aichat.config.json")));
   assert.ok(fs.existsSync(path.join(agentDir, "start.ps1")));
   assert.ok(fs.existsSync(path.join(agentDir, "stop.ps1")));
+  const startSh = path.join(agentDir, "start.sh");
+  const stopSh = path.join(agentDir, "stop.sh");
+  assert.ok(fs.existsSync(startSh));
+  assert.ok(fs.existsSync(stopSh));
+  const startShText = fs.readFileSync(startSh, "utf8");
+  const stopShText = fs.readFileSync(stopSh, "utf8");
+  assert.ok(startShText.startsWith("#!/usr/bin/env sh\n"));
+  assert.ok(!startShText.includes("\r"));
+  assert.ok(startShText.includes('exec node "$DIR/agy-channel.mjs" run --config "$DIR/aichat.config.json" "$@"'));
+  assert.ok(stopShText.startsWith("#!/usr/bin/env sh\n"));
+  assert.ok(!stopShText.includes("\r"));
+  assert.ok(stopShText.includes('exec node "$DIR/agy-channel.mjs" stop --config "$DIR/aichat.config.json"'));
+  if (process.platform !== "win32") {
+    assert.notEqual(fs.statSync(startSh).mode & 0o111, 0);
+    assert.notEqual(fs.statSync(stopSh).mode & 0o111, 0);
+  }
 
   // Refuses overwrite
   assert.throws(
