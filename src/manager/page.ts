@@ -165,7 +165,7 @@ try {
     font: inherit;
     color: inherit;
   }
-  code, pre {
+  code, pre, .mono {
     font-family: var(--mono);
   }
   ::selection {
@@ -440,6 +440,10 @@ try {
     color: var(--text-2);
     border: 1px solid var(--line);
   }
+  .pill.accent {
+    background: var(--accent-soft);
+    color: var(--accent-soft-fg);
+  }
   .pill.ok {
     background: color-mix(in srgb, var(--ok) 12%, transparent);
     color: var(--ok);
@@ -470,6 +474,7 @@ try {
 
   .avatar {
     --size: 32px;
+    display: block;
     position: relative;
     flex: none;
     width: var(--size);
@@ -677,9 +682,272 @@ try {
     background: color-mix(in srgb, var(--ok) 12%, transparent);
     color: var(--ok);
   }
+  .msg-banner.warn {
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
+    color: var(--warn);
+  }
   .msg-banner.bad {
     background: color-mix(in srgb, var(--bad) 12%, transparent);
     color: var(--bad);
+  }
+
+  /* ---------- inspector tabs ---------- */
+  .tabs-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line);
+  }
+  .tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: calc(var(--r-md) - 3px);
+    background: transparent;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+    transition: background var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast);
+  }
+  .tab:hover:not(.active) {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .tab.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(22, 19, 31, 0.08);
+  }
+  .tab-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--r-full);
+    background: var(--warn);
+  }
+
+  /* ---------- settings panel ---------- */
+  .settings-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    animation: rise-in var(--dur-fast) var(--ease-out);
+  }
+  .restart-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--warn) 13%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+    color: var(--warn);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+  }
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--side);
+    min-width: 0;
+  }
+  .settings-section.span-full {
+    grid-column: 1 / -1;
+  }
+  .settings-sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .settings-sec-head h3 {
+    font-size: var(--text-sm);
+    color: var(--text);
+    letter-spacing: -0.005em;
+  }
+  .kv-list {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .kv-row {
+    display: grid;
+    grid-template-columns: minmax(110px, 40%) minmax(0, 1fr);
+    gap: 4px var(--space-3);
+    align-items: baseline;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line);
+  }
+  .kv-row:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .kv-row.kv-block {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .kv-key {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: var(--text-xs);
+    color: var(--muted);
+    min-width: 0;
+  }
+  .kv-val {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .note-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+  .note-tag.effective {
+    background: var(--accent-soft);
+    border-color: transparent;
+    color: var(--accent-soft-fg);
+  }
+  .val-code {
+    display: inline-block;
+    max-width: 100%;
+    padding: 1px 6px;
+    border-radius: var(--r-sm);
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .val-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .val-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: var(--r-full);
+    background: var(--surface);
+    border: 1px solid var(--line-2);
+    font-size: var(--text-xs);
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .val-paths {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .val-path {
+    display: block;
+    padding: 4px 8px;
+    border-radius: var(--r-sm);
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .val-pre {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    max-height: 150px;
+    overflow: auto;
+    border-radius: var(--r-sm);
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .mcp-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mcp-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .mcp-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .mcp-main strong {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-strong);
+  }
+  .mcp-tags {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .settings-state {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-4);
+    border: 1px dashed var(--line-2);
+    border-radius: var(--r-md);
+    background: var(--side);
+    color: var(--muted);
+    font-size: var(--text-sm);
   }
 
   /* ---------- log panel ---------- */
@@ -687,8 +955,7 @@ try {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--line);
+    animation: rise-in var(--dur-fast) var(--ease-out);
   }
   .log-bar {
     display: flex;
@@ -763,6 +1030,8 @@ try {
     main { padding: var(--space-4) var(--space-3) var(--space-6); }
     .inspector { padding: var(--space-4); }
     .brand-path { max-width: 240px; }
+    .settings-grid { grid-template-columns: 1fr; }
+    .kv-row { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -832,7 +1101,27 @@ try {
       <div class="action-hint" id="action-hint"></div>
     </div>
     <div id="msg" class="msg-banner" role="status" aria-live="polite"></div>
-    <div class="log-panel">
+
+    <div class="tabs-bar">
+      <div class="tabs" role="tablist" aria-label="Розділи інспектора">
+        <button id="tab-settings" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="panel-settings">
+          Налаштування
+          <span id="tab-restart-dot" class="tab-dot" title="Потрібен перезапуск" hidden></span>
+        </button>
+        <button id="tab-logs" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-logs">Логи</button>
+      </div>
+      <button id="settings-refresh" class="btn ghost sm" type="button">Оновити налаштування</button>
+    </div>
+
+    <div id="panel-settings" class="settings-panel" role="tabpanel" aria-labelledby="tab-settings">
+      <div id="settings-restart" class="restart-banner" hidden>
+        <span class="dot warn" aria-hidden="true"></span>
+        <span>Конфіг змінено після запуску процесу — перезапустіть агента, щоб зміни набрали чинності.</span>
+      </div>
+      <div id="settings-body"></div>
+    </div>
+
+    <div id="panel-logs" class="log-panel" role="tabpanel" aria-labelledby="tab-logs" hidden>
       <div class="log-bar">
         <div class="log-bar-left">
           <strong id="logs-title">Лог</strong>
@@ -859,11 +1148,18 @@ try {
 
 <script>
 const TYPES = { claude: "Claude Code", codex: "Codex", agy: "Antigravity", opencode: "OpenCode" };
+const MCP_KINDS = { local: "локальний", remote: "віддалений", builtin: "вбудований" };
+const MCP_STATES = {
+  connected: ["підключено", "ok", true],
+  failed: ["помилка", "bad", true],
+  unknown: ["стан невідомий", "muted-pill", false],
+};
+const CODE_KEYS = new Set(["dir", "url", "tokenFile", "command", "start", "startCommand", "codexHome", "appDataDir", "configFile", "adapterFile", "model", "provider"]);
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 const ago = (iso) => { if (!iso) return ""; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? s + " с тому" : s < 3600 ? Math.round(s / 60) + " хв тому" : Math.round(s / 3600) + " год тому"; };
-let agents = [], selected = null, busy = false, watchTimer = null;
+let agents = [], selected = null, busy = false, watchTimer = null, activeTab = "settings", settingsSeq = 0, logSeq = 0;
 
 /** Matches web/src/lib/format.ts so every agent keeps the same avatar colour and initials as in AIChat. */
 function hueFor(name) {
@@ -1030,6 +1326,7 @@ async function act(label, path, body) {
     updateInspectorHeader(a);
     actionsFor(a);
     syncLogFiles(a, false);
+    loadSettings(selected, true);
   }
   watchSoon();
 }
@@ -1129,6 +1426,153 @@ function actionsFor(a) {
   $("action-hint").textContent = hint;
 }
 
+/* ---------- inspector tabs & settings ---------- */
+function applyTab(tab) {
+  activeTab = tab === "logs" ? "logs" : "settings";
+  const isSettings = activeTab === "settings";
+  $("tab-settings").classList.toggle("active", isSettings);
+  $("tab-settings").setAttribute("aria-selected", String(isSettings));
+  $("tab-logs").classList.toggle("active", !isSettings);
+  $("tab-logs").setAttribute("aria-selected", String(!isSettings));
+  $("panel-settings").hidden = !isSettings;
+  $("panel-logs").hidden = isSettings;
+  $("settings-refresh").hidden = !isSettings;
+}
+
+function setTab(tab) {
+  applyTab(tab);
+  if (activeTab === "logs" && selected) showLog();
+}
+
+function looksLikePath(s) {
+  return s.includes("\\\\") || s.includes("://") || s.startsWith("/") || s.startsWith("~");
+}
+
+function renderSettingValue(item) {
+  const v = item.value;
+  if (v === null || v === undefined || v === "") return { node: el("span", "не задано", "muted"), block: false };
+  if (typeof v === "boolean") return { node: pill(v ? "так" : "ні", v ? "ok" : "muted-pill"), block: false };
+  if (typeof v === "number") return { node: el("span", String(v), "mono num"), block: false };
+  if (Array.isArray(v)) {
+    if (!v.length) return { node: el("span", "порожньо", "muted"), block: false };
+    const asPaths = v.some((x) => typeof x === "string" && (looksLikePath(x) || x.length > 36));
+    if (asPaths) {
+      const list = el("div", null, "val-paths");
+      for (const x of v) list.append(el("span", String(x), "val-path"));
+      return { node: list, block: true };
+    }
+    const chips = el("div", null, "val-chips");
+    for (const x of v) chips.append(el("span", String(x), "val-chip"));
+    return { node: chips, block: false };
+  }
+  const s = String(v);
+  if (s.includes("\\n") || s.length > 140) {
+    return { node: el("pre", s, "val-pre"), block: true };
+  }
+  if (CODE_KEYS.has(item.key) || looksLikePath(s)) {
+    return { node: el("code", s, "val-code"), block: s.length > 48 };
+  }
+  return { node: el("span", s), block: false };
+}
+
+function renderSettings(d) {
+  const needRestart = d && d.restartNeeded === true;
+  $("settings-restart").hidden = !needRestart;
+  $("tab-restart-dot").hidden = !needRestart;
+  const body = $("settings-body");
+  body.replaceChildren();
+  const sections = Array.isArray(d && d.sections) ? d.sections : [];
+  const mcp = Array.isArray(d && d.mcp) ? d.mcp : null;
+
+  if (!sections.length && !mcp) {
+    body.append(el("div", "Для цього агента налаштувань не знайдено.", "settings-state"));
+    return;
+  }
+
+  const grid = el("div", null, "settings-grid");
+
+  for (const sec of sections) {
+    const card = el("section", null, "settings-section" + (sec.id === "workspace" ? " span-full" : ""));
+    const head = el("div", null, "settings-sec-head");
+    head.append(el("h3", sec.title || sec.id));
+    card.append(head);
+    const dl = el("dl", null, "kv-list");
+    for (const item of sec.items || []) {
+      const rendered = renderSettingValue(item);
+      const row = el("div", null, "kv-row" + (rendered.block ? " kv-block" : ""));
+      const dt = el("dt", null, "kv-key");
+      dt.append(el("span", item.label || item.key));
+      if (item.note) dt.append(el("span", item.note, "note-tag" + (item.note === "фактично" ? " effective" : "")));
+      const dd = el("dd", null, "kv-val");
+      dd.append(rendered.node);
+      row.append(dt, dd);
+      dl.append(row);
+    }
+    card.append(dl);
+    grid.append(card);
+  }
+
+  if (mcp !== null) {
+    const card = el("section", null, "settings-section span-full");
+    const head = el("div", null, "settings-sec-head");
+    head.append(el("h3", "MCP-сервери"), pill(String(mcp.length), "neutral"));
+    card.append(head);
+    if (!mcp.length) {
+      card.append(el("div", "Підключених MCP-серверів не знайдено.", "small muted"));
+    } else {
+      const ul = el("ul", null, "mcp-list");
+      for (const m of mcp) {
+        const li = el("li", null, "mcp-row");
+        const left = el("div", null, "mcp-main");
+        left.append(el("strong", m.name || "—", "mono"));
+        if (m.source) left.append(el("span", m.source, "small muted"));
+        const right = el("div", null, "mcp-tags");
+        if (m.kind) right.append(pill(MCP_KINDS[m.kind] || m.kind, m.kind === "builtin" ? "accent" : "neutral"));
+        if (typeof m.enabled === "boolean") right.append(pill(m.enabled ? "увімкнено" : "вимкнено", m.enabled ? "ok" : "muted-pill"));
+        if (m.state) {
+          const st = MCP_STATES[m.state] || [m.state, "neutral", false];
+          right.append(pill(st[0], st[1], st[2]));
+        }
+        li.append(left, right);
+        ul.append(li);
+      }
+      card.append(ul);
+    }
+    grid.append(card);
+  }
+
+  body.append(grid);
+}
+
+async function loadSettings(folder, silent) {
+  if (!folder) return;
+  const seq = ++settingsSeq;
+  const body = $("settings-body");
+  if (!silent) {
+    $("settings-restart").hidden = true;
+    $("tab-restart-dot").hidden = true;
+    body.replaceChildren(el("div", "Завантаження налаштувань…", "settings-state"));
+  }
+  try {
+    const r = await fetch("/api/agents/" + encodeURIComponent(folder) + "/settings");
+    const d = await r.json().catch(() => ({}));
+    if (seq !== settingsSeq || selected !== folder) return;
+    if (!r.ok) throw new Error(d.error || r.status + " " + r.statusText);
+    renderSettings(d);
+  } catch (e) {
+    if (seq !== settingsSeq || selected !== folder) return;
+    $("settings-restart").hidden = true;
+    $("tab-restart-dot").hidden = true;
+    const box = el("div", null, "settings-state");
+    box.append(el("span", "Не вдалося завантажити налаштування: " + e.message));
+    const retry = el("button", "Спробувати знову", "btn ghost sm");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadSettings(folder, false));
+    box.append(retry);
+    body.replaceChildren(box);
+  }
+}
+
 /** Redraws the selected agent's header and buttons after a refresh, unless an action or deletion confirmation is active. */
 function refreshSelected() {
   if (!selected) return;
@@ -1224,7 +1668,7 @@ function syncLogFiles(a, forceReload) {
     return;
   }
   sel.hidden = false;
-  if (forceReload || !same) showLog();
+  if (activeTab === "logs" && (forceReload || !same)) showLog();
 }
 
 async function select(folder) {
@@ -1237,14 +1681,19 @@ async function select(folder) {
   say("");
   updateInspectorHeader(a);
   actionsFor(a);
+  applyTab(activeTab);
   syncLogFiles(a, true);
+  loadSettings(folder, false);
 }
 
 async function showLog() {
   const file = $("log-file").value;
-  if (!selected || !file || $("log-file").hidden) return;
-  const r = await fetch("/api/agents/" + encodeURIComponent(selected) + "/logs/" + encodeURIComponent(file) + "?lines=300");
-  const d = await r.json();
+  const folder = selected;
+  if (!folder || !file || $("log-file").hidden) return;
+  const seq = ++logSeq;
+  const r = await fetch("/api/agents/" + encodeURIComponent(folder) + "/logs/" + encodeURIComponent(file) + "?lines=300");
+  const d = await r.json().catch(() => ({}));
+  if (seq !== logSeq || selected !== folder || $("log-file").value !== file) return;
   const pre = $("log-text");
   // follow the end only when the reader is already there, so scrolling up to read is not undone
   const atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
@@ -1286,18 +1735,24 @@ $("theme-toggle").addEventListener("click", () => {
 });
 syncThemeIcon();
 
+$("tab-settings").addEventListener("click", () => setTab("settings"));
+$("tab-logs").addEventListener("click", () => setTab("logs"));
+$("settings-refresh").addEventListener("click", () => loadSettings(selected, false));
 $("close-inspector").addEventListener("click", () => {
   selected = null;
   $("logs").hidden = true;
   render();
 });
-$("refresh").addEventListener("click", load);
+$("refresh").addEventListener("click", () => {
+  load();
+  if (selected && activeTab === "settings") loadSettings(selected, true);
+});
 $("log-refresh").addEventListener("click", showLog);
 $("log-file").addEventListener("change", showLog);
 load();
 setInterval(load, 15000);
 // the open log follows by itself every 10 s (alexey, AIChat 3157)
-setInterval(() => { if ($("log-auto").checked && !document.hidden) showLog(); }, 10000);
+setInterval(() => { if (activeTab === "logs" && $("log-auto").checked && !document.hidden) showLog(); }, 10000);
 </script>
 </body>
 </html>
