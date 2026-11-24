@@ -338,7 +338,9 @@ async function agentModel(ctx, cfg) {
 
 
 function normalizeDir(dir) {
-  return String(dir ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const value = String(dir ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  // Windows paths are case-insensitive; POSIX paths are not, so /home/A and /home/a stay different sessions.
+  return process.platform === "win32" ? value.toLowerCase() : value;
 }
 
 function sessionDirOf(info) {

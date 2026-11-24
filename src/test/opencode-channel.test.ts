@@ -157,7 +157,12 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     };
   };
 
-  const makeCtx = (dir: string, storage: Record<string, unknown>, sessionModel: unknown = null) => {
+  const makeCtx = (
+    dir: string,
+    storage: Record<string, unknown>,
+    sessionModel: unknown = null,
+    sessionDir: string = dir,
+  ) => {
     const created: string[] = [];
     const got: string[] = [];
     const saved: Record<string, unknown> = {};
@@ -178,7 +183,7 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
         },
         get: async ({ sessionID }: { sessionID: string }) => {
           got.push(sessionID);
-          return { id: sessionID, title: "T", model: sessionModel, location: { directory: dir } };
+          return { id: sessionID, title: "T", model: sessionModel, location: { directory: sessionDir } };
         },
         switchModel: async () => {},
       },
@@ -253,5 +258,37 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     }
   } finally {
     rmSync(resumeDir, { recursive: true, force: true });
+  }
+
+  // A saved session of /tmp/aichat-ABC is not the session of /tmp/aichat-abc on POSIX; Windows paths are
+  // case-insensitive, so there it is the same folder (AIChat #aichat-manager-dev, Linux support).
+  const caseDir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
+  try {
+    const plugin = await buildBundle(caseDir);
+    const otherCase = caseDir.toUpperCase();
+    const { ctx, created, got } = makeCtx(
+      caseDir,
+      { "aichat/session": { id: "ses_other" } },
+      null,
+      otherCase,
+    );
+    const dispose = await plugin.setup(ctx);
+    try {
+      const status = JSON.parse(readFileSync(join(caseDir, ".aichat", "status.json"), "utf8"));
+      assert.deepEqual(got, ["ses_other"], "looked at the saved session");
+      if (process.platform === "win32") {
+        assert.equal(status.start, "resumed");
+        assert.equal(status.sessionID, "ses_other");
+        assert.equal(created.length, 0, "the same folder in another case is still the same session");
+      } else {
+        assert.equal(status.start, "new");
+        assert.equal(status.sessionID, "ses_new");
+        assert.equal(created.length, 1, "a path that differs in case is another folder on POSIX");
+      }
+    } finally {
+      await dispose();
+    }
+  } finally {
+    rmSync(caseDir, { recursive: true, force: true });
   }
 });
