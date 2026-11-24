@@ -533,6 +533,15 @@ test('installer preserves existing files, isolates profile and MCP uses HTTP-onl
   try {
     const installed = install({ agentDir: f.cfg.agentDir, codexHome: f.cfg.codexHome, tokenFile: f.cfg.tokenFile, url: 'http://127.0.0.1', approveTools: true });
     const cfg = loadConfig(installed.configFile);
+    for (const [scriptName, command, extra] of [['start.sh', 'run', ' "$@"'], ['stop.sh', 'stop', '']]) {
+      const scriptPath = path.join(f.cfg.agentDir, scriptName);
+      const script = fs.readFileSync(scriptPath, 'utf8');
+      assert.ok(script.startsWith('#!/usr/bin/env sh\nset -eu\n'));
+      assert.ok(!script.includes('\r'));
+      const invocation = 'exec node "$DIR/codex-channel.mjs" ' + command + ' --config "$DIR/aichat.config.json"' + extra;
+      assert.ok(script.endsWith(invocation + '\n'));
+      if (process.platform !== 'win32') assert.equal(fs.statSync(scriptPath).mode & 0o777, 0o755);
+    }
     assert.equal(cfg.paused, true); assert.equal(cfg.delivery, 'steer');
     assert.match(fs.readFileSync(path.join(f.cfg.codexHome, 'config.toml'), 'utf8'), /"mcp"/);
     assert.match(fs.readFileSync(path.join(f.cfg.codexHome, 'config.toml'), 'utf8'), /default_tools_approval_mode = "approve"/);
