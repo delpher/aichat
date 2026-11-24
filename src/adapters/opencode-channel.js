@@ -89,14 +89,22 @@ function loadSettings(ctx) {
   return cfg;
 }
 
+/** `provider/model#variant` — how OpenCode names a model together with its effort level (the manager's setting). */
+function modelRef(model) {
+  if (!model || !model.providerID || !model.id) return null;
+  return `${model.providerID}/${model.id}${model.variant ? `#${model.variant}` : ""}`;
+}
+
 /**
  * The manager reads .aichat/status.json for the effective state (the config says what was asked for; the running
  * process knows what it actually has). No secrets here. The schema is agreed with the agent manager:
+ * model: "provider/model#variant" (the session's own, not the configured one),
  * effective: { sandbox, network, writableRoots, mcp: [{ name, state }] }.
  */
 function writeStatus(ctx, cfg, state) {
   const dir = ctx.location?.directory || process.cwd();
   const file = path.join(dir, ".aichat", "status.json");
+  const model = modelRef(state.lastModel);
   const body = {
     agent: state.me || null,
     adapter: PLUGIN_NAME,
@@ -104,6 +112,8 @@ function writeStatus(ctx, cfg, state) {
     surface: "server",
     start: state.start || "new",
     sessionID: state.sessionID || null,
+    // what the session really runs on, so the manager can show it next to what was configured
+    ...(model ? { model } : {}),
     paused: cfg.paused === true,
     connected: Boolean(state.ws),
     effective: {
@@ -616,6 +626,11 @@ function followUsage(ctx, cfg, state) {
       info = await ctx.session.get({ sessionID: state.sessionID });
     } catch {
       return;
+    }
+    // the model could be switched in the TUI: keep status.json saying what the session really runs on
+    if (info?.model && modelRef(info.model) !== modelRef(state.lastModel)) {
+      state.lastModel = info.model;
+      writeStatus(ctx, cfg, state);
     }
     const tokens = info?.tokens ?? {};
     const tokensIn = Number(tokens.input ?? 0);
