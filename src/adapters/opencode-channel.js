@@ -21,7 +21,7 @@
 //
 // Підключення: файл у <профіль>/.opencode/plugins/ — OpenCode вантажить звідти сам.
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -87,6 +87,44 @@ function loadSettings(ctx) {
   // ws://host/ws → http://host
   cfg.httpBase = cfg.url.replace(/^ws(s?):\/\//, "http$1://").replace(/\/ws\/?$/, "");
   return cfg;
+}
+
+/**
+ * The manager reads .aichat/status.json for the effective state (the config says what was asked for; the running
+ * process knows what it actually has). No secrets here. The schema is agreed with the agent manager:
+ * effective: { sandbox, network, writableRoots, mcp: [{ name, state }] }.
+ */
+function writeStatus(ctx, cfg, state) {
+  const dir = ctx.location?.directory || process.cwd();
+  const file = path.join(dir, ".aichat", "status.json");
+  const body = {
+    agent: state.me || null,
+    adapter: PLUGIN_NAME,
+    version: PLUGIN_VERSION,
+    surface: "server",
+    start: state.start || "new",
+    sessionID: state.sessionID || null,
+    paused: cfg.paused === true,
+    connected: Boolean(state.ws),
+    effective: {
+      // OpenCode's plugin runs inside the OpenCode server, which has no sandbox of its own: be explicit, not reassuring.
+      sandbox: false,
+      network: true,
+      writableRoots: ["*"],
+      // MCP servers are configured in opencode.jsonc; the manager reads them there. Their connection state is not
+      // exposed to the plugin, so no invented values here.
+      mcp: [],
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(body, null, 2));
+    renameSync(tmp, file);
+  } catch (error) {
+    console.warn(`[aichat] не вдалось записати .aichat/status.json: ${error.message}`);
+  }
 }
 
 async function apiRequest(cfg, pathname, { method = "GET", body, headers: extra, signal } = {}) {
@@ -914,6 +952,7 @@ function startChannel(ctx, cfg, state) {
         state.rooms = Array.isArray(frame.rooms)
           ? frame.rooms.map((r) => String(r).replace(/^#/, ""))
           : state.rooms;
+        writeStatus(ctx, cfg, state);
         for (const room of cfg.rooms) state.ws?.send({ type: "join", room });
         // дошлемо ✓✓, які не пішли, бо сокета не було
         for (const id of [...(state.undelivered ?? [])]) ackDelivery(state, id);
@@ -1458,6 +1497,7 @@ export default {
         }
       })
       .catch((error) => console.warn(`[aichat] не вдалось підготувати сесію: ${error.message}`));
+    writeStatus(ctx, cfg, state);
     let stop;
     let stopActivity;
     let stopUsage;
@@ -1488,6 +1528,7 @@ export default {
             stopActivity?.();
             stopUsage?.();
             stop?.();
+            writeStatus(ctx, cfg, state);
           });
       }, 1000);
       stopWatcher.unref?.();
@@ -1498,6 +1539,7 @@ export default {
       stopUsage?.();
       stopActivity?.();
       stop?.();
+      writeStatus(ctx, cfg, state);
       await tools?.dispose?.();
     };
   },

@@ -205,6 +205,12 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     });
     const dispose = await plugin.setup(ctx);
     try {
+      const status = JSON.parse(readFileSync(join(freshDir, ".aichat", "status.json"), "utf8"));
+      assert.equal(status.surface, "server");
+      assert.equal(status.start, "new");
+      assert.equal(status.sessionID, "ses_new");
+      assert.equal(status.effective.sandbox, false);
+      assert.deepEqual(status.effective.writableRoots, ["*"]);
       assert.equal(created.length, 1, "created a new session");
       assert.equal(got.length, 0, "did not resume the old one");
       assert.deepEqual(saved["aichat/session:".concat(String(freshDir).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())], {
@@ -229,6 +235,9 @@ test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it o
     });
     const dispose = await plugin.setup(ctx);
     try {
+      const status = JSON.parse(readFileSync(join(resumeDir, ".aichat", "status.json"), "utf8"));
+      assert.equal(status.start, "resumed");
+      assert.equal(status.sessionID, "ses_old");
       assert.deepEqual(got, ["ses_old"], "resumed the saved session");
       assert.equal(created.length, 0, "did not create a session");
     } finally {
