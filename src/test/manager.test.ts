@@ -688,7 +688,10 @@ test("manager wizard: a Claude Code agent gets the start script that resumes its
   // the command lives in .manager.json only (opencode-alexey, 3448): the script reads it from there, "claude" by default
   assert.match(script, /\$settings\.start\.\$folder/);
   assert.match(script, /\$command = 'claude'/);
-  assert.match(script, /if \(\$extra -notcontains '--dangerously-load-development-channels'\)/);
+  // quoted values stay whole; the channel flag and its value each once; a command's own session is kept (3453-3455)
+  assert.match(script, /PSParser\]::Tokenize\(\$command/);
+  assert.match(script, /elseif \(-not \$extra\.Contains\('server:aichat'\)\) \{ \$extra\.Insert\(\$flag \+ 1, 'server:aichat'\) \}/);
+  assert.match(script, /\$_ -in '--resume', '-r', '--continue', '-c', '--session-id'/);
   assert.match(script, /Could not resume that session: starting a new one/);
   assert.deepEqual(JSON.parse(readFileSync(join(root, ".manager.json"), "utf8")), { start: { other: "x" } }, "the wizard writes no command");
   assert.match(done.steps.join(" "), /start\.ps1/);

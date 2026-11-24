@@ -40,10 +40,18 @@ try {
   $own = $settings.start.$folder
   if ($own -and $own -notmatch 'start\\.ps1') { $command = $own }
 } catch { }
-$words = @($command -split '\\s+' | Where-Object { $_ })
+# split the way PowerShell itself would, so quoted values with spaces stay whole
+$words = @([System.Management.Automation.PSParser]::Tokenize($command, [ref]$null) |
+  Where-Object { $_.Type -notin 'NewLine', 'StatementSeparator', 'Comment' } | ForEach-Object { $_.Content })
 $exe = $words[0]
-$extra = @($words | Select-Object -Skip 1)
-if ($extra -notcontains '--dangerously-load-development-channels') { $extra += @('--dangerously-load-development-channels', 'server:aichat') }
+$extra = [System.Collections.Generic.List[string]]@($words | Select-Object -Skip 1)
+# the channel flag and its value, each once
+$flag = $extra.IndexOf('--dangerously-load-development-channels')
+if ($flag -lt 0) { $extra.Add('--dangerously-load-development-channels'); $extra.Add('server:aichat') }
+elseif (-not $extra.Contains('server:aichat')) { $extra.Insert($flag + 1, 'server:aichat') }
+# a command that chooses its own session keeps it
+$ownSession = @($extra | Where-Object { $_ -in '--resume', '-r', '--continue', '-c', '--session-id' }).Count -gt 0
+if ($ownSession) { $Fresh = $true }
 
 $session = $null
 if (-not $Fresh) {
@@ -57,9 +65,11 @@ if (-not $Fresh) {
 }
 
 # the adapter tells the broker whether this is the old conversation or a new one
-$env:AICHAT_START = if ($session) { 'resumed' } else { 'new' }
+$env:AICHAT_START = if ($session) { 'resumed' } elseif ($ownSession) { '' } else { 'new' }
 $resume = if ($session) { @('--resume', $session.BaseName) } else { @() }
-if ($session) { Write-Host "Resuming session $($session.BaseName) ($($session.LastWriteTime))" } else { Write-Host 'Starting a new session' }
+if ($session) { Write-Host "Resuming session $($session.BaseName) ($($session.LastWriteTime))" }
+elseif ($ownSession) { Write-Host 'The command chooses its own session' }
+else { Write-Host 'Starting a new session' }
 $started = Get-Date
 & $exe @resume @extra
 # a session that cannot be resumed: a new one rather than none
