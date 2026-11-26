@@ -1220,6 +1220,27 @@ span.msg-where {
 .room-bar-row > :first-child {
   margin-left: calc(var(--space-3) * -1);
 }
+/* The room's buttons inside the header row (AIChat 3751). */
+.head-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.head-actions .work-toggle {
+  margin-left: 0;
+}
+/* In the header the brief shares the row with the title: it takes what is left, not half the row. */
+.main-head .brief-toggle {
+  flex: 0 1 auto;
+  max-width: 42%;
+}
+/* The expanded brief: under the header, above the feed. */
+.brief-panel {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
 .room-bar-row > .brief-label:first-child {
   margin-left: 0;
 }

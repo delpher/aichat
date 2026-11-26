@@ -38,7 +38,19 @@ export function viewTitle(v: View, me: string | null): { title: string; sub: str
 /** How many faces the room header shows before "+N". */
 const FACES = 5;
 
-export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room: string) => void }) {
+export function Header({
+  onMenu,
+  onLeave,
+  bar,
+  actions,
+}: {
+  onMenu: () => void;
+  onLeave: (room: string) => void;
+  /** A room's brief, in this row next to the title (AIChat 3751). */
+  bar?: React.ReactNode;
+  /** The room's buttons (threads, work, export), after the faces. */
+  actions?: React.ReactNode;
+}) {
   const { view, overview, session, sender, threaded, setThreaded, openAgent } = useChat();
   const isChat = view.kind === "room" || view.kind === "dm" || view.kind === "all";
   const me = session.mode === "user" ? session.me.name : sender;
@@ -92,13 +104,15 @@ export function Header({ onMenu, onLeave }: { onMenu: () => void; onLeave: (room
         <h1>{title}</h1>
         {sub && <p>{sub}</p>}
       </div>
+      {bar}
       {people}
       {card && (
         <button type="button" className="icon-btn" onClick={() => openAgent(card!)} aria-label={`Картка ${card}`} title={`Картка ${card}`}>
           <IdCard size={18} />
         </button>
       )}
-      {isChat && (
+      {actions}
+      {isChat && !bar && (
         <button
           type="button"
           className={`icon-btn toggle${threaded ? " on" : ""}`}

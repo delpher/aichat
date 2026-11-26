@@ -475,7 +475,17 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
   };
 
   let main: React.ReactNode;
-  if (view.kind === "all" || view.kind === "room" || view.kind === "dm") main = <ChatView key={`${key}:${epoch}`} view={view} />;
+  // A chat view renders its own header: the room bar (brief, threads, work, export) sits in that row (AIChat 3751).
+  const chatView = view.kind === "all" || view.kind === "room" || view.kind === "dm";
+  if (chatView)
+    main = (
+      <ChatView
+        key={`${key}:${epoch}`}
+        view={view}
+        onMenu={() => setMenuOpen((o) => !o)}
+        onLeave={leaveRoom}
+      />
+    );
   else if (view.kind === "people") main = <PeoplePanel />;
   else if (view.kind === "people-new") main = <AddPersonPage />;
   else if (view.kind === "person") main = <PersonPage key={view.name} name={view.name} onSelfDemoted={() => void onRelogin()} />;
@@ -508,7 +518,7 @@ export function ChatApp({ session, initialOverview, onLogout, onRelogin, flash, 
         />
         <div className="scrim" onClick={() => setMenuOpen(false)} />
         <main className="main">
-          <Header onMenu={() => setMenuOpen((o) => !o)} onLeave={leaveRoom} />
+          {!chatView && <Header onMenu={() => setMenuOpen((o) => !o)} onLeave={leaveRoom} />}
           {main}
         </main>
         {palette && <CommandPalette onClose={() => setPalette(false)} />}
