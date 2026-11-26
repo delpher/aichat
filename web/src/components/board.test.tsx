@@ -1,11 +1,12 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { RoomBrief } from "../api/types";
 import type { BoardEvent } from "../context";
 import { fakeApi, overview, renderWithChat } from "../test/render";
 import { ChatView } from "./ChatView";
-import { RoomBar } from "./RoomBar";
+import { BriefPanel, RoomActions, RoomBar } from "./RoomBar";
 import { WorkPanel } from "./WorkPanel";
 
 const brief: RoomBrief = {
@@ -14,9 +15,43 @@ const brief: RoomBrief = {
   by: "olena",
   ts: "2026-11-15T09:00:00Z",
 };
-const bar = (b: RoomBrief | null, onSaveBrief = async () => {}) => (
-  <RoomBar room="lobby" brief={b} onSaveBrief={onSaveBrief} workOpen={false} onToggleWork={() => {}} />
-);
+
+/** The header row and the panel under it, wired the way ChatView does it. */
+function Harness({
+  b,
+  onSaveBrief = async () => {},
+}: {
+  b: RoomBrief | null;
+  onSaveBrief?: (text: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"closed" | "view" | "edit">("closed");
+  return (
+    <>
+      <RoomBar
+        brief={b}
+        open={mode !== "closed"}
+        onToggle={() => setMode((m) => (m === "closed" ? "view" : "closed"))}
+        onEdit={() => setMode("edit")}
+      />
+      <RoomActions room="lobby" workOpen={false} onToggleWork={() => {}} />
+      {mode !== "closed" && (
+        <BriefPanel
+          room="lobby"
+          brief={b}
+          editing={mode === "edit"}
+          onEdit={() => setMode("edit")}
+          onClose={() => setMode("closed")}
+          onCancel={() => setMode(b ? "view" : "closed")}
+          onSave={async (text) => {
+            await onSaveBrief(text);
+            setMode("view");
+          }}
+        />
+      )}
+    </>
+  );
+}
+const bar = (b: RoomBrief | null, onSaveBrief = async () => {}) => <Harness b={b} onSaveBrief={onSaveBrief} />;
 
 describe("RoomBar", () => {
   it("folds the brief to its first line and edits it", async () => {

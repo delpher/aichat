@@ -1220,9 +1220,47 @@ span.msg-where {
 .room-bar-row > :first-child {
   margin-left: calc(var(--space-3) * -1);
 }
-.room-bar-row > .brief-label:first-child {
+/* The room's buttons inside the header row (AIChat 3751). */
+.head-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.head-actions .work-toggle {
   margin-left: 0;
 }
+/* The buttons that switch a panel on look alike: threads and work. */
+.head-actions .btn.on {
+  border-color: var(--accent);
+  color: var(--accent-soft-fg);
+  background: var(--accent-soft);
+}
+/* A room's header: the title keeps its place, the brief takes the rest and gives way first. */
+.main-head.has-bar .head-title {
+  flex: 0 1 auto;
+  max-width: 28%;
+}
+/* The brief's slot always takes the free space, so the faces and the buttons follow it on the right even when the
+   room has no brief yet. */
+.head-brief {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.main-head.has-bar .brief-toggle {
+  flex: 1 1 auto;
+  max-width: none;
+}
+/* The expanded brief: under the header, above the feed. */
+.brief-panel {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
 .brief-toggle {
   flex: 1;
   display: flex;
@@ -1294,8 +1332,11 @@ span.msg-where {
 .brief-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-1);
   margin-top: var(--space-2);
+}
+.brief-meta > span {
+  margin-right: auto;
 }
 .brief-edit {
   display: flex;
@@ -1312,6 +1353,11 @@ span.msg-where {
 }
 .brief-count {
   margin-left: auto;
+}
+/* The panel starts right under the header: it needs its own top padding there, not the old row's. */
+.brief-panel .brief-body,
+.brief-panel .brief-edit {
+  padding-top: var(--space-3);
 }
 
 /* ---------- drawers: thread and work ---------- */

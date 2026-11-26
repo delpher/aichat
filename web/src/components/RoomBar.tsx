@@ -1,4 +1,4 @@
-import { ChevronDown, Download, ListTodo, LoaderCircle } from "lucide-react";
+import { ChevronDown, Download, ListTodo, ListTree, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { MAX_BRIEF_LENGTH, type RoomBrief } from "../api/types";
 import { useChat } from "../context";
@@ -8,20 +8,44 @@ import { knownRooms } from "../lib/views";
 import { fmtShort } from "../lib/format";
 import { Markdown } from "./Markdown";
 
-interface Props {
-  room: string;
+interface BarProps {
   brief: RoomBrief | null;
-  onSaveBrief: (text: string) => Promise<void>;
-  workOpen: boolean;
-  onToggleWork: () => void;
+  /** The brief is expanded under the header. */
+  open: boolean;
+  onToggle: () => void;
+  /** Opens the editor (an empty brief included). */
+  onEdit: () => void;
 }
 
-/** The room's brief (folded to one line, editable) and the way to who does what, under the header. */
-export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Props) {
-  const { overview, fail, openRoom, api, session } = useChat();
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+/** The room's brief in the header row (AIChat #aichat-improvement-dev, 3751); the expanded text is `BriefPanel`. */
+export function RoomBar({ brief, open, onToggle, onEdit }: BarProps) {
+  // first non-empty line as plain text: no heading, list or emphasis markers
+  const firstLine = (brief?.text.split("\n").find((l) => l.trim()) ?? "")
+    .replace(/^\s*(?:#+|[-*+]|\d+\.)\s+/, "")
+    .replace(/[*_`~]+/g, "")
+    .trim();
+
+  if (!brief)
+    return (
+      <button type="button" className="btn quiet sm brief-add" onClick={onEdit}>
+        Додати бриф кімнати
+      </button>
+    );
+  return (
+    <button type="button" className="brief-toggle" onClick={onToggle} aria-expanded={open} title={firstLine}>
+      <span className="brief-label hide-sm">Бриф</span>
+      <span className="brief-line">{firstLine}</span>
+      <ChevronDown size={14} className="brief-chevron" />
+    </button>
+  );
+}
+
+/**
+ * The header's buttons for a room: threads, the work panel and the export of the conversation
+ * (AIChat #aichat-improvement-dev, 3751).
+ */
+export function RoomActions({ room, workOpen, onToggleWork }: { room: string; workOpen: boolean; onToggleWork: () => void }) {
+  const { overview, api, session, fail, threaded, setThreaded } = useChat();
   const [exporting, setExporting] = useState(false);
 
   /** The whole conversation of the room, with its brief, as a Markdown file to save. */
@@ -35,25 +59,78 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
       setExporting(false);
     }
   };
-  const names = overview.agents.map((a) => a.name);
-  const rooms = knownRooms(overview);
-  // first non-empty line as plain text: no heading, list or emphasis markers
-  const firstLine = (brief?.text.split("\n").find((l) => l.trim()) ?? "")
-    .replace(/^\s*(?:#+|[-*+]|\d+\.)\s+/, "")
-    .replace(/[*_`~]+/g, "")
-    .trim();
   /** Agents busy in this room right now. */
   const working = overview.agents.filter(
     (a) => isActive(a.online, a.activity) && a.activity!.state === "busy" && a.activity!.room === room,
   ).length;
 
+  return (
+    <div className="head-actions">
+      <button
+        type="button"
+        className={`btn sm ${threaded ? "ghost on" : "quiet"}`}
+        onClick={() => setThreaded(!threaded)}
+        aria-pressed={threaded}
+        aria-label="Треди"
+        title={threaded ? "Відповіді згорнуті в тредах. Повторний клік поверне їх у стрічку" : "Згорнути відповіді в тредах"}
+      >
+        <ListTree size={16} /> <span className="hide-sm">Треди</span>
+      </button>
+      <button
+        type="button"
+        className={`btn sm ${workOpen ? "ghost on" : "quiet"} work-toggle`}
+        onClick={onToggleWork}
+        aria-pressed={workOpen}
+        aria-label="Робота"
+        title={`Хто що робить у #${room}`}
+      >
+        <ListTodo size={16} /> <span className="hide-sm">Робота</span>
+        {working > 0 && (
+          <span className="activity-dots" aria-label={`Працюють тут: ${working}`}>
+            <i />
+            <i />
+            <i />
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
+        className="btn quiet sm export-toggle"
+        onClick={() => void exportRoom()}
+        disabled={exporting}
+        aria-label={`Експортувати переписку #${room} у Markdown`}
+        title={`Експортувати переписку #${room} у Markdown`}
+      >
+        {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+      </button>
+    </div>
+  );
+}
+
+interface PanelProps {
+  room: string;
+  brief: RoomBrief | null;
+  /** The editor instead of the text. */
+  editing: boolean;
+  onEdit: () => void;
+  onClose: () => void;
+  /** Back to the text (or folded away when there is no brief yet). */
+  onCancel: () => void;
+  onSave: (text: string) => Promise<void>;
+}
+
+/** The brief under the header: its text, or the editor. */
+export function BriefPanel({ room, brief, editing, onEdit, onClose, onCancel, onSave }: PanelProps) {
+  const { overview, fail, openRoom } = useChat();
+  const [draft, setDraft] = useState(brief?.text ?? "");
+  const [busy, setBusy] = useState(false);
+  const names = overview.agents.map((a) => a.name);
+  const rooms = knownRooms(overview);
+
   const save = async () => {
-    if (draft === null) return;
     setBusy(true);
     try {
-      await onSaveBrief(draft);
-      setDraft(null);
-      setOpen(true);
+      await onSave(draft);
     } catch (e) {
       fail(e, "Бриф не збережено");
     } finally {
@@ -62,52 +139,8 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
   };
 
   return (
-    <div className="room-bar">
-      <div className="room-bar-row">
-        {draft === null ? (
-          brief ? (
-            <button type="button" className="brief-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-              <span className="brief-label">Бриф</span>
-              <span className="brief-line">{firstLine}</span>
-              <ChevronDown size={14} className="brief-chevron" />
-            </button>
-          ) : (
-            <button type="button" className="btn quiet sm" onClick={() => setDraft("")}>
-              Додати бриф кімнати
-            </button>
-          )
-        ) : (
-          <span className="brief-label">Бриф #{room}</span>
-        )}
-        <button
-          type="button"
-          className={`btn sm ${workOpen ? "ghost on" : "quiet"} work-toggle`}
-          onClick={onToggleWork}
-          aria-pressed={workOpen}
-          title={`Хто що робить у #${room}`}
-        >
-          <ListTodo size={16} /> Робота
-          {working > 0 && (
-            <span className="activity-dots" aria-label={`Працюють тут: ${working}`}>
-              <i />
-              <i />
-              <i />
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          className="btn quiet sm export-toggle"
-          onClick={() => void exportRoom()}
-          disabled={exporting}
-          aria-label={`Експортувати переписку #${room} у Markdown`}
-          title={`Експортувати переписку #${room} у Markdown`}
-        >
-          {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-        </button>
-      </div>
-
-      {draft !== null ? (
+    <section className="brief-panel" aria-label={`Бриф #${room}`}>
+      {editing ? (
         <form
           className="brief-edit"
           onSubmit={(e) => {
@@ -130,7 +163,7 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
             <button type="submit" className="btn primary sm" disabled={busy}>
               {busy && <LoaderCircle className="spin" size={14} />} Зберегти бриф
             </button>
-            <button type="button" className="btn quiet sm" onClick={() => setDraft(null)} disabled={busy}>
+            <button type="button" className="btn quiet sm" onClick={onCancel} disabled={busy}>
               Скасувати
             </button>
             <span className="muted small num brief-count">
@@ -140,8 +173,7 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
           <p className="muted small">Агенти бачать бриф, коли приєднуються до кімнати, і отримують повідомлення про кожну зміну.</p>
         </form>
       ) : (
-        brief &&
-        open && (
+        brief && (
           <div
             className="brief-body"
             onClick={(e) => {
@@ -154,13 +186,16 @@ export function RoomBar({ room, brief, onSaveBrief, workOpen, onToggleWork }: Pr
               <span className="muted small num">
                 {brief.by} · {fmtShort(brief.ts)}
               </span>
-              <button type="button" className="btn quiet sm" onClick={() => setDraft(brief.text)}>
+              <button type="button" className="btn quiet sm" onClick={onEdit}>
                 Змінити
+              </button>
+              <button type="button" className="btn quiet sm" onClick={onClose}>
+                Згорнути
               </button>
             </div>
           </div>
         )
       )}
-    </div>
+    </section>
   );
 }

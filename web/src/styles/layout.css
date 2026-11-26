@@ -285,6 +285,7 @@
 /* ---------- header ---------- */
 .main-head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: var(--space-3);
   min-height: 60px;
@@ -409,8 +410,19 @@
   }
   .main-head {
     padding: var(--space-2) var(--space-3);
+    flex-wrap: wrap;
+  }
+  /* A room's brief goes to its own line: the title, the faces and the buttons keep the first one. */
+  .main-head .head-brief {
+    order: 10;
+    flex: 1 0 100%;
   }
   .hide-sm {
+    display: none;
+  }
+}
+@media (max-width: 520px) {
+  .head-people {
     display: none;
   }
 }

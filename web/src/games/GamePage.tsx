@@ -284,7 +284,7 @@ export function GamePage({ id }: { id: number }) {
         </div>
         {inRoom ? (
           <div className="game-chat-body">
-            <ChatView key={game.room} view={{ kind: "room", room: game.room }} />
+            <ChatView key={game.room} view={{ kind: "room", room: game.room }} chrome={false} />
           </div>
         ) : (
           <div className="actions">

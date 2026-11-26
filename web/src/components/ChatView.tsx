@@ -9,13 +9,25 @@ import { isGameRoom, viewKey, type View } from "../lib/views";
 import { ActivityBar } from "./ActivityBar";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
-import { RoomBar } from "./RoomBar";
+import { Header } from "./Header";
+import { BriefPanel, RoomActions, RoomBar } from "./RoomBar";
 import { WorkPanel } from "./WorkPanel";
 import { ThreadPanel } from "./ThreadPanel";
 
 type ChatViewKind = Extract<View, { kind: "all" | "room" | "dm" }>;
 
-export function ChatView({ view }: { view: ChatViewKind }) {
+export function ChatView({
+  view,
+  onMenu = () => {},
+  onLeave = () => {},
+  chrome = true,
+}: {
+  view: ChatViewKind;
+  onMenu?: () => void;
+  onLeave?: (room: string) => void;
+  /** Draw the header too; a page that already has one (a game) passes false. */
+  chrome?: boolean;
+}) {
   const { session, view: current, threaded, overview, go, focus, clearFocus } = useChat();
   const { messages, hasOlder, loading, loadOlder, olderLoads } = useMessages(view);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
@@ -48,6 +60,8 @@ export function ChatView({ view }: { view: ChatViewKind }) {
   // ---- the room's brief and who does what (plain rooms only; game rooms belong to their game) ----
   const boardRoom = view.kind === "room" && !isGameRoom(view.room) ? view.room : null;
   const board = useRoomBoard(boardRoom);
+  /** The brief under the header: folded, its text, or the editor. The view is keyed per room, so this resets. */
+  const [briefMode, setBriefMode] = useState<"closed" | "view" | "edit">("closed");
   const [workOpen, setWorkOpen] = useState(false);
   const toggleWork = useCallback(() => {
     setOpen(null);
@@ -58,9 +72,43 @@ export function ChatView({ view }: { view: ChatViewKind }) {
 
   const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
   return (
-    <div className="chat-wrap">
-      <div
-        className="chat"
+    <>
+      {chrome && (
+        <Header
+          onMenu={onMenu}
+          onLeave={onLeave}
+          bar={
+            boardRoom ? (
+              <RoomBar
+                brief={board.brief}
+                open={briefMode !== "closed"}
+                onToggle={() => setBriefMode((m) => (m === "closed" ? "view" : "closed"))}
+                onEdit={() => setBriefMode("edit")}
+              />
+            ) : undefined
+          }
+          actions={boardRoom ? <RoomActions room={boardRoom} workOpen={workOpen} onToggleWork={toggleWork} /> : undefined}
+        />
+      )}
+      {boardRoom && (briefMode === "edit" || (briefMode === "view" && board.brief)) && (
+        <BriefPanel
+          key={`${boardRoom}:${briefMode}`}
+          room={boardRoom}
+          brief={board.brief}
+          editing={briefMode === "edit"}
+          onEdit={() => setBriefMode("edit")}
+          onClose={() => setBriefMode("closed")}
+          onCancel={() => setBriefMode(board.brief ? "view" : "closed")}
+          onSave={async (text) => {
+            await board.saveBrief(text);
+            // an emptied brief has nothing to show: fold the panel away
+            setBriefMode(text.trim() ? "view" : "closed");
+          }}
+        />
+      )}
+      <div className="chat-wrap">
+        <div
+          className="chat"
         onDragEnter={(e) => {
           if (canWrite && hasFiles(e)) {
             e.preventDefault();
@@ -108,9 +156,6 @@ export function ChatView({ view }: { view: ChatViewKind }) {
               )}
             </div>
           </div>
-        )}
-        {boardRoom && (
-          <RoomBar room={boardRoom} brief={board.brief} onSaveBrief={board.saveBrief} workOpen={workOpen} onToggleWork={toggleWork} />
         )}
         <MessageList
           messages={messages}
@@ -166,6 +211,7 @@ export function ChatView({ view }: { view: ChatViewKind }) {
           canWrite={canWriteThread(openThread.root)}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
