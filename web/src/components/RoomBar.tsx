@@ -54,7 +54,7 @@ export function RoomActions({ room, workOpen, onToggleWork }: { room: string; wo
     try {
       await saveRoomExport(api, session, room);
     } catch (e) {
-      fail(e, "не вдалось експортувати");
+      fail(e, "Переписку не експортовано");
     } finally {
       setExporting(false);
     }
@@ -66,41 +66,41 @@ export function RoomActions({ room, workOpen, onToggleWork }: { room: string; wo
 
   return (
     <div className="head-actions">
-        <button
-          type="button"
-          className={`btn sm ${threaded ? "ghost on" : "quiet"}`}
-          onClick={() => setThreaded(!threaded)}
-          aria-pressed={threaded}
-          title={threaded ? "Відповіді згорнуті в тредах. Повторний клік поверне їх у стрічку" : "Згорнути відповіді в тредах"}
-        >
-          <ListTree size={16} /> <span className="hide-sm">Треди</span>
-        </button>
-        <button
-          type="button"
-          className={`btn sm ${workOpen ? "ghost on" : "quiet"} work-toggle`}
-          onClick={onToggleWork}
-          aria-pressed={workOpen}
-          title={`Хто що робить у #${room}`}
-        >
-          <ListTodo size={16} /> <span className="hide-sm">Робота</span>
-          {working > 0 && (
-            <span className="activity-dots" aria-label={`працюють тут: ${working}`}>
-              <i />
-              <i />
-              <i />
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          className="btn quiet sm export-toggle"
-          onClick={() => void exportRoom()}
-          disabled={exporting}
-          aria-label={`Експортувати переписку #${room} у Markdown`}
-          title={`Експортувати переписку #${room} у Markdown`}
-        >
-          {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-    </button>
+      <button
+        type="button"
+        className={`btn sm ${threaded ? "ghost on" : "quiet"}`}
+        onClick={() => setThreaded(!threaded)}
+        aria-pressed={threaded}
+        title={threaded ? "Відповіді згорнуті в тредах. Повторний клік поверне їх у стрічку" : "Згорнути відповіді в тредах"}
+      >
+        <ListTree size={16} /> <span className="hide-sm">Треди</span>
+      </button>
+      <button
+        type="button"
+        className={`btn sm ${workOpen ? "ghost on" : "quiet"} work-toggle`}
+        onClick={onToggleWork}
+        aria-pressed={workOpen}
+        title={`Хто що робить у #${room}`}
+      >
+        <ListTodo size={16} /> <span className="hide-sm">Робота</span>
+        {working > 0 && (
+          <span className="activity-dots" aria-label={`Працюють тут: ${working}`}>
+            <i />
+            <i />
+            <i />
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
+        className="btn quiet sm export-toggle"
+        onClick={() => void exportRoom()}
+        disabled={exporting}
+        aria-label={`Експортувати переписку #${room} у Markdown`}
+        title={`Експортувати переписку #${room} у Markdown`}
+      >
+        {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+      </button>
     </div>
   );
 }
@@ -130,7 +130,7 @@ export function BriefPanel({ room, brief, editing, onEdit, onClose, onCancel, on
     try {
       await onSave(draft);
     } catch (e) {
-      fail(e, "бриф не збережено");
+      fail(e, "Бриф не збережено");
     } finally {
       setBusy(false);
     }
@@ -154,7 +154,7 @@ export function BriefPanel({ room, brief, editing, onEdit, onClose, onCancel, on
             autoFocus
             aria-label="Бриф кімнати"
             placeholder={
-              "що це за кімната, правила, хто в роботі.\nНаприклад: claude-a пише код, claude-b робить рев'ю; звернення загальні — до olena."
+              "Мета кімнати, правила, хто що робить.\nНаприклад: claude-a пише код, claude-b робить рев'ю; рішення погоджуємо з olena."
             }
           />
           <div className="actions">
@@ -168,7 +168,7 @@ export function BriefPanel({ room, brief, editing, onEdit, onClose, onCancel, on
               {draft.length}/{MAX_BRIEF_LENGTH}
             </span>
           </div>
-          <p className="muted small">Бачать бриф усі, хто заходить до кімнати, і агенти кімнати бачать його на старті.</p>
+          <p className="muted small">Агенти бачать бриф, коли приєднуються до кімнати, і отримують повідомлення про кожну зміну.</p>
         </form>
       ) : (
         brief && (
@@ -188,7 +188,7 @@ export function BriefPanel({ room, brief, editing, onEdit, onClose, onCancel, on
                 Змінити
               </button>
               <button type="button" className="btn quiet sm" onClick={onClose}>
-                згорнути
+                Згорнути
               </button>
             </div>
           </div>
