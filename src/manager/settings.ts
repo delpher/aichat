@@ -8,6 +8,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { ActionError, readSettings, startCommand } from "./actions.js";
 import { CLAUDE_CHANNEL_FLAGS, claudeCommand, hasStartScript, startScriptName } from "./claude-start.js";
 import type { LocalAgent } from "./agents.js";
+import { CLI_SOURCE, cachedClis, type CliOption, type CliType } from "./cli.js";
 
 export type SettingValue = string | number | boolean | string[] | null;
 
@@ -17,7 +18,16 @@ export type EditSpec =
   | { type: "bool" }
   | { type: "int"; min: number; max: number; optional?: boolean }
   /** `suggestions`: known values to offer; others are allowed (a model's own names and levels, AIChat 3460). */
-  | { type: "text"; max: number; optional?: boolean; suggestions?: string[] }
+  | {
+      type: "text";
+      max: number;
+      optional?: boolean;
+      suggestions?: string[];
+      /** The same values with what each is, for a list to pick from (a CLI path: its version and where it was found). */
+      options?: CliOption[];
+      /** An absolute path must name a file that is there (a CLI path). */
+      existing?: boolean;
+    }
   | { type: "list" }
   /** Write-only: the page sends a new value to POST /api/agents/<folder>/token and never sees the old one (3c.1). */
   | { type: "secret" }
@@ -194,7 +204,7 @@ const mtime = (file: string): number | null => {
   }
 };
 
-export function readAgentSettings(agent: LocalAgent, root: string): AgentSettings {
+export function readAgentSettings(agent: LocalAgent, root: string, clis: (type: CliType) => CliOption[] = cachedClis): AgentSettings {
   const at = (...p: string[]) => join(agent.dir, ...p);
   const config = readJson(at("aichat.config.json")) ?? {};
   const status = readJson(at(".aichat", "status.json")) ?? {};
@@ -377,6 +387,25 @@ export function readAgentSettings(agent: LocalAgent, root: string): AgentSetting
     entry.edit = field.edit;
   }
 
+  // the CLI: what is set (empty: the adapter finds it), what is installed to pick from, and what really runs
+  if (agent.type === "codex" || agent.type === "agy") {
+    const type: CliType = agent.type;
+    const entry = launch.find((i) => i.key === type)!;
+    const set = str(config[type]);
+    entry.value = set ?? null;
+    entry.note = !set ? "автоматично" : isAbsolute(set) && !existsSync(set) ? "файлу немає" : CONFIGURED;
+    const options = clis(type);
+    if (entry.edit?.type === "text") entry.edit = { ...entry.edit, suggestions: options.map((o) => o.value), options };
+    const binary = (status.binary && typeof status.binary === "object" ? status.binary : {}) as Record<string, unknown>;
+    const running = str(binary.path);
+    if (running) {
+      const source = str(binary.source);
+      const known = options.find((o) => o.value.toLowerCase() === running.toLowerCase());
+      const what = [known?.label, source ? (CLI_SOURCE[source] ?? source) : undefined].filter(Boolean).join("; ");
+      launch.push({ key: "cliNow", label: "CLI зараз", value: what ? `${running} (${what})` : running, note: ACTUAL });
+    }
+  }
+
   const started = processStart(agent);
   const changed = Math.max(...configFiles.map((f) => mtime(f) ?? 0));
   const restartNeeded = started === null ? null : changed > started;
@@ -455,6 +484,13 @@ export function editableFields(agent: LocalAgent): Record<string, EditableField>
     Object.assign(fields, {
       delivery: { section: "behavior", label: "Доставка", edit: { type: "enum", options: ["steer", "queue"] }, file: "config" },
       attachPort: { section: "launch", label: "Порт інтерактивної сесії", edit: { type: "int", min: 1024, max: 65535, optional: true }, file: "config" },
+      // the CLI the adapter runs, under its own config key; empty: the adapter finds it (alexey, 3702-3721)
+      [agent.type]: {
+        section: "launch",
+        label: agent.type === "codex" ? "CLI Codex" : "CLI Antigravity",
+        edit: { type: "text", max: 1000, optional: true, existing: true },
+        file: "config",
+      },
     } satisfies Record<string, EditableField>);
   return fields;
 }
@@ -495,6 +531,7 @@ function checked(key: string, spec: EditSpec, raw: unknown): unknown {
       if (typeof raw !== "string") return fail("має бути текст");
       if (raw.length > spec.max) fail(`не довше ${spec.max} знаків`);
       if (/[\r\n\0]/.test(raw)) fail("в один рядок");
+      if (spec.existing && isAbsolute(raw.trim()) && !existsSync(raw.trim())) fail("такого файлу немає");
       return raw.trim() || (optional ? undefined : fail("потрібне значення"));
     }
     case "list": {

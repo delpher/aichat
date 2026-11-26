@@ -177,6 +177,8 @@ export function loadConfig(file = path.resolve('aichat.config.json')) {
   // a Store update moved the CLI: use the new version's, and say so in the log when the channel starts
   const moved = relocateStoreCodex(cfg.codex);
   if (moved.from) Object.assign(cfg, { codex: moved.codex, codexMovedFrom: moved.from });
+  // where the CLI path came from, for the manager to show what really runs (alexey, AIChat 3702-3721)
+  cfg.codexSource = moved.from ? 'relocated' : raw.codex ? 'config' : process.env.CODEX_APP_RUNTIME_CLI_PATH ? 'env' : 'PATH';
   if (within(cfg.agentDir, cfg.codexHome) || within(cfg.codexHome, cfg.agentDir)) throw new Error('CODEX_HOME must be separate from the agent directory');
   if (!['steer', 'queue'].includes(cfg.delivery) || !['always', 'mention', 'never'].includes(cfg.wake)) throw new Error('Invalid delivery/wake policy');
   if (!['resume', 'new'].includes(cfg.session)) throw new Error("Invalid session policy (expected 'resume' or 'new')");
@@ -678,7 +680,8 @@ export class Channel {
     this.activityChain = Promise.resolve(); this.desiredActivity = { state: 'idle' }; this.lastActivity = 0;
     this.lastUsage = 0; this.latestUsage = null; this.notificationChain = Promise.resolve();
     this.pendingApprovals = new Map();
-    this.status = { pid: process.pid, version: VERSION, phase: 'starting', connected: false };
+    this.status = { pid: process.pid, version: VERSION, phase: 'starting', connected: false,
+      binary: { path: cfg.codex, source: cfg.codexSource ?? 'config' } };
   }
   log(event, detail = {}) {
     const record = this.http.redact(JSON.stringify({ time: nowISO(), event, ...detail })).replace(/Bearer\s+[^\s"\\]+/gi, 'Bearer [REDACTED]');
