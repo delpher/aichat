@@ -867,6 +867,51 @@ try {
     border-color: transparent;
     color: var(--accent-soft-fg);
   }
+  .note-tag.bad {
+    background: color-mix(in srgb, var(--bad) 13%, transparent);
+    border-color: transparent;
+    color: var(--bad);
+  }
+  .cli-now {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .opt-picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 2px;
+  }
+  .opt-pick {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 2px 9px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line-2);
+    background: var(--surface);
+    color: var(--text-2);
+    font-size: 11.5px;
+    line-height: 18px;
+    cursor: pointer;
+    transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+  }
+  .opt-pick:hover:not(:disabled) {
+    background: var(--hover);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line-2));
+    color: var(--text);
+  }
+  .opt-pick.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-soft-fg);
+  }
+  .opt-pick:disabled {
+    opacity: 0.48;
+    cursor: default;
+  }
   .val-code {
     display: inline-block;
     max-width: 100%;
@@ -1706,7 +1751,7 @@ const MCP_STATES = {
   failed: ["помилка", "bad", true],
   unknown: ["стан невідомий", "muted-pill", false],
 };
-const CODE_KEYS = new Set(["dir", "url", "tokenFile", "command", "start", "startCommand", "codexHome", "appDataDir", "configFile", "adapterFile", "model", "provider", "model_provider", "running"]);
+const CODE_KEYS = new Set(["dir", "url", "tokenFile", "command", "start", "startCommand", "codexHome", "appDataDir", "configFile", "adapterFile", "model", "provider", "model_provider", "running", "codex", "agy", "cliNow"]);
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const cmp = (a, b) => { const p = (v) => (v || "0").split(/[.-]/).map((x) => parseInt(x, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
@@ -2435,7 +2480,8 @@ function buildEditControl(item, row) {
     wrap.append(editor);
   } else {
     // text
-    const inp = el("input", null, "edit-input" + (key === "command" || CODE_KEYS.has(key) ? " mono" : ""));
+    const isCli = Boolean(spec.existing);
+    const inp = el("input", null, "edit-input" + (key === "command" || isCli || CODE_KEYS.has(key) ? " mono" : ""));
     inp.type = "text";
     if (typeof spec.max === "number") inp.maxLength = spec.max;
     if (key === "command" && item.note === "типова") {
@@ -2444,29 +2490,41 @@ function buildEditControl(item, row) {
     } else if (key === "model" && currentType() === "opencode") {
       // OpenCode's model reference is provider/model; its level (#high) has a field of its own (opencode-alexey, 3498)
       inp.placeholder = "провайдер/модель, без # (рівень — у полі Effort)";
+    } else if (isCli || item.note === "автоматично") {
+      inp.placeholder = "автоматично";
     } else if (spec.optional) {
       inp.placeholder = "не задано";
     }
     inp.value = editDraft[key] === null ? "" : String(editDraft[key]);
-    if (key === "command") block = true;
-    // known values to pick from; others may still be typed (a model's own names and levels)
-    if (Array.isArray(spec.suggestions) && spec.suggestions.length) {
+    if (key === "command" || isCli) block = true;
+    // known values to pick from (options with labels, or plain suggestions); others may still be typed
+    const opts = Array.isArray(spec.options) && spec.options.length
+      ? spec.options
+          .map((o) => (typeof o === "string" ? { value: o, label: "" } : { value: String(o && o.value ? o.value : ""), label: o && o.label ? String(o.label) : "" }))
+          .filter((o) => o.value)
+      : Array.isArray(spec.suggestions) && spec.suggestions.length
+        ? spec.suggestions.map((s) => ({ value: String(s), label: "" }))
+        : [];
+    if (opts.length) {
       const listId = "suggest-" + key;
       const dl = el("datalist");
       dl.id = listId;
-      for (const s of spec.suggestions) {
+      for (const opt of opts) {
         const o = el("option");
-        o.value = String(s);
+        o.value = opt.value;
+        if (opt.label) o.label = opt.label;
         dl.append(o);
       }
       inp.setAttribute("list", listId);
       wrap.append(dl);
     }
+    let syncPicks = null;
     inp.addEventListener("input", () => {
       const v = inp.value;
       const trimmed = v.trim();
       editDraft[key] = trimmed === "" && spec.optional ? null : v;
       setFieldError(key, "");
+      if (syncPicks) syncPicks();
       updateEditBar();
     });
     validate = () => {
@@ -2478,7 +2536,34 @@ function buildEditControl(item, row) {
     };
     focusEl = inp;
     wrap.append(inp);
+    if (Array.isArray(spec.options) && spec.options.length) {
+      const picks = el("div", null, "opt-picks");
+      const pickBtns = [];
+      const addPick = (label, value, title) => {
+        const b = el("button", label, "opt-pick");
+        b.type = "button";
+        if (title) b.title = title;
+        b.addEventListener("click", () => {
+          inp.value = value;
+          editDraft[key] = value === "" && spec.optional ? null : value;
+          setFieldError(key, "");
+          if (syncPicks) syncPicks();
+          updateEditBar();
+        });
+        pickBtns.push({ btn: b, value });
+        picks.append(b);
+      };
+      if (spec.optional) addPick("Автоматично", "", "Прибрати шлях із конфігу: адаптер знайде CLI сам");
+      for (const opt of opts) addPick(opt.label || opt.value, opt.value, opt.value);
+      syncPicks = () => {
+        const cur = inp.value.trim().toLowerCase();
+        for (const p of pickBtns) p.btn.classList.toggle("on", p.value.toLowerCase() === cur);
+      };
+      syncPicks();
+      wrap.append(picks);
+    }
     if (key === "command") wrap.append(el("span", "Залиште порожнім, щоб повернути типову команду запуску.", "field-hint"));
+    else if (isCli) wrap.append(el("span", "Оберіть знайдену версію, введіть шлях вручну або залиште порожнім для автопошуку.", "field-hint"));
     else if (spec.optional) wrap.append(el("span", "Порожнє значення прибирає параметр із конфігу.", "field-hint"));
   }
 
@@ -2489,7 +2574,9 @@ function buildEditControl(item, row) {
 
 function renderSettingValue(item) {
   const v = item.value;
-  if (v === null || v === undefined || v === "") return { node: el("span", "не задано", "muted"), block: false };
+  if (v === null || v === undefined || v === "") {
+    return { node: el("span", item.note === "автоматично" ? "адаптер знайде сам" : "не задано", "muted"), block: false };
+  }
   if (typeof v === "boolean") return { node: pill(v ? "так" : "ні", v ? "ok" : "muted-pill"), block: false };
   if (typeof v === "number") return { node: el("span", String(v), "mono num"), block: false };
   if (Array.isArray(v)) {
@@ -2505,6 +2592,17 @@ function renderSettingValue(item) {
     return { node: chips, block: false };
   }
   const s = String(v);
+  if (item.key === "cliNow") {
+    const m = /^(.*)\\s+\\(([^()]+)\\)$/.exec(s);
+    const box = el("div", null, "cli-now");
+    if (m) {
+      box.append(el("code", m[1], "val-code"));
+      box.append(el("span", m[2], "small muted"));
+    } else {
+      box.append(el("code", s, "val-code"));
+    }
+    return { node: box, block: true };
+  }
   if (s.includes("\\n") || s.length > 140) {
     return { node: el("pre", s, "val-pre"), block: true };
   }
@@ -2668,7 +2766,8 @@ function renderSettings(d) {
       if (rendered.block) row.classList.add("kv-block");
       const dt = el("dt", null, "kv-key");
       dt.append(el("span", item.label || item.key));
-      if (item.note) dt.append(el("span", item.note, "note-tag" + (item.note === "фактично" ? " effective" : "")));
+      const noteCls = item.note === "фактично" ? " effective" : item.note === "файлу немає" ? " bad" : "";
+      if (item.note) dt.append(el("span", item.note, "note-tag" + noteCls));
       const dd = el("dd", null, "kv-val");
       dd.append(rendered.node);
       row.append(dt, dd);
