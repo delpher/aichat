@@ -1231,19 +1231,28 @@ span.msg-where {
 .head-actions .work-toggle {
   margin-left: 0;
 }
-/* In the header the brief shares the row with the title: it takes what is left, not half the row. */
-.main-head .brief-toggle {
+/* The buttons that switch a panel on look alike: threads and work. */
+.head-actions .btn.on {
+  border-color: var(--accent);
+  color: var(--accent-soft-fg);
+  background: var(--accent-soft);
+}
+/* A room's header: the title keeps its place, the brief takes the rest and gives way first. */
+.main-head.has-bar .head-title {
   flex: 0 1 auto;
-  max-width: 42%;
+  max-width: 28%;
+}
+.main-head.has-bar .brief-toggle {
+  flex: 1 1 auto;
+  max-width: none;
 }
 /* The expanded brief: under the header, above the feed. */
 .brief-panel {
+  flex-shrink: 0;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
-.room-bar-row > .brief-label:first-child {
-  margin-left: 0;
-}
+
 .brief-toggle {
   flex: 1;
   display: flex;
@@ -1315,8 +1324,11 @@ span.msg-where {
 .brief-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-1);
   margin-top: var(--space-2);
+}
+.brief-meta > span {
+  margin-right: auto;
 }
 .brief-edit {
   display: flex;
@@ -1333,6 +1345,11 @@ span.msg-where {
 }
 .brief-count {
   margin-left: auto;
+}
+/* The panel starts right under the header: it needs its own top padding there, not the old row's. */
+.brief-panel .brief-body,
+.brief-panel .brief-edit {
+  padding-top: var(--space-3);
 }
 
 /* ---------- drawers: thread and work ---------- */

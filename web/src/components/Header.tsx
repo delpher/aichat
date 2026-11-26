@@ -95,7 +95,7 @@ export function Header({
   }
 
   return (
-    <header className="main-head">
+    <header className={`main-head${bar ? " has-bar" : ""}`}>
       <button type="button" className="icon-btn menu" onClick={onMenu} aria-label="Меню">
         <Menu size={18} />
       </button>
@@ -112,7 +112,7 @@ export function Header({
         </button>
       )}
       {actions}
-      {isChat && !bar && (
+      {isChat && !actions && (
         <button
           type="button"
           className={`icon-btn toggle${threaded ? " on" : ""}`}

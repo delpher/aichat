@@ -90,7 +90,7 @@ export function ChatView({
           actions={boardRoom ? <RoomActions room={boardRoom} workOpen={workOpen} onToggleWork={toggleWork} /> : undefined}
         />
       )}
-      {boardRoom && briefMode !== "closed" && (
+      {boardRoom && (briefMode === "edit" || (briefMode === "view" && board.brief)) && (
         <BriefPanel
           key={`${boardRoom}:${briefMode}`}
           room={boardRoom}
@@ -101,7 +101,8 @@ export function ChatView({
           onCancel={() => setBriefMode(board.brief ? "view" : "closed")}
           onSave={async (text) => {
             await board.saveBrief(text);
-            setBriefMode("view");
+            // an emptied brief has nothing to show: fold the panel away
+            setBriefMode(text.trim() ? "view" : "closed");
           }}
         />
       )}

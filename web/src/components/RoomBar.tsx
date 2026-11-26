@@ -27,7 +27,7 @@ export function RoomBar({ brief, open, onToggle, onEdit }: BarProps) {
 
   if (!brief)
     return (
-      <button type="button" className="btn quiet sm" onClick={onEdit}>
+      <button type="button" className="btn quiet sm brief-add" onClick={onEdit}>
         Додати бриф кімнати
       </button>
     );
@@ -71,6 +71,7 @@ export function RoomActions({ room, workOpen, onToggleWork }: { room: string; wo
         className={`btn sm ${threaded ? "ghost on" : "quiet"}`}
         onClick={() => setThreaded(!threaded)}
         aria-pressed={threaded}
+        aria-label="Треди"
         title={threaded ? "Відповіді згорнуті в тредах. Повторний клік поверне їх у стрічку" : "Згорнути відповіді в тредах"}
       >
         <ListTree size={16} /> <span className="hide-sm">Треди</span>
@@ -80,6 +81,7 @@ export function RoomActions({ room, workOpen, onToggleWork }: { room: string; wo
         className={`btn sm ${workOpen ? "ghost on" : "quiet"} work-toggle`}
         onClick={onToggleWork}
         aria-pressed={workOpen}
+        aria-label="Робота"
         title={`Хто що робить у #${room}`}
       >
         <ListTodo size={16} /> <span className="hide-sm">Робота</span>
