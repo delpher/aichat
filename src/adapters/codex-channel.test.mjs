@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { State, DeliveryEngine, RpcError, UncertainError, BrokerHttp, safeUploadPath, callTool, Channel, install, loadConfig } from './codex-channel.mjs';
+import { State, DeliveryEngine, RpcError, UncertainError, BrokerHttp, safeUploadPath, callTool, Channel, install, loadConfig, relocateStoreCodex } from './codex-channel.mjs';
 
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aichat-channel-'));
@@ -562,4 +562,34 @@ test('installer preserves existing files, isolates profile and MCP uses HTTP-onl
     assert.ok(frames[1].result.tools.some(tool => tool.name === 'aichat_react'));
     const closed = new Promise(accept => child.on('close', accept)); child.stdin.end(); await closed;
   } finally { child?.kill(); f.close(); }
+});
+
+test('a Store update that moved the Codex CLI: the newest installed version of the same package (alexey, AIChat 3697)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aichat-store-'));
+  const apps = path.join(root, 'WindowsApps');
+  const put = name => { const exe = path.join(apps, name, 'app', 'resources', 'codex.exe'); fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, ''); return exe; };
+  const pkg = v => `OpenAI.Codex_${v}_x64__2p2nqsd0c76g0`;
+  const old = path.join(apps, pkg('26.1117.4957.0'), 'app', 'resources', 'codex.exe');
+  const newest = put(pkg('26.1120.6357.0'));
+  put(pkg('26.999.1.0'));                          // older by number, newer as text
+  put('OpenAI.Codex_27.1.0.0_arm64__2p2nqsd0c76g0'); // another architecture is not the same package
+  fs.mkdirSync(path.join(apps, pkg('26.1200.0.0')));  // a newer folder without the CLI is skipped
+  assert.deepEqual(relocateStoreCodex(old), { codex: newest, from: old });
+  // a path that is there, a plain name and a path outside WindowsApps stay as they are
+  assert.deepEqual(relocateStoreCodex(newest), { codex: newest });
+  assert.deepEqual(relocateStoreCodex('codex.exe'), { codex: 'codex.exe' });
+  const gone = path.join(root, 'elsewhere', 'codex.exe');
+  assert.deepEqual(relocateStoreCodex(gone), { codex: gone });
+  // a normal user may not list WindowsApps: the installed packages come from the registry instead
+  const locked = { existsSync: fs.existsSync, readdirSync: () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); } };
+  assert.deepEqual(relocateStoreCodex(old, locked, () => [pkg('26.1120.6357.0'), 'Microsoft.Something_1.0.0.0_x64__abc']), { codex: newest, from: old });
+  assert.deepEqual(relocateStoreCodex(old, locked, () => []), { codex: old }, 'nothing found: the error names the configured path');
+  // and loadConfig takes the new one, keeping where it came from for the log
+  const agent = path.join(root, 'agent'); fs.mkdirSync(agent);
+  const file = path.join(agent, 'aichat.config.json');
+  fs.writeFileSync(file, JSON.stringify({ tokenFile: 't', codexHome: path.join(root, 'home'), codex: old }));
+  const cfg = loadConfig(file);
+  assert.equal(cfg.codex, newest);
+  assert.equal(cfg.codexMovedFrom, old);
+  fs.rmSync(root, { recursive: true, force: true });
 });

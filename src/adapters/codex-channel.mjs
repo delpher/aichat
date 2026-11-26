@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter, once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -125,6 +125,37 @@ export function within(root, file) {
   const relative = path.relative(root, file);
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
+/**
+ * The Codex desktop app (Microsoft Store) keeps its CLI in a folder named after its version, and an update removes
+ * the old one: a configured `...\WindowsApps\OpenAI.Codex_<version>_<arch>__<publisher>\...\codex.exe` that is gone
+ * becomes the same file in the newest installed version of that package (alexey, AIChat 3697). Anything else, and a
+ * path that is there, is left as it is. Returns { codex, from } with `from` set when it moved.
+ */
+/** The full names of the Store packages installed for this user, from the registry, which needs no admin rights. */
+function storePackages() {
+  if (process.platform !== 'win32') return [];
+  const key = 'HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages';
+  const out = spawnSync('reg.exe', ['query', key], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+  return (out.stdout || '').split(/\r?\n/).map(line => line.trim().split('\\').pop()).filter(Boolean);
+}
+
+export function relocateStoreCodex(codex, fsys = fs, packages = storePackages) {
+  const m = /^(.*[\\/]WindowsApps[\\/])OpenAI\.Codex_([\d.]+)_([^_\\/]+)__([^\\/]+)([\\/].*)$/i.exec(codex || '');
+  if (!m || fsys.existsSync(codex)) return { codex };
+  const [, root, , arch, publisher, rest] = m;
+  const version = name => name.slice('OpenAI.Codex_'.length).split('_')[0].split('.').map(Number);
+  const newer = (a, b) => { const [x, y] = [version(a), version(b)]; for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+  let names;
+  // a normal user may not list WindowsApps (EPERM); the files in it can still be read and run
+  try { names = fsys.readdirSync(root); } catch { names = packages(); }
+  const pattern = new RegExp(`^OpenAI\\.Codex_[\\d.]+_${arch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}__${publisher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+  for (const name of names.filter(n => pattern.test(n)).sort(newer)) {
+    const candidate = root + name + rest;
+    if (fsys.existsSync(candidate)) return { codex: candidate, from: codex };
+  }
+  return { codex };
+}
+
 export function loadConfig(file = path.resolve('aichat.config.json')) {
   const raw = json(file), agentDir = path.dirname(path.resolve(file));
   const url = new URL(raw.url || 'http://aichat.home:8787');
@@ -143,6 +174,9 @@ export function loadConfig(file = path.resolve('aichat.config.json')) {
     requestTimeoutMs: raw.requestTimeoutMs ?? 20000,
     codex: raw.codex || process.env.CODEX_APP_RUNTIME_CLI_PATH || (process.platform === 'win32' ? 'codex.exe' : 'codex'),
   };
+  // a Store update moved the CLI: use the new version's, and say so in the log when the channel starts
+  const moved = relocateStoreCodex(cfg.codex);
+  if (moved.from) Object.assign(cfg, { codex: moved.codex, codexMovedFrom: moved.from });
   if (within(cfg.agentDir, cfg.codexHome) || within(cfg.codexHome, cfg.agentDir)) throw new Error('CODEX_HOME must be separate from the agent directory');
   if (!['steer', 'queue'].includes(cfg.delivery) || !['always', 'mention', 'never'].includes(cfg.wake)) throw new Error('Invalid delivery/wake policy');
   if (!['resume', 'new'].includes(cfg.session)) throw new Error("Invalid session policy (expected 'resume' or 'new')");
@@ -709,6 +743,7 @@ export class Channel {
     this.me = me.name; this.intro = intro;
     this.humanOwners = this.cfg.owners.filter(owner => agents.agents?.some(a => a.name === owner && a.kind === 'human'));
     if (this.humanOwners.length !== this.cfg.owners.length) throw new Error('Configured owners must exist as human broker participants');
+    if (this.cfg.codexMovedFrom) this.log('codex_relocated', { from: this.cfg.codexMovedFrom, to: this.cfg.codex });
     this.rpc ||= new AppRpc(this.cfg);
     this.rpc.on('failure', error => { if (!this.stopping) { this.log('appserver_failed', { error: error.message }); void this.stop(error); } });
     this.rpc.on('request', frame => {
