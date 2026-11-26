@@ -413,18 +413,16 @@
     flex-wrap: wrap;
   }
   /* A room's brief goes to its own line: the title, the faces and the buttons keep the first one. */
-  .main-head .brief-toggle,
-  .main-head .brief-add {
+  .main-head .head-brief {
     order: 10;
     flex: 1 0 100%;
-    max-width: none;
   }
   .hide-sm {
     display: none;
   }
 }
 @media (max-width: 520px) {
-  .head-faces {
+  .head-people {
     display: none;
   }
 }

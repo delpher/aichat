@@ -1242,6 +1242,14 @@ span.msg-where {
   flex: 0 1 auto;
   max-width: 28%;
 }
+/* The brief's slot always takes the free space, so the faces and the buttons follow it on the right even when the
+   room has no brief yet. */
+.head-brief {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
 .main-head.has-bar .brief-toggle {
   flex: 1 1 auto;
   max-width: none;

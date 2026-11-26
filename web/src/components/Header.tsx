@@ -104,7 +104,7 @@ export function Header({
         <h1>{title}</h1>
         {sub && <p>{sub}</p>}
       </div>
-      {bar}
+      {bar && <div className="head-brief">{bar}</div>}
       {people}
       {card && (
         <button type="button" className="icon-btn" onClick={() => openAgent(card!)} aria-label={`Картка ${card}`} title={`Картка ${card}`}>
