@@ -150,6 +150,8 @@ function loadConfig(file = path.resolve("aichat.config.json")) {
     permissionCancelGraceMs: raw.permissionCancelGraceMs ?? 5000,
     permissionPromptTimeoutMs: raw.permissionPromptTimeoutMs ?? 30000,
     agy: raw.agy || process.env.AGY_CLI_PATH || (process.platform === "win32" ? "agy.exe" : "agy"),
+    // where the CLI path came from, for the manager to show what really runs (alexey, AIChat 3702-3721)
+    agySource: raw.agy ? "config" : process.env.AGY_CLI_PATH ? "env" : "PATH",
     addDirs: raw.addDirs ?? [],
   };
 
@@ -2643,7 +2645,13 @@ class Channel {
     this.capturingReplay = false;
     this.permissionWatchdog = null;
     this.attachServer = null;
-    this.status = { pid: process.pid, version: VERSION, phase: "starting", connected: false };
+    this.status = {
+      pid: process.pid,
+      version: VERSION,
+      phase: "starting",
+      connected: false,
+      binary: { path: this.cfg.agy, source: this.cfg.agySource ?? "config" },
+    };
     if (this.consoleUI) {
       this.consoleUI.redact = (v) => this.redact(v);
     }

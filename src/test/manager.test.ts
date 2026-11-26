@@ -12,6 +12,7 @@ import { overview, startManager } from "../manager/server.js";
 import { flagValue, joinCommand, opencodeModel, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, openInBrowser, pageKey, sha256, updateInfo, updateSelf, writeLauncher } from "../manager/self.js";
 import { installAgent, installInfo } from "../manager/wizard.js";
+import { findClis } from "../manager/cli.js";
 import { replaceToken } from "../manager/token.js";
 import { changeDirs, withTomlTableArray } from "../manager/dirs.js";
 import { toggleMcp, withDisabledFlag, withJsoncServerDisabled, withTomlServerEnabled } from "../manager/mcp.js";
@@ -442,10 +443,10 @@ test("manager settings: the page changes only what may be changed, checked first
   const agent = (folder: string) => agents().find((a) => a.folder === folder)!;
   const read = () => JSON.parse(readFileSync(configFile, "utf8"));
 
-  const view = readAgentSettings(agent("agy"), root);
+  const view = readAgentSettings(agent("agy"), root, () => []);
   const edits = Object.fromEntries(view.sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => [i.key, i.edit!.type]));
   assert.deepEqual(edits, {
-    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text", tokenFile: "secret", addDirs: "dirs",
+    rooms: "list", wake: "enum", paused: "bool", maxWakesPerMinute: "int", sessionTitle: "text", delivery: "enum", session: "enum", command: "text", attachPort: "int", model: "text", tokenFile: "secret", addDirs: "dirs", agy: "text",
   });
   const claudeEdits = readAgentSettings(agent("claude"), root).sections.flatMap((s) => s.items).filter((i) => i.edit).map((i) => i.key);
   assert.deepEqual(claudeEdits.sort(), ["additionalDirectories", "command", "effort", "model", "token"]);
@@ -1150,4 +1151,66 @@ test("manager on Linux: start.sh does what start.ps1 does", { skip: process.plat
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("manager CLI: installed versions to pick from, what is set, and what really runs (alexey, 3702-3721)", async (t) => {
+  // finding: every Store version newest first (from the registry), the adapter's variable, PATH; each with its version
+  const store = (v: string) => `C:\\Program Files\\WindowsApps\\OpenAI.Codex_${v}_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe`;
+  const present = new Set([store("26.1120.6357.0"), store("26.999.1.0"), "C:\\tools\\codex.exe"]);
+  const ran: string[] = [];
+  const deps = {
+    platform: "win32" as const,
+    env: { ProgramFiles: "C:\\Program Files", CODEX_APP_RUNTIME_CLI_PATH: "C:\\tools\\codex.exe" },
+    exists: (p: string) => present.has(p),
+    run: (exe: string, args: string[]) => {
+      ran.push(exe);
+      if (exe === "reg.exe")
+        return ["HKEY_CURRENT_USER\\…\\Packages\\Microsoft.Foo_1.0.0.0_x64__abc", "HKEY_CURRENT_USER\\…\\Packages\\OpenAI.Codex_26.999.1.0_x64__2p2nqsd0c76g0", "HKEY_CURRENT_USER\\…\\Packages\\OpenAI.Codex_26.1120.6357.0_x64__2p2nqsd0c76g0", "HKEY_CURRENT_USER\\…\\Packages\\OpenAI.Codex_27.0.0.0_x64__2p2nqsd0c76g0"].join("\r\n");
+      if (exe === "where.exe") return "C:\\tools\\codex.exe\r\n";
+      if (args[0] === "--version") return exe.includes("26.1120") ? "codex-cli 0.171.0\n" : null;
+      return null;
+    },
+  };
+  assert.deepEqual(findClis("codex", deps), [
+    { value: store("26.1120.6357.0"), label: "codex-cli 0.171.0 · Microsoft Store 26.1120.6357.0" },
+    { value: store("26.999.1.0"), label: "Microsoft Store 26.999.1.0" },
+    { value: "C:\\tools\\codex.exe", label: "CODEX_APP_RUNTIME_CLI_PATH" },
+  ], "numbers, not text, order versions; a package without the CLI is left out; one path once");
+  assert.ok(!ran.includes(store("27.0.0.0")), "a missing file is never run");
+  assert.deepEqual(findClis("agy", { ...deps, platform: "linux", env: {}, run: () => null }), []);
+
+  // the settings: empty means the adapter finds it; the found ones to pick from; what the adapter really runs
+  const broker = await fakeBroker();
+  t.after(() => broker.server.close());
+  const root = agentsFolder(t, broker.url);
+  const exe = join(root, "codex.exe");
+  writeFileSync(exe, "");
+  const options = [{ value: exe, label: "codex-cli 0.171.0 · Microsoft Store 26.1120.6357.0" }];
+  const agent = () => discover(root).find((a) => a.agent.folder === "codex")!.agent;
+  const launch = () => readAgentSettings(agent(), root, (type) => (type === "codex" ? options : [])).sections.find((s) => s.id === "launch")!.items;
+  const cli = () => launch().find((i) => i.key === "codex")!;
+  assert.equal(cli().value, null);
+  assert.equal(cli().note, "автоматично");
+  assert.deepEqual(cli().edit, { type: "text", max: 1000, optional: true, existing: true, suggestions: [exe], options });
+  assert.equal(launch().find((i) => i.key === "cliNow"), undefined, "nothing runs yet");
+
+  mkdirSync(join(root, "codex", ".aichat"), { recursive: true });
+  writeFileSync(join(root, "codex", ".aichat", "status.json"), JSON.stringify({ binary: { path: exe, source: "relocated" } }));
+  assert.deepEqual(launch().find((i) => i.key === "cliNow"), {
+    key: "cliNow", label: "CLI зараз", note: "фактично",
+    value: `${exe} (codex-cli 0.171.0 · Microsoft Store 26.1120.6357.0; після оновлення Store: шлях у налаштуваннях застарів)`,
+  });
+
+  // saving: a path that is there, or nothing (the adapter finds it); a missing one is refused
+  const agents = discover(root).map((a) => a.agent);
+  const config = join(root, "codex", "aichat.config.json");
+  writeFileSync(config, JSON.stringify({ url: broker.url, tokenFile: "t.txt", codexHome: join(root, "home") }));
+  assert.throws(() => writeAgentSettings(agent(), root, { codex: join(root, "gone.exe") }, agents), /такого файлу немає/);
+  writeAgentSettings(agent(), root, { codex: exe }, agents);
+  assert.equal(JSON.parse(readFileSync(config, "utf8")).codex, exe);
+  assert.equal(cli().note, "налаштовано");
+  rmSync(exe);
+  assert.equal(cli().note, "файлу немає", "a Store update took it away");
+  writeAgentSettings(agent(), root, { codex: null }, agents);
+  assert.equal(JSON.parse(readFileSync(config, "utf8")).codex, undefined, "empty: back to automatic");
 });
