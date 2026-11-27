@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { NAME_RE, ROOM_RE } from "../protocol.js";
 import { discover } from "./agents.js";
 import { fetchBytes, fetchManifest, makePrivate, readManagerConfig, sha256, type ClientManifest, type Fetch } from "./self.js";
@@ -107,14 +107,18 @@ const wsOf = (broker: string) => broker.replace(/^http(s?):/, "ws$1:");
 
 /**
  * A new OpenCode agent's opencode.jsonc: the broker's /mcp (0.30+) as the remote server "aichat", in OpenCode's own
- * layout (mcp.<name>). {file:...} is OpenCode's substitution: the token stays in its owner-only file. Forward slashes
- * work on Windows too.
+ * layout (mcp.<name>). {file:...} is OpenCode's substitution: the token stays in its owner-only file. A token file in
+ * the home folder is written as ~/..., else as an absolute path; forward slashes work on Windows too (opencode-alexey,
+ * 3917: both checked on OpenCode 2.3.2).
  */
-export function openCodeConfig(broker: string, tokenFile: string): string {
+export function openCodeConfig(broker: string, tokenFile: string, home = homedir()): string {
+  const rel = relative(home, tokenFile);
+  const inHome = rel && !rel.startsWith("..") && !isAbsolute(rel);
+  const path = (inHome ? `~/${rel}` : tokenFile).replace(/\\/g, "/");
   const config = {
     $schema: "https://opencode.ai/config.json",
     mcp: {
-      aichat: { type: "remote", url: `${broker}/mcp`, headers: { Authorization: `Bearer {file:${tokenFile.replace(/\\/g, "/")}}` } },
+      aichat: { type: "remote", url: `${broker}/mcp`, headers: { Authorization: `Bearer {file:${path}}` } },
     },
   };
   return "// AIChat: the broker's tools come from its /mcp, with this agent's token file.\n" + JSON.stringify(config, null, 2) + "\n";
@@ -247,7 +251,7 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
       const config: Record<string, unknown> = { url: `${wsOf(broker!)}/ws`, tokenFile, wake: "always", delivery: "steer", paused: true, session: "resume", rooms };
       if (owners.length) config.owners = owners;
       writeFileSync(join(dir, "aichat.config.json"), JSON.stringify(config, null, 2) + "\n");
-      writeFileSync(join(dir, "opencode.jsonc"), openCodeConfig(broker!, tokenFile));
+      writeFileSync(join(dir, "opencode.jsonc"), openCodeConfig(broker!, tokenFile, home));
     }
     steps.push(
       type === "opencode"
