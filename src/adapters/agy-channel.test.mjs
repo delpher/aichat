@@ -15,9 +15,9 @@ import {
   Channel,
   ConsoleUI,
   DeliveryEngine,
-  REACTIONS,
   RpcError,
   State,
+  TOOLS,
   UncertainError,
   attachTerminal,
   callTool,
@@ -26,6 +26,7 @@ import {
   install,
   loadConfig,
   main,
+  nameFromDisposition,
   parseConsoleCommand,
   safeUploadPath,
   sanitizeTerminal,
@@ -111,7 +112,8 @@ class FakeHttp {
     if (route === "/api/me") return { name: "antigravity-alexey", rooms: ["lobby"] };
     if (route === "/api/intro") return { intro: { ts: "2026-11-19T13:48:05.875Z", text: "hi" } };
     if (route === "/api/agents") return { agents: [{ name: "alexey", kind: "human" }] };
-    if (route === "/health") return { ok: true, version: "0.13.0" };
+    if (route === "/api/tools") return { tools: [{ name: "send_message" }, { name: "read_history" }] };
+    if (route === "/health") return { ok: true, version: "0.29.0" };
     return {};
   }
   async send(body, key) {
@@ -422,35 +424,48 @@ test("Channel permission policy approves only mcp_aichat_* when enabled and repo
   const channel = new Channel(cfg, { rpc, http, store });
   await channel.start({ probe: true });
 
-  // 1. AIChat tool -> approved
-  rpc.emit("request", {
-    id: "p1",
-    method: "session/request_permission",
-    params: {
-      sessionId: "sess-perm",
-      toolCall: { name: "mcp_aichat_aichat_send", toolCallId: "c1" },
-      options: [
-        { optionId: "allow", kind: "allow_once" },
-        { optionId: "deny", kind: "reject_once" },
-      ],
-    },
-  });
-  assert.deepEqual(rpc.sent.at(-1), { id: "p1", result: { outcome: { outcome: "selected", optionId: "allow" } } });
+  // 1. Broker MCP tools (including future server tools added without adapter edits) and local file helpers -> approved
+  for (const [id, name] of [
+    ["p1", "mcp_aichat_send_message"],
+    ["p1b", "mcp_aichat_future_wiki_search"],
+    ["p1c", "mcp_aichat_files_upload_file"],
+    ["p1d", "mcp_aichat_files_get_attachment"],
+  ]) {
+    rpc.emit("request", {
+      id,
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-perm",
+        toolCall: { name, toolCallId: `c-${id}` },
+        options: [
+          { optionId: "allow", kind: "allow_once" },
+          { optionId: "deny", kind: "reject_once" },
+        ],
+      },
+    });
+    assert.deepEqual(rpc.sent.at(-1), { id, result: { outcome: { outcome: "selected", optionId: "allow" } } });
+  }
 
-  // 2. Non-AIChat shell tool -> declined
-  rpc.emit("request", {
-    id: "p2",
-    method: "session/request_permission",
-    params: {
-      sessionId: "sess-perm",
-      toolCall: { name: "run_command", toolCallId: "c2" },
-      options: [
-        { optionId: "allow", kind: "allow_once" },
-        { optionId: "deny", kind: "reject_once" },
-      ],
-    },
-  });
-  assert.deepEqual(rpc.sent.at(-1), { id: "p2", result: { outcome: { outcome: "selected", optionId: "deny" } } });
+  // 2. Non-AIChat tools and unknown tools under aichat_files -> declined
+  for (const [id, name] of [
+    ["p2", "run_command"],
+    ["p2b", "mcp_other_send_message"],
+    ["p2c", "mcp_aichat_files_delete_all"],
+  ]) {
+    rpc.emit("request", {
+      id,
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-perm",
+        toolCall: { name, toolCallId: `c-${id}` },
+        options: [
+          { optionId: "allow", kind: "allow_once" },
+          { optionId: "deny", kind: "reject_once" },
+        ],
+      },
+    });
+    assert.deepEqual(rpc.sent.at(-1), { id, result: { outcome: { outcome: "selected", optionId: "deny" } } });
+  }
 
   // 3. Usage reporting (#2165): tokensIn = inputTokens (no cachedReadTokens), tokensOut = outputTokens (no double thoughtTokens), context.usedPct
   channel.recordContext({ used: 11607, size: 1048576 });
@@ -538,39 +553,79 @@ test("install creates config paused=true and refuses overwrite; callTool appends
     /Existing configuration/
   );
 
-  // Paused notice on aichat_send & default mode
+  // Default mode/sandbox and prefix-based allowlist
   const cfg = loadConfig(path.join(agentDir, "aichat.config.json"));
   assert.equal(cfg.mode, "accept-edits");
   assert.equal(cfg.sandbox, true);
-  const out = await callTool(cfg, "aichat_send", { room: "lobby", text: "hello" }, new FakeHttp("t0k3n"));
-  assert.match(out, /\(пауза: вхідні не приходять\)/);
-  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_aichat_send"));
-  assert.ok(!AICHAT_TOOL_ALLOWLIST.test("mcp_other_aichat_send"));
+  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_send_message"));
+  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_any_new_broker_tool"));
+  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_files_upload_file"));
+  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_files_get_attachment"));
+  assert.ok(!AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_files_other"));
+  assert.ok(!AICHAT_TOOL_ALLOWLIST.test("mcp_other_send_message"));
 });
 
-test("BrokerHttp.send journals intents, prevents blind resend on uncertain, redacts token", async (t) => {
-  const { cfg } = makeTempEnv(t);
-  const http = new BrokerHttp(cfg);
-  let attempts = 0;
-  http.request = async () => {
-    attempts++;
-    if (attempts === 1) throw new UncertainError("network reset with " + http.token);
-    return { message: { id: 55 } };
-  };
-
-  await assert.rejects(
-    () => http.send({ room: "lobby", text: "hi" }, "intent-1"),
-    (err) => err instanceof UncertainError && !err.message.includes(http.token)
+test("Local MCP exposes only upload_file and get_attachment (with Content-Disposition filename and outbox guard)", async (t) => {
+  const { root, agentDir, cfg } = makeTempEnv(t);
+  assert.deepEqual(
+    TOOLS.map((spec) => spec.name),
+    ["upload_file", "get_attachment"]
   );
-  // Same intent key must refuse blind resend while uncertain
-  await assert.rejects(() => http.send({ room: "lobby", text: "hi" }, "intent-1"), /uncertain/);
-  // Different intent key with same text IS allowed (no content dedupe!)
-  const ok = await http.send({ room: "lobby", text: "hi" }, "intent-2");
-  assert.equal(ok.message.id, 55);
-  // Repeating already-sent intent key returns cached result without re-POSTing
-  const cached = await http.send({ room: "lobby", text: "hi" }, "intent-2");
-  assert.equal(cached.message.id, 55);
-  assert.equal(attempts, 2);
+
+  // 1. upload_file uploads from outbox and returns { file_id, name, size }
+  const reportFile = path.join(agentDir, "outbox", "summary.md");
+  fs.writeFileSync(reportFile, "# ok\n", "utf8");
+  const http = new FakeHttp("tok-files");
+  http.responses.set("/api/files", () => ({ file: { id: "file-abc-123", name: "summary.md", size: 5 } }));
+
+  const uploaded = JSON.parse(await callTool(cfg, "upload_file", { path: reportFile }, http));
+  assert.deepEqual(uploaded, { file_id: "file-abc-123", name: "summary.md", size: 5 });
+  const uploadCall = http.calls.at(-1);
+  assert.equal(uploadCall.route, "/api/files");
+  assert.equal(uploadCall.opts.method, "POST");
+  assert.equal(uploadCall.opts.headers["X-Filename"], "summary.md");
+
+  // Refuses files outside outbox/tempFiles
+  const outsideFile = path.join(root, "nope.txt");
+  fs.writeFileSync(outsideFile, "secret", "utf8");
+  await assert.rejects(() => callTool(cfg, "upload_file", { path: outsideFile }, http), /only permits outbox/);
+
+  // 2. get_attachment parses Content-Disposition (RFC 5987 & plain) and preserves extension
+  assert.equal(nameFromDisposition("attachment; filename*=UTF-8''%D0%B7%D0%B2%D1%96%D1%82.pdf"), "звіт.pdf");
+  assert.equal(nameFromDisposition('attachment; filename="shot.png"'), "shot.png");
+
+  http.responses.set("/api/files/f-png-1", () => ({
+    bytes: Buffer.from("PNGDATA"),
+    contentDisposition: 'attachment; filename="diagram.png"',
+  }));
+  const got = JSON.parse(await callTool(cfg, "get_attachment", { file_id: "f-png-1" }, http));
+  assert.equal(got.size, 7);
+  assert.equal(got.name, "diagram.png");
+  assert.ok(got.path.endsWith("-diagram.png"));
+  assert.equal(fs.readFileSync(got.path, "utf8"), "PNGDATA");
+  t.after(() => {
+    try {
+      fs.unlinkSync(got.path);
+    } catch {}
+  });
+
+  // Fallback to optional name when Content-Disposition is absent
+  http.responses.set("/api/files/f-fb-2", () => ({
+    bytes: Buffer.from("PDF"),
+    contentDisposition: "",
+  }));
+  const gotFb = JSON.parse(await callTool(cfg, "get_attachment", { file_id: "f-fb-2", name: "spec.pdf" }, http));
+  assert.equal(gotFb.name, "spec.pdf");
+  assert.ok(gotFb.path.endsWith("-spec.pdf"));
+  t.after(() => {
+    try {
+      fs.unlinkSync(gotFb.path);
+    } catch {}
+  });
+
+  // 3. Server tools are no longer defined in the local adapter
+  await assert.rejects(() => callTool(cfg, "send_message", { room: "lobby", text: "hi" }, http), /Unknown tool/);
+  await assert.rejects(() => callTool(cfg, "aichat_send", { room: "lobby", text: "hi" }, http), /Unknown tool/);
 });
 
 test("DeliveryEngine respects delivery=queue and wake=mention", async (t) => {
@@ -633,7 +688,7 @@ test("Channel denies aichat tools when approveAichatTools=false and rejects wron
     method: "session/request_permission",
     params: {
       sessionId: "sess-strict",
-      toolCall: { name: "mcp_aichat_aichat_send", toolCallId: "c1" },
+      toolCall: { name: "mcp_aichat_send_message", toolCallId: "c1" },
       options: [
         { optionId: "allow", kind: "allow_once" },
         { optionId: "deny", kind: "reject_once" },
@@ -647,7 +702,7 @@ test("Channel denies aichat tools when approveAichatTools=false and rejects wron
     method: "session/request_permission",
     params: {
       sessionId: "other-session",
-      toolCall: { name: "mcp_aichat_aichat_send", toolCallId: "c2" },
+      toolCall: { name: "mcp_aichat_send_message", toolCallId: "c2" },
       options: [],
     },
   });
@@ -1301,12 +1356,24 @@ test("Console helpers: sanitizeTerminal strips ANSI/OSC 52/OSC 8, summarizeToolC
   assert.ok(!writeSummary.includes("aaaaaaaaaa"));
 
   const sendSummary = summarizeToolCall(
-    { name: "mcp_aichat_aichat_send", rawInput: { room: "lobby", text: "Hello with SECRET_TOK" } },
+    { name: "mcp_aichat_send_message", rawInput: { room: "lobby", text: "Hello with SECRET_TOK" } },
     redact
   );
   assert.match(sendSummary, /#lobby/);
   assert.ok(!sendSummary.includes("SECRET_TOK"));
   assert.ok(sendSummary.includes("[REDACTED]"));
+
+  const uploadSummary = summarizeToolCall(
+    { name: "mcp_aichat_files_upload_file", rawInput: { path: "outbox/report.pdf" } },
+    redact
+  );
+  assert.equal(uploadSummary, "mcp_aichat_files_upload_file report.pdf");
+
+  const reactSummary = summarizeToolCall(
+    { name: "mcp_aichat_react", rawInput: { msg_id: 42, emoji: "👍" } },
+    redact
+  );
+  assert.equal(reactSummary, "mcp_aichat_react #42 👍");
 
   assert.deepEqual(parseConsoleCommand("/status"), { kind: "status" });
   assert.deepEqual(parseConsoleCommand("/pause"), { kind: "pause" });
@@ -1858,26 +1925,48 @@ test("ConsoleUI redacts a secret straddling the 4096-char soft buffer cut (#2365
   assert.ok(rendered.includes("[REDACTED]"));
 });
 
-test("aichat_react MCP tool validates emoji, sends POST/DELETE, and is on AICHAT_TOOL_ALLOWLIST (#2443)", async (t) => {
-  const { cfg } = makeTempEnv(t);
-  const http = new FakeHttp("tok");
-  assert.ok(AICHAT_TOOL_ALLOWLIST.test("mcp_aichat_aichat_react"));
-  assert.equal(REACTIONS.length, 8);
+test("Channel wires Remote MCP (/mcp + Bearer) alongside local aichat_files and fails fast on pre-0.29 broker (/api/tools 404)", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
 
-  await callTool(cfg, "aichat_react", { id: 42, emoji: "👍" }, http);
-  assert.deepEqual(http.calls.at(-1), {
-    route: "/api/messages/42/reactions",
-    opts: { method: "POST", body: { emoji: "👍" } },
+  // 1. Healthy 0.29+ broker -> session/new receives Remote HTTP `aichat` + stdio `aichat_files`
+  const storeOk = new State(path.join(agentDir, ".aichat", "state-mcp-ok.json"));
+  const rpcOk = new FakeRpc();
+  rpcOk.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcOk.onRequest("session/new", () => ({ sessionId: "sess-mcp-ok" }));
+  const httpOk = new FakeHttp("tok-remote-mcp");
+
+  const chOk = new Channel(cfg, { rpc: rpcOk, http: httpOk, store: storeOk });
+  await chOk.start({ probe: true });
+
+  const newReq = rpcOk.requests.find((r) => r.method === "session/new");
+  assert.ok(newReq);
+  assert.equal(newReq.params.mcpServers.length, 2);
+  assert.deepEqual(newReq.params.mcpServers[0], {
+    type: "http",
+    name: "aichat",
+    url: "http://aichat.home/mcp",
+    headers: [{ name: "Authorization", value: "Bearer tok-remote-mcp" }],
+  });
+  assert.equal(newReq.params.mcpServers[1].name, "aichat_files");
+  assert.equal(newReq.params.mcpServers[1].command, process.execPath);
+  assert.ok(newReq.params.mcpServers[1].args.includes("mcp"));
+  await chOk.stop();
+
+  // 2. Old broker (/api/tools -> 404) -> fails fast with clear upgrade error BEFORE initializing ACP
+  const storeOld = new State(path.join(agentDir, ".aichat", "state-mcp-old.json"));
+  const rpcOld = new FakeRpc();
+  const httpOld = new FakeHttp("tok-old-broker");
+  httpOld.responses.set("/api/tools", () => {
+    const err = new Error("AIChat HTTP 404: not found");
+    err.status = 404;
+    err.definite = true;
+    throw err;
   });
 
-  await callTool(cfg, "aichat_react", { id: 42, emoji: "👍", remove: true }, http);
-  assert.deepEqual(http.calls.at(-1), {
-    route: "/api/messages/42/reactions",
-    opts: { method: "DELETE", body: { emoji: "👍" } },
-  });
-
-  await assert.rejects(() => callTool(cfg, "aichat_react", { id: 42, emoji: "🚀" }, http), /Invalid emoji/);
-  await assert.rejects(() => callTool(cfg, "aichat_react", { id: 0, emoji: "👍" }, http), /Invalid message ID/);
+  const chOld = new Channel(cfg, { rpc: rpcOld, http: httpOld, store: storeOld });
+  await assert.rejects(() => chOld.start({ probe: true }), /upgrade the broker to 0\.29\.0/i);
+  assert.equal(rpcOld.requests.length, 0);
+  await chOld.stop();
 });
 
 test("Channel ignores live reaction frames and forwards reactions_since on incoming messages without empty fields (#2443/#2445)", async (t) => {
