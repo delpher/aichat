@@ -11,7 +11,7 @@ import { adapterVersion, brokerOrigin, discover, tail } from "../manager/agents.
 import { overview, startManager } from "../manager/server.js";
 import { flagValue, joinCommand, opencodeModel, parseJsonc, parseTomlLite, readAgentSettings, splitCommand, withFlag, withTomlTop, writeAgentSettings } from "../manager/settings.js";
 import { MANAGER_VERSION, fileVersion, install, installedFile, openInBrowser, pageKey, sha256, updateInfo, updateSelf, writeLauncher } from "../manager/self.js";
-import { installAgent, installInfo } from "../manager/wizard.js";
+import { installAgent, installInfo, openCodeConfig } from "../manager/wizard.js";
 import { findClis } from "../manager/cli.js";
 import { replaceToken } from "../manager/token.js";
 import { changeDirs, withTomlTableArray } from "../manager/dirs.js";
@@ -630,12 +630,32 @@ test("manager wizard: connects an agent the broker already knows, with its token
   await tries({ type: "agy", name: "agy-bot", token: "tok-agy" }, "name", /уже є/);
 
   // OpenCode: no installer; the wizard lays the files out itself
-  const oc = await installAgent(root, { type: "opencode", name: "claude-bot", token: "tok-claude" }, deps);
+  // home: a folder the token file is not in, so the absolute form is written on any machine
+  const oc = await installAgent(root, { type: "opencode", name: "claude-bot", token: "tok-claude" }, { ...deps, home: root });
   assert.equal(readFileSync(join(root, "claude-bot", ".opencode", "plugins", "aichat-channel", "index.js"), "utf8"), "// opencode");
   assert.deepEqual(JSON.parse(readFileSync(join(root, "claude-bot", "aichat.config.json"), "utf8")), {
     url: broker.url.replace("http", "ws") + "/ws", tokenFile: join(secrets, "aichat-claude-bot.token"), wake: "always", delivery: "steer", paused: true, session: "resume", rooms: [],
   });
   assert.equal(oc.steps.length, 4);
+  // the broker's tools: /mcp as the remote server "aichat", the bearer from the token file, not the token itself
+  const ocText = readFileSync(join(root, "claude-bot", "opencode.jsonc"), "utf8");
+  assert.ok(!ocText.includes("tok-claude"), "the token is not in opencode.jsonc");
+  assert.deepEqual(parseJsonc(ocText)?.mcp, {
+    aichat: {
+      type: "remote",
+      url: broker.url + "/mcp",
+      headers: { Authorization: `Bearer {file:${join(secrets, "aichat-claude-bot.token").replace(/\\/g, "/")}}` },
+    },
+  });
+  // a token file in the home folder is written as ~/... (opencode-alexey, 3917)
+  const homeX = join(tmpdir(), "home-x");
+  const auth = (t: string) => ((parseJsonc(openCodeConfig("http://b", t, homeX))?.mcp as any).aichat.headers.Authorization as string);
+  assert.equal(auth(join(homeX, ".secrets", "aichat-a.token")), "Bearer {file:~/.secrets/aichat-a.token}");
+  const elsewhere = join(tmpdir(), "elsewhere", "a.token");
+  assert.equal(auth(elsewhere), `Bearer {file:${elsewhere.replace(/\\/g, "/")}}`);
+  // the manager's settings see it as an enabled server of the agent
+  const ocAgent = discover(root).find((a) => a.agent.folder === "claude-bot")!.agent;
+  assert.ok(readAgentSettings(ocAgent, root, () => []).mcp.some((m) => m.name === "aichat" && m.source === "opencode.jsonc" && m.enabled === true));
 
   const info = installInfo(root);
   assert.equal(info.broker, broker.url);
