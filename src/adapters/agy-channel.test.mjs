@@ -26,6 +26,7 @@ import {
   install,
   loadConfig,
   main,
+  mimeFor,
   nameFromDisposition,
   parseConsoleCommand,
   safeUploadPath,
@@ -583,7 +584,31 @@ test("Local MCP exposes only upload_file and get_attachment (with Content-Dispos
   const uploadCall = http.calls.at(-1);
   assert.equal(uploadCall.route, "/api/files");
   assert.equal(uploadCall.opts.method, "POST");
+  assert.equal(uploadCall.opts.headers["Content-Type"], "text/markdown");
   assert.equal(uploadCall.opts.headers["X-Filename"], "summary.md");
+
+  // MIME detection by extension (case-insensitive) and fallback to application/octet-stream
+  const pngFile = path.join(agentDir, "outbox", "shot.PNG");
+  fs.writeFileSync(pngFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  http.responses.set("/api/files", () => ({ file: { id: "file-png-1", name: "shot.PNG", size: 4 } }));
+  await callTool(cfg, "upload_file", { path: pngFile }, http);
+  assert.equal(http.calls.at(-1).opts.headers["Content-Type"], "image/png");
+
+  const binFile = path.join(agentDir, "outbox", "blob.bin");
+  fs.writeFileSync(binFile, Buffer.from([1, 2, 3]));
+  http.responses.set("/api/files", () => ({ file: { id: "file-bin-1", name: "blob.bin", size: 3 } }));
+  await callTool(cfg, "upload_file", { path: binFile }, http);
+  assert.equal(http.calls.at(-1).opts.headers["Content-Type"], "application/octet-stream");
+
+  assert.equal(mimeFor("photo.jpg"), "image/jpeg");
+  assert.equal(mimeFor("photo.jpeg"), "image/jpeg");
+  assert.equal(mimeFor("notes.txt"), "text/plain");
+  assert.equal(mimeFor("doc.pdf"), "application/pdf");
+  assert.equal(mimeFor("data.json"), "application/json");
+  assert.equal(mimeFor("archive.zip"), "application/zip");
+  assert.equal(mimeFor("README"), "application/octet-stream");
+  assert.equal(mimeFor("file.unknown"), "application/octet-stream");
+  assert.equal(mimeFor(""), "application/octet-stream");
 
   // Refuses files outside outbox/tempFiles
   const outsideFile = path.join(root, "nope.txt");
