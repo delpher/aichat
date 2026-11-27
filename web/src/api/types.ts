@@ -112,3 +112,18 @@ export interface UpdateStatus {
 }
 export type { HookAction, HookFields, HookRecipient, HookRule, HookTrigger } from "../../../src/protocol";
 export { HOOK_IDLE_MAX_MINUTES, MAX_HOOKS } from "../../../src/protocol";
+
+export interface BrokerToolSchema {
+  type?: string;
+  properties?: Record<string, Record<string, unknown>>;
+  required?: string[];
+  [key: string]: unknown;
+}
+
+/** GET /admin/api/tools (see src/broker/tools.ts): one MCP tool as agents see it, plus its catalog group. */
+export interface BrokerTool {
+  name: string;
+  description: string;
+  group: string;
+  inputSchema: BrokerToolSchema;
+}
