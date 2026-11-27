@@ -1,0 +1,175 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { startBroker, connect, nextMessage, tok } from "./helpers.js";
+import { MCP_SESSIONS_PER_AGENT } from "../broker/mcp.js";
+
+/** An MCP client of the broker's /mcp, as an agent runtime would connect with its token. */
+async function mcpClient(http: string, token: string) {
+  const client = new Client({ name: "test-agent", version: "0.0.1" });
+  const transport = new StreamableHTTPClientTransport(new URL(`${http}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } },
+  });
+  await client.connect(transport);
+  return { client, transport };
+}
+
+const textOf = (r: unknown) => ((r as { content: { text: string }[] }).content ?? []).map((c) => c.text).join("\n");
+
+/** One raw JSON-RPC POST to /mcp, for what an SDK client would not send. */
+function rpc(http: string, token: string | undefined, body: unknown, sid?: string) {
+  return fetch(`${http}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(sid ? { "mcp-session-id": sid } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+const INIT = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "0" } },
+};
+
+test("mcp: an agent lists the broker's tools and the catalog shows the same ones", async () => {
+  const { broker, http } = await startBroker([{ name: "a" }, { name: "boss", kind: "human", admin: true }]);
+  const { client } = await mcpClient(http, tok("a"));
+  const { tools } = await client.listTools();
+  assert.deepEqual(tools.map((t) => t.name), ["send_message", "read_history"]);
+  assert.match(tools[0].description ?? "", /reply_to/);
+
+  for (const [path, token] of [["/api/tools", tok("a")], ["/admin/api/tools", tok("boss")]]) {
+    const r = await fetch(`${http}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(r.status, 200, path);
+    const { tools: catalog } = (await r.json()) as { tools: { name: string; group: string; description: string; inputSchema: unknown }[] };
+    assert.deepEqual(
+      catalog.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+      tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+      `${path} shows the tools as agents see them`,
+    );
+    assert.ok(catalog.every((t) => t.group === "chat"));
+  }
+  await client.close();
+  await broker.close();
+});
+
+test("mcp: a missing or wrong token is refused before any session", async () => {
+  const { broker, http } = await startBroker([{ name: "a" }]);
+  for (const token of [undefined, "wrong-token-xxxxxxxxxxxxxx"]) {
+    const r = await rpc(http, token, INIT);
+    assert.equal(r.status, 401);
+    assert.match(r.headers.get("www-authenticate") ?? "", /Bearer/);
+  }
+  await broker.close();
+});
+
+test("mcp: send_message and read_history act as the token's participant, with the broker's checks", async () => {
+  const { broker, url, http } = await startBroker([{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }, { name: "c" }]);
+  const b = await connect(url, "b");
+  const { client } = await mcpClient(http, tok("a"));
+
+  const got = nextMessage(b);
+  const sent = await client.callTool({ name: "send_message", arguments: { room: "lab", text: "hello from MCP" } });
+  const id = Number(/msg_id (\d+)/.exec(textOf(sent))?.[1]);
+  const m = await got;
+  assert.equal(m.id, id);
+  assert.equal(m.from, "a", "the sender is the token's participant, not an argument");
+
+  const reply = await client.callTool({ name: "send_message", arguments: { to: "b", text: "a reply", reply_to: id } });
+  assert.ok(!reply.isError, textOf(reply));
+  const history = await client.callTool({ name: "read_history", arguments: { room: "lab" } });
+  assert.match(textOf(history), new RegExp(`\\[#${id} .*\\] a -> #lab: hello from MCP`));
+
+  // c is not in #lab: the broker refuses, and the model reads why
+  const { client: cc } = await mcpClient(http, tok("c"));
+  const denied = await cc.callTool({ name: "read_history", arguments: { room: "lab" } });
+  assert.equal(denied.isError, true);
+  assert.match(textOf(denied), /not in room lab/);
+  const none = await cc.callTool({ name: "no_such_tool", arguments: {} });
+  assert.equal(none.isError, true);
+
+  b.close();
+  await Promise.all([client.close(), cc.close()]);
+  await broker.close();
+});
+
+test("send: a repeat with the same request_id posts once, over MCP and over REST", async () => {
+  const { broker, url, http } = await startBroker([{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }]);
+  const b = await connect(url, "b");
+  const seen: number[] = [];
+  b.on("message", (m: { id: number }) => seen.push(m.id));
+  const { client } = await mcpClient(http, tok("a"));
+
+  const args = { room: "lab", text: "once", request_id: "intent-1" };
+  const first = textOf(await client.callTool({ name: "send_message", arguments: args }));
+  const again = textOf(await client.callTool({ name: "send_message", arguments: args }));
+  assert.equal(again, first, "the retry gets the first send's msg_id");
+
+  const reused = await client.callTool({ name: "send_message", arguments: { ...args, text: "something else" } });
+  assert.equal(reused.isError, true);
+  assert.match(textOf(reused), /already used for a different message/);
+  const bad = await client.callTool({ name: "send_message", arguments: { ...args, request_id: "no spaces allowed" } });
+  assert.equal(bad.isError, true);
+
+  // REST takes the same key: the logic is the broker's, not the endpoint's
+  const post = (text: string) =>
+    fetch(`${http}/api/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tok("a")}`, "content-type": "application/json" },
+      body: JSON.stringify({ room: "lab", text, request_id: "intent-2" }),
+    });
+  const r1 = (await (await post("rest once")).json()) as { message: { id: number } };
+  const r2 = (await (await post("rest once")).json()) as { message: { id: number } };
+  assert.equal(r2.message.id, r1.message.id);
+  assert.equal((await post("rest changed")).status, 409);
+
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(seen.length, 2, "b got each message once");
+  b.close();
+  await client.close();
+  await broker.close();
+});
+
+test("mcp: sessions belong to their participant; an unknown one is 404, a changed token is 401", async () => {
+  const { broker, http, replaceConfig } = await startBroker([{ name: "a" }, { name: "b" }]);
+  const r = await rpc(http, tok("a"), INIT);
+  assert.equal(r.status, 200);
+  const sid = r.headers.get("mcp-session-id")!;
+  assert.ok(sid);
+  await r.body?.cancel();
+  const list = { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} };
+
+  // b cannot use a's session, and a session the broker forgot (a restart) is 404: the client opens a new one
+  assert.equal((await rpc(http, tok("b"), list, sid)).status, 404);
+  assert.equal((await rpc(http, tok("a"), list, "0f0e0d0c-0000-4000-8000-000000000000")).status, 404);
+
+  // a's token changes in agents.json: the open session stops at the next request
+  replaceConfig((raw) => {
+    raw.agents.find((x) => x.name === "a")!.token = "a-new-token-xxxxxxxxxxxxx";
+  });
+  assert.equal((await rpc(http, tok("a"), list, sid)).status, 401);
+  await broker.close();
+});
+
+test("mcp: each participant has at most MCP_SESSIONS_PER_AGENT sessions; the oldest closes first", async () => {
+  const { broker, http } = await startBroker([{ name: "a" }]);
+  const sids: string[] = [];
+  for (let i = 0; i <= MCP_SESSIONS_PER_AGENT; i++) {
+    const r = await rpc(http, tok("a"), INIT);
+    sids.push(r.headers.get("mcp-session-id")!);
+    await r.body?.cancel();
+  }
+  const list = { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} };
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await rpc(http, tok("a"), list, sids[0])).status, 404, "the oldest session was closed");
+  const newest = await rpc(http, tok("a"), list, sids.at(-1));
+  assert.equal(newest.status, 200);
+  await newest.body?.cancel();
+  await broker.close();
+});
