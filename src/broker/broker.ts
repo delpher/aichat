@@ -51,6 +51,9 @@ import {
   type UsageReport,
   type ServerFrame,
   type WorldLimits,
+  type AgentNote,
+  type RoomBrief,
+  type WorldIntro,
 } from "../protocol.js";
 
 /** An agent busy or waiting with no news for this long is taken to be idle. */
@@ -729,7 +732,12 @@ export class Broker {
   }
 
   /** The current limits of the world, as agents see them next to the intro. */
-  private worldLimits(): WorldLimits {
+  /** The intro as it is now (world_info, GET /api/intro). */
+  intro(): WorldIntro {
+    return this.context.intro();
+  }
+
+  worldLimits(): WorldLimits {
     const { maxHops, ratePerMinute, maxTextLength, maxFileSizeMB } = this.cfg;
     return { maxHops, ratePerMinute, maxTextLength, maxFileSizeMB };
   }
@@ -825,7 +833,7 @@ export class Broker {
    * POST /api/status: what the agent works on and where, in its own words: {topic, room?} or {topic, with?}.
    * An empty topic clears it. Without a place, the conversation of its latest message is used.
    */
-  private reportStatus(agent: string, b: Record<string, unknown>): AgentActivity | null {
+  reportStatus(agent: string, b: Record<string, unknown>): AgentActivity | null {
     if (typeof b.topic !== "string") throw new BrokerError("topic must be a string (empty to clear)");
     const topic = b.topic.trim().replace(/\s+/g, " ");
     if (topic.length > MAX_STATUS_TOPIC) throw new BrokerError(`topic is longer than ${MAX_STATUS_TOPIC} characters`);
@@ -1306,7 +1314,7 @@ export class Broker {
           notes: this.context.stats(me),
           ...(agent.kind === "human" ? { accounts: agent.accounts?.length ?? 0 } : {}),
         });
-      if (route === "GET /api/intro") return reply(200, { intro: this.context.intro(), limits: this.worldLimits() });
+      if (route === "GET /api/intro") return reply(200, { intro: this.intro(), limits: this.worldLimits() });
       if (route === "GET /api/tools") return reply(200, { tools: toolCatalog() });
       if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
       const notesOf = url.pathname.match(/^\/api\/agents\/([^/]+)\/notes$/);
@@ -1452,17 +1460,41 @@ export class Broker {
 
   // ---------------- agent notebook ----------------
 
+  /** The notebook as its owner reads it (REST and MCP): matching notes, how many there are, the limit. */
+  notes(me: string, q: { q?: string | null; topic?: string | null } = {}) {
+    return { notes: this.context.notes(me, q), ...this.context.stats(me), max: this.cfg.maxNotes };
+  }
+
+  note(me: string, id: number): AgentNote {
+    return this.context.note(me, id);
+  }
+
+  /** A written note counts as real activity, as a message does. */
+  rememberNote(me: string, body: Record<string, unknown>): AgentNote {
+    const note = this.context.remember(me, body);
+    this.hooks.realActivity(me);
+    return note;
+  }
+
+  changeNote(me: string, id: number, body: Record<string, unknown>): AgentNote {
+    const note = this.context.change(me, id, body);
+    this.hooks.realActivity(me);
+    return note;
+  }
+
+  forgetNote(me: string, id: number) {
+    this.context.forget(me, id);
+    this.hooks.realActivity(me);
+  }
+
   /** GET /api/notes?q=&topic= (own notes), POST /api/notes, PUT and DELETE /api/notes/<id>. */
   private async onNotesRequest(req: IncomingMessage, url: URL, me: string, reply: (status: number, body: unknown) => void) {
     if (url.pathname === "/api/notes") {
       if (req.method === "GET") {
-        const notes = this.context.notes(me, { q: url.searchParams.get("q"), topic: url.searchParams.get("topic") });
-        return reply(200, { notes, ...this.context.stats(me), max: this.cfg.maxNotes });
+        return reply(200, this.notes(me, { q: url.searchParams.get("q"), topic: url.searchParams.get("topic") }));
       }
       if (req.method === "POST") {
-        const note = this.context.remember(me, await readJson(req));
-        this.hooks.realActivity(me);
-        return reply(201, { note });
+        return reply(201, { note: this.rememberNote(me, await readJson(req)) });
       }
       return reply(405, { error: "use GET or POST" });
     }
@@ -1470,14 +1502,9 @@ export class Broker {
     if (!m) return reply(404, { error: "not found" });
     const id = Number(m[1]);
     if (req.method === "GET") return reply(200, { note: this.context.note(me, id) });
-    if (req.method === "PUT") {
-      const note = this.context.change(me, id, await readJson(req));
-      this.hooks.realActivity(me);
-      return reply(200, { note });
-    }
+    if (req.method === "PUT") return reply(200, { note: this.changeNote(me, id, await readJson(req)) });
     if (req.method === "DELETE") {
-      this.context.forget(me, id);
-      this.hooks.realActivity(me);
+      this.forgetNote(me, id);
       return reply(200, { ok: true });
     }
     return reply(405, { error: "use GET, PUT or DELETE" });
@@ -1486,19 +1513,31 @@ export class Broker {
   // ---------------- room briefs ----------------
 
   private async onBriefRequest(req: IncomingMessage, me: string, reply: (status: number, body: unknown) => void, path: RegExpMatchArray) {
+    let room: string;
     try {
-      let room: string;
-      try {
-        room = decodeURIComponent(path[1]);
-      } catch {
-        throw new BrokerError("invalid room name");
-      }
-      if (req.method === "GET") return reply(200, { brief: this.board.brief(me, room) });
-      if (req.method === "PUT") return reply(200, { brief: this.board.setBrief(me, room, (await readJson(req)).text) });
-      return reply(405, { error: "use GET or PUT" });
+      room = decodeURIComponent(path[1]);
+    } catch {
+      throw new BrokerError("invalid room name");
+    }
+    if (req.method === "GET") return reply(200, { brief: this.roomBrief(me, room) });
+    if (req.method === "PUT") return reply(200, { brief: this.setRoomBrief(me, room, (await readJson(req)).text) });
+    return reply(405, { error: "use GET or PUT" });
+  }
+
+  /** A room's brief, for a member (REST and MCP). */
+  roomBrief(me: string, room: string): RoomBrief | null {
+    try {
+      return this.board.brief(me, room);
     } catch (e) {
-      if (e instanceof BoardError) throw new BrokerError(e.message, e.status);
-      throw e;
+      throw e instanceof BoardError ? new BrokerError(e.message, e.status) : e;
+    }
+  }
+
+  setRoomBrief(me: string, room: string, text: unknown): RoomBrief | null {
+    try {
+      return this.board.setBrief(me, room, text);
+    } catch (e) {
+      throw e instanceof BoardError ? new BrokerError(e.message, e.status) : e;
     }
   }
 
