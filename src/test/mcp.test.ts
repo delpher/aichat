@@ -41,7 +41,10 @@ test("mcp: an agent lists the broker's tools and the catalog shows the same ones
   const { broker, http } = await startBroker([{ name: "a" }, { name: "boss", kind: "human", admin: true }]);
   const { client } = await mcpClient(http, tok("a"));
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name), ["send_message", "read_history"]);
+  assert.deepEqual(tools.map((t) => t.name), [
+    "send_message", "read_history", "react", "thank", "list_agents", "set_status",
+    "join_room", "leave_room", "room_info", "set_room_brief", "remember", "recall", "forget", "world_info",
+  ]);
   assert.match(tools[0].description ?? "", /reply_to/);
 
   for (const [path, token] of [["/api/tools", tok("a")], ["/admin/api/tools", tok("boss")]]) {
@@ -53,7 +56,7 @@ test("mcp: an agent lists the broker's tools and the catalog shows the same ones
       tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
       `${path} shows the tools as agents see them`,
     );
-    assert.ok(catalog.every((t) => t.group === "chat"));
+    assert.deepEqual([...new Set(catalog.map((t) => t.group))], ["chat", "rooms", "notes", "world"]);
   }
   await client.close();
   await broker.close();
@@ -171,5 +174,54 @@ test("mcp: each participant has at most MCP_SESSIONS_PER_AGENT sessions; the old
   const newest = await rpc(http, tok("a"), list, sids.at(-1));
   assert.equal(newest.status, 200);
   await newest.body?.cancel();
+  await broker.close();
+});
+
+test("mcp: notebook, reactions, rooms, status and intro tools act as the caller, with the broker's checks", async () => {
+  const { broker, url, http } = await startBroker([{ name: "a", rooms: ["lab"] }, { name: "b", rooms: ["lab"] }, { name: "c" }]);
+  const b = await connect(url, "b");
+  const { client: a } = await mcpClient(http, tok("a"));
+  const { client: c } = await mcpClient(http, tok("c"));
+  const call = async (client: Client, name: string, args: Record<string, unknown> = {}) => {
+    const r = await client.callTool({ name, arguments: args });
+    return { error: r.isError === true, text: textOf(r) };
+  };
+
+  // notebook: a's own, invisible to c
+  const saved = await call(a, "remember", { title: "Lab rules", description: "Short answers in #lab.", topic: "lab" });
+  assert.match(saved.text, /^remembered #(\d+) \[lab\] Lab rules/);
+  const id = Number(/#(\d+)/.exec(saved.text)![1]);
+  assert.match((await call(a, "recall", { query: "short" })).text, /^1 of 1 notes .*\n#\d+ \[lab\] Lab rules/s);
+  assert.match((await call(a, "remember", { id, description: "Very short answers in #lab." })).text, /^changed/);
+  assert.match((await call(a, "recall", { id })).text, /Very short answers/);
+  assert.equal((await call(c, "recall", { id })).error, true, "another participant's note is unknown");
+  assert.match((await call(a, "forget", { id })).text, /forgot note/);
+  assert.match((await call(a, "recall")).text, /^0 of 0 notes/);
+
+  // reactions and thanks on b's message; c does not see it
+  const m = await b.send({ room: "lab", text: "a useful message" });
+  assert.equal((await call(a, "react", { msg_id: m, emoji: "👍" })).text, `put 👍 on #${m} (reactions now: 👍 1)`);
+  assert.match((await call(a, "react", { msg_id: m, emoji: "👍", remove: true })).text, /took back/);
+  assert.match((await call(a, "thank", { msg_id: m })).text, /thanked by: a/);
+  assert.equal((await call(c, "thank", { msg_id: m })).error, true);
+  assert.equal((await call(a, "react", { msg_id: "x", emoji: "👍" })).error, true, "a non-id is refused before the broker");
+
+  // rooms and briefs
+  assert.match((await call(a, "set_room_brief", { room: "lab", text: "# Lab\nBe brief." })).text, /brief of #lab updated/);
+  const joined = await call(c, "join_room", { room: "#lab" });
+  assert.match(joined.text, /^joined #lab\n\n#lab\n\nBrief \(by a\):\n# Lab\nBe brief\.\n\nMembers: .*c/s);
+  assert.match((await call(c, "room_info", { room: "lab" })).text, /Members: .*a.*b.*c/);
+  assert.match((await call(c, "leave_room", { room: "lab" })).text, /left #lab/);
+  assert.equal((await call(c, "room_info", { room: "lab" })).error, true, "a non-member does not read the brief");
+
+  // status, the participant list, the intro
+  assert.match((await call(a, "set_status", { topic: "mcp tools", room: "lab" })).text, /status: mcp tools in #lab/);
+  assert.match((await call(a, "set_status", { topic: "" })).text, /status cleared/);
+  assert.equal((await call(c, "set_status", { topic: "x", room: "lab" })).error, true, "c is no longer in #lab");
+  assert.match((await call(a, "list_agents")).text, /^a \(you\) \[test\]/m);
+  assert.match((await call(a, "world_info")).text, /^Intro version: [\s\S]*Limits now: a reply chain stops after 8 replies/);
+
+  b.close();
+  await Promise.all([a.close(), c.close()]);
   await broker.close();
 });
