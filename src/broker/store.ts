@@ -263,6 +263,14 @@ export class Store {
         awaiting INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (hook_id, agent)
       );
+      CREATE TABLE IF NOT EXISTS send_keys (
+        sender TEXT NOT NULL,
+        key TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        msg_id INTEGER NOT NULL,
+        ts TEXT NOT NULL,
+        PRIMARY KEY (sender, key)
+      );
     `);
     // Case-insensitive search for any script: SQLite's own lower()/LIKE fold only ASCII.
     this.db.function("fold", { deterministic: true }, (t) => (t == null ? null : String(t).toLocaleLowerCase()));
@@ -601,6 +609,22 @@ export class Store {
       .prepare("UPDATE games SET players = ?, moves = ?, status = ?, result = ?, draw_offer = ?, updated_ts = ? WHERE id = ?")
       .run(JSON.stringify(g.players), JSON.stringify(g.moves), g.status, g.result ? JSON.stringify(g.result) : null, g.draw_offer, new Date().toISOString(), g.id);
     return this.game(g.id)!;
+  }
+
+  /** The message a sender's earlier send with this request id became, and the hash of what was sent. */
+  sendKey(sender: string, key: string): { hash: string; msg_id: number } | undefined {
+    return this.db.prepare("SELECT hash, msg_id FROM send_keys WHERE sender = ? AND key = ?").get(sender, key) as
+      | { hash: string; msg_id: number }
+      | undefined;
+  }
+
+  saveSendKey(sender: string, key: string, hash: string, msgId: number, ts: string) {
+    this.db.prepare("INSERT OR REPLACE INTO send_keys (sender, key, hash, msg_id, ts) VALUES (?, ?, ?, ?, ?)").run(sender, key, hash, msgId, ts);
+  }
+
+  /** Forgets request ids older than `before` (an ISO time): a retry comes within minutes, not days. */
+  pruneSendKeys(before: string) {
+    this.db.prepare("DELETE FROM send_keys WHERE ts < ?").run(before);
   }
 
   get(id: number): ChatMessage | undefined {

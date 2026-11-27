@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,6 +25,8 @@ import { GAME_ROOM_RE, GAME_SENDER, GameError, Games, SYSTEM_SENDER, gameRoom } 
 import { greeting, groupByRoom, wakeNotice, wakeText, type WakeInfo } from "./wake.js";
 import { GAMES, type GameDefinition } from "../games/index.js";
 import { Board, BoardError } from "./board.js";
+import { McpEndpoint } from "./mcp.js";
+import { toolCatalog } from "./tools.js";
 import { HookError, Hooks, TICK_MS } from "./hooks.js";
 import { Context, ContextError } from "./context.js";
 import { UsageError, accountHashes, checkUsage } from "./usage.js";
@@ -129,7 +131,16 @@ interface SendArgs {
   reply_to?: number;
   /** Ids of files the sender uploaded and has not attached yet. */
   attachments?: unknown;
+  /**
+   * One send intent: a retry with the same id (after a timeout, a lost connection) returns the message the
+   * first send made instead of posting it twice. Reusing the id for a different message is refused.
+   */
+  request_id?: unknown;
 }
+
+export const REQUEST_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+/** How long a request id protects against a repeat. */
+const SEND_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** A file name safe to store and to put in a Content-Disposition header. */
 export function cleanFileName(raw: string | undefined): string {
@@ -206,6 +217,8 @@ export class Broker {
   private retryTimer?: NodeJS.Timeout;
   private cleanupTimer?: NodeJS.Timeout;
   private configTimer?: NodeJS.Timeout;
+  /** The AIChat tools over MCP (/mcp). */
+  private mcp: McpEndpoint;
   /** The token each live socket authenticated with, to notice when it is no longer valid. */
   private socketTokens = new WeakMap<WebSocket, string>();
   private seenAgents?: AgentConfig[];
@@ -263,6 +276,7 @@ export class Broker {
       maxTextLength: () => this.cfg.maxTextLength,
       log: (line) => this.log(line),
     });
+    this.mcp = new McpEndpoint({ host: this, version: VERSION, now: () => this.now(), log: (m) => this.log(m) });
     this.syncConfiguredRooms();
   }
 
@@ -327,6 +341,26 @@ export class Broker {
   // ---------------- core operations ----------------
 
   send(from: string, args: SendArgs): ChatMessage {
+    let key: { id: string; hash: string } | undefined;
+    if (args.request_id != null && args.request_id !== "") {
+      if (typeof args.request_id !== "string" || !REQUEST_ID_RE.test(args.request_id))
+        throw new BrokerError("request_id must be 1..128 characters: letters, digits, . _ : -");
+      const { to, room, text, reply_to, attachments } = args;
+      const hash = createHash("sha256").update(JSON.stringify([to ?? null, room ?? null, text ?? null, reply_to ?? null, attachments ?? null])).digest("hex");
+      const earlier = this.store.sendKey(from, args.request_id);
+      if (earlier) {
+        if (earlier.hash !== hash) throw new BrokerError("request_id was already used for a different message", 409);
+        const m = this.store.get(earlier.msg_id);
+        if (m) return m;
+      }
+      key = { id: args.request_id, hash };
+    }
+    const msg = this.post(from, args);
+    if (key) this.store.saveSendKey(from, key.id, key.hash, msg.id, new Date(this.now()).toISOString());
+    return msg;
+  }
+
+  private post(from: string, args: SendArgs): ChatMessage {
     const cfg = this.cfg;
     const text = typeof args.text === "string" ? args.text : "";
     const attachments = this.claimableFiles(from, args.attachments);
@@ -595,6 +629,7 @@ export class Broker {
 
   /** Deletes uploads never attached within a day, and files whose message was deleted. */
   async cleanFiles(now = Date.now()): Promise<number> {
+    this.store.pruneSendKeys(new Date(now - SEND_KEY_TTL_MS).toISOString());
     const stale = this.store.staleFiles(new Date(now - UNATTACHED_FILE_TTL_MS).toISOString());
     for (const id of stale) {
       await rm(join(this.filesDir, id), { force: true });
@@ -1251,6 +1286,7 @@ export class Broker {
       if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/")))
         return await this.serveStatic(url.pathname, res);
       if (url.pathname.startsWith("/admin/api/")) return await this.onAdminRequest(req, res, url, reply);
+      if (url.pathname === "/mcp") return await this.onMcpRequest(req, res);
       if (!url.pathname.startsWith("/api/")) return reply(404, { error: "not found" });
       const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
       const agent = this.authenticate(token);
@@ -1271,6 +1307,7 @@ export class Broker {
           ...(agent.kind === "human" ? { accounts: agent.accounts?.length ?? 0 } : {}),
         });
       if (route === "GET /api/intro") return reply(200, { intro: this.context.intro(), limits: this.worldLimits() });
+      if (route === "GET /api/tools") return reply(200, { tools: toolCatalog() });
       if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
       const notesOf = url.pathname.match(/^\/api\/agents\/([^/]+)\/notes$/);
       if (req.method === "GET" && notesOf) return reply(200, { notes: this.context.notesOf(me, decodeURIComponent(notesOf[1])) });
@@ -1340,6 +1377,28 @@ export class Broker {
       const status = e instanceof BrokerError || e instanceof ContextError || e instanceof UsageError ? e.status : 500;
       if (status === 500) this.log(`HTTP error: ${(e as Error).stack}`);
       return reply(status, { error: (e as Error).message });
+    }
+  }
+
+  /**
+   * /mcp: the AIChat tools over MCP (Streamable HTTP) for a participant with a bearer token. The token is
+   * checked on every request, as on /api/; the endpoint answers in JSON-RPC, so its errors are written here.
+   */
+  private async onMcpRequest(req: IncomingMessage, res: ServerResponse) {
+    const agent = this.authenticate(req.headers.authorization?.replace(/^Bearer\s+/i, ""));
+    if (!agent) {
+      res.writeHead(401, { "content-type": "application/json", "www-authenticate": 'Bearer realm="aichat"' });
+      return res.end(JSON.stringify({ error: "invalid or missing bearer token" }));
+    }
+    try {
+      const body = req.method === "POST" ? await readJson(req) : undefined;
+      await this.mcp.handle(req, res, agent.name, body);
+    } catch (e) {
+      const status = e instanceof BrokerError ? e.status : 500;
+      if (status === 500) this.log(`MCP error: ${(e as Error).stack}`);
+      if (res.headersSent) return res.end();
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: (e as Error).message }, id: null }));
     }
   }
 
@@ -1553,6 +1612,7 @@ export class Broker {
         const c = this.cfg.agents.find((x) => x.name === a.name);
         return { ...a, webhook: !!c?.webhook, admin: !!c?.admin };
       });
+    if (route === "GET /admin/api/tools") return reply(200, { tools: toolCatalog() });
     if (route === "GET /admin/api/overview")
       return reply(200, {
         me,
@@ -2015,7 +2075,10 @@ export class Broker {
     this.configTimer.unref();
     this.retryTimer.unref();
     void this.flushWebhooks();
-    const clean = () => this.cleanFiles().catch((e) => this.log(`file cleanup failed: ${(e as Error).message}`));
+    const clean = () => {
+      this.mcp.sweep();
+      return this.cleanFiles().catch((e) => this.log(`file cleanup failed: ${(e as Error).message}`));
+    };
     this.cleanupTimer = setInterval(clean, 60 * 60 * 1000);
     this.cleanupTimer.unref();
     this.activityTimer = setInterval(() => this.expireActivity(), 60 * 1000);
@@ -2050,6 +2113,7 @@ export class Broker {
     for (const name of this.sockets.keys()) this.store.setLastSeen(name, now);
     for (const set of this.sockets.values()) for (const ws of set) ws.terminate();
     for (const ws of this.observers.keys()) ws.terminate();
+    await this.mcp.close();
     await new Promise<void>((r) => (this.wss ? this.wss.close(() => r()) : r()));
     await new Promise<void>((r) => (this.http ? this.http.close(() => r()) : r()));
     await Promise.all(this.webhookChains.values());
