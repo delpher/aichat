@@ -1012,357 +1012,68 @@ function startChannel(ctx, cfg, state) {
   };
 }
 
-function registerTools(ctx, cfg, state) {
+/**
+ * The plugin's own tools: only the two local file utilities. Every server tool of AIChat lives on the broker and
+ * reaches OpenCode through the `aichat` MCP server in `opencode.jsonc` (AIChat 3858-3869).
+ */
+function registerTools(ctx, cfg) {
   const requireToken = () => {
     if (!cfg.token) throw new Error("немає токена AIChat: поклади його у " + cfg.tokenFile);
     return cfg;
   };
-  // у паузі вхідні не приходять — нагадуємо про це у відповідях на відправку
-  const pauseNote = cfg.paused ? " (пауза: вхідні не приходять)" : "";
+  const agentDir = () => path.resolve(ctx.location?.directory || process.cwd());
+  const outbox = () => path.join(agentDir(), "outbox");
+  const tempDir = () => path.join(tmpdir(), "aichat-files");
+  const toReal = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const within = (dir, file) => {
+    const rel = path.relative(dir, file);
+    return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel);
+  };
+  const looksSecret = (base) =>
+    /(^|[._-])(token|secret|secrets|key|keys|creds|credentials|password|passwd)([._-]|$)/.test(base) ||
+    base === ".env" ||
+    base.startsWith(".env.");
 
   return ctx.tool.transform((editor) => {
     editor.namespace({
-      name: "aichat",
-      description: "AIChat: кімнати, особисті повідомлення, реакції, учасники, статус, нотатник",
+      name: "aichat_files",
+      description: "AIChat: локальні файли — вивантажити файл у брокер і зберегти вкладення з чату",
     });
 
     editor.add({
-      name: "send",
+      name: "upload_file",
       description:
-        "Надіслати повідомлення в AIChat — у кімнату (room) або особисто (to). Для відповіді передавай reply_to з id вхідного повідомлення. Посилання в тексті: @ім'я (учасник), #кімната (кімната), [[msg:1234]] (повідомлення 1234 у цій розмові), [[msg:lobby/1234]] або [[msg:@ім'я/1234]] (у кімнаті чи особистих), [[room:lobby]], [[user:ім'я]]. Голе #1234 — просто текст. reply_to прив'язує відповідь до повідомлення, а [[msg:...]] лише вставляє посилання в текст.",
+        "Вивантажити локальний файл у брокер AIChat і отримати file_id для send_message(attachments=[...]). Лише з теки outbox агента або з тимчасової теки вкладень.",
       input: {
         type: "object",
-        properties: {
-          text: { type: "string", description: "Текст повідомлення" },
-          room: { type: "string", description: "Кімната, напр. lobby" },
-          to: { type: "string", description: "Ім'я учасника для особистого повідомлення" },
-          reply_to: { type: "number", description: "id повідомлення, на яке відповідаєш" },
-          attachments: {
-            type: "array",
-            items: { type: "string" },
-            description: "id файлів, уже завантажених у AIChat (див. aichat_file_send)",
-          },
-        },
-        required: ["text"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const hasTo = Boolean(input.to);
-        const hasRoom = Boolean(input.room);
-        if (hasTo === hasRoom) throw new Error("вкажи рівно одне з полів: to або room");
-        const body = { text: String(input.text) };
-        if (hasTo) body.to = String(input.to);
-        if (hasRoom) body.room = String(input.room).replace(/^#/, "");
-        if (input.reply_to) body.reply_to = Number(input.reply_to);
-        if (Array.isArray(input.attachments) && input.attachments.length) body.attachments = input.attachments.map(String);
-        const res = await apiRequest(c, "/api/messages", { method: "POST", body, signal: context?.signal });
-        const id = res?.message?.id ?? res?.id;
-        if (hasRoom) state.rooms = [...new Set([...state.rooms, String(input.room).replace(/^#/, "")])];
-        return { content: (id ? `надіслано, id ${id}` : "надіслано") + pauseNote };
-      },
-    });
-
-    editor.add({
-      name: "read",
-      description: "Прочитати історію AIChat: кімнати (room) або особистої розмови (with).",
-      input: {
-        type: "object",
-        properties: {
-          room: { type: "string", description: "Кімната" },
-          with: { type: "string", description: "Ім'я учасника для особистої розмови" },
-          limit: { type: "number", description: "Скільки останніх повідомлень (1..500, типово 20)" },
-          before: { type: "number", description: "Гортати назад: id, перед яким читати" },
-        },
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        if (Boolean(input.room) === Boolean(input.with)) throw new Error("вкажи рівно одне з полів: room або with");
-        const params = new URLSearchParams();
-        if (input.room) params.set("room", String(input.room).replace(/^#/, ""));
-        if (input.with) params.set("with", String(input.with));
-        params.set("limit", String(Math.min(Math.max(Number(input.limit) || 20, 1), 500)));
-        if (input.before) params.set("before", String(Number(input.before)));
-        const res = await apiRequest(c, `/api/history?${params}`, { signal: context?.signal });
-        const messages = Array.isArray(res?.messages) ? res.messages : [];
-        if (!messages.length) return { content: "порожньо" };
-        const out = messages.map((m) => {
-          const where = m.room ? `#${m.room}` : "особисте";
-          const reply = m.reply_to ? ` (↩${m.reply_to})` : "";
-          const files =
-            Array.isArray(m.attachments) && m.attachments.length
-              ? ` [вкладення: ${m.attachments
-                  .map((a) => `${a.name ?? "файл"} (id ${a.id}, ${a.mime ?? "?"}, ${a.size ?? "?"})`)
-                  .join(", ")}]`
-              : "";
-          const reactions =
-            m.reactions && typeof m.reactions === "object"
-              ? Object.entries(m.reactions)
-                  .filter(([, who]) => Array.isArray(who) && who.length)
-                  .map(([emoji, who]) => `${emoji} ${who.join(", ")}`)
-                  .join("; ")
-              : "";
-          return `[${m.id}] ${m.ts ?? ""} ${where} ${m.from}${reply}: ${m.text}${files}${
-            reactions ? ` [реакції: ${reactions}]` : ""
-          }`;
-        });
-        return { content: out.join("\n") };
-      },
-    });
-
-    editor.add({
-      name: "react",
-      description:
-        "Поставити або зняти реакцію на повідомлення AIChat (не на своє). Реакція не будить інших агентів — це лише позначка.",
-      input: {
-        type: "object",
-        properties: {
-          id: { type: "number", description: "id повідомлення" },
-          emoji: { type: "string", enum: REACTIONS, description: `Одне з: ${REACTIONS.join(" ")}` },
-          remove: { type: "boolean", description: "true — зняти свою реакцію" },
-        },
-        required: ["id", "emoji"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const id = Number(input.id);
-        if (!Number.isSafeInteger(id) || id <= 0) throw new Error("id має бути додатним цілим");
-        const emoji = String(input.emoji);
-        if (!REACTIONS.includes(emoji)) throw new Error(`emoji має бути одним із: ${REACTIONS.join(" ")}`);
-        const remove = input.remove === true;
-        const res = await apiRequest(c, `/api/messages/${id}/reactions`, {
-          method: remove ? "DELETE" : "POST",
-          body: { emoji },
-          signal: context?.signal,
-        });
-        const reactions = res?.reactions && typeof res.reactions === "object" ? res.reactions : {};
-        const summary = Object.entries(reactions)
-          .filter(([, who]) => Array.isArray(who) && who.length)
-          .map(([e, who]) => `${e} ${who.join(", ")}`)
-          .join("; ");
-        return {
-          content:
-            `${remove ? "знято" : "поставлено"} ${emoji} на #${id}` +
-            (summary ? `: ${summary}` : "") +
-            pauseNote,
-        };
-      },
-    });
-
-    editor.add({
-      name: "agents",
-      description: "Хто є в AIChat: онлайн/офлайн, кімнати, чим зайняті.",
-      input: { type: "object", properties: {}, additionalProperties: false },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (_input, context) => {
-        const c = requireToken();
-        const res = await apiRequest(c, "/api/agents", { signal: context?.signal });
-        const agents = Array.isArray(res?.agents) ? res.agents : [];
-        const out = agents.map((a) => {
-          const bits = [`${a.name} (${a.kind})`, a.online ? "онлайн" : "офлайн"];
-          if (a.activity?.state && a.activity.state !== "idle") bits.push(`зараз: ${a.activity.state}`);
-          if (Array.isArray(a.rooms) && a.rooms.length) bits.push(`кімнати: ${a.rooms.join(", ")}`);
-          return bits.join(" · ");
-        });
-        return { content: out.join("\n") || "нікого" };
-      },
-    });
-
-    editor.add({
-      name: "join",
-      description: "Вступити в кімнату AIChat або вийти з неї (leave).",
-      input: {
-        type: "object",
-        properties: {
-          room: { type: "string" },
-          leave: { type: "boolean", description: "true — вийти з кімнати" },
-        },
-        required: ["room"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const room = String(input.room).replace(/^#/, "");
-        const action = input.leave ? "leave" : "join";
-        await apiRequest(c, `/api/rooms/${encodeURIComponent(room)}/${action}`, {
-          method: "POST",
-          signal: context?.signal,
-        });
-        state.rooms = input.leave ? state.rooms.filter((r) => r !== room) : [...new Set([...state.rooms, room])];
-        return { content: `${input.leave ? "вийшов з" : "вступив у"} #${room}` };
-      },
-    });
-
-    editor.add({
-      name: "status",
-      description: "Поставити статус: над чим працюєш і в якій кімнаті. Порожній topic знімає статус.",
-      input: {
-        type: "object",
-        properties: {
-          topic: { type: "string", description: "1-4 слова; порожньо — зняти статус" },
-          room: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const body = { topic: String(input.topic ?? "").trim() };
-        if (input.room) body.room = String(input.room).replace(/^#/, "");
-        await apiRequest(c, "/api/status", { method: "POST", body, signal: context?.signal });
-        return { content: body.topic ? `статус: ${body.topic}` : "статус знято" };
-      },
-    });
-
-    editor.add({
-      name: "brief",
-      description: "Бриф кімнати AIChat: про що кімната і як у ній поводитись. Читай перед роботою в кімнаті.",
-      input: {
-        type: "object",
-        properties: { room: { type: "string", description: "Кімната, напр. lobby" } },
-        required: ["room"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const room = String(input.room).replace(/^#/, "");
-        const res = await apiRequest(c, `/api/rooms/${encodeURIComponent(room)}/brief`, { signal: context?.signal });
-        const brief = res?.brief ?? (typeof res === "string" ? res : null);
-        if (!brief) return { content: `у #${room} брифу немає` };
-        const text =
-          typeof brief === "string"
-            ? brief
-            : String(brief.text ?? brief.body ?? brief.description ?? JSON.stringify(brief));
-        return { content: `#${room}: ${text}` };
-      },
-    });
-
-    editor.add({
-      name: "intro",
-      description: "Вступ AIChat: що це за чат, хто є хто, як поводитись.",
-      input: { type: "object", properties: {}, additionalProperties: false },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (_input, context) => {
-        const c = requireToken();
-        const res = await apiRequest(c, "/api/intro", { signal: context?.signal });
-        const text = typeof res === "string" ? res : res?.intro?.text ?? "";
-        return { content: text || "вступу немає" };
-      },
-    });
-
-    editor.add({
-      name: "thanks",
-      description: "Подякувати за повідомлення AIChat (id з історії або вхідного повідомлення).",
-      input: {
-        type: "object",
-        properties: { id: { type: "number", description: "id повідомлення" } },
-        required: ["id"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        try {
-          const res = await apiRequest(c, `/api/messages/${Number(input.id)}/thanks`, {
-            method: "POST",
-            signal: context?.signal,
-          });
-          const names = Array.isArray(res?.thanked_by) ? res.thanked_by : [];
-          return { content: names.length ? `подяка записана (${names.join(", ")})` : "подяка записана" };
-        } catch (error) {
-          if (/\b409\b/.test(String(error?.message))) return { content: `за ${input.id} вже подяковано` };
-          throw error;
-        }
-      },
-    });
-
-    editor.add({
-      name: "file_get",
-      description: "Завантажити вкладення AIChat за id: зберігає файл на диск і повертає шлях.",
-      input: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "id файлу з повідомлення" },
-          dir: { type: "string", description: "тека для збереження (типово тимчасова)" },
-        },
-        required: ["id"],
-        additionalProperties: false,
-      },
-      options: { namespace: "aichat", codemode: true },
-      execute: async (input, context) => {
-        const c = requireToken();
-        const id = String(input.id);
-        const { bytes, headers } = await apiDownload(c, `/api/files/${encodeURIComponent(id)}`, context?.signal);
-        const dir = input.dir ? String(input.dir) : path.join(tmpdir(), "aichat-files");
-        mkdirSync(dir, { recursive: true });
-        const fallback = `file-${id}`;
-        const name = safeFileName(nameFromDisposition(headers.get("content-disposition"), fallback), fallback);
-        const file = path.join(dir, name);
-        writeFileSync(file, bytes);
-        return { content: `${file} (${bytes.byteLength} байт)` };
-      },
-    });
-
-    editor.add({
-      name: "file_send",
-      description:
-        "Надіслати локальний файл у AIChat: завантажує його в брокер і публікує повідомленням (room або to).",
-      input: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "шлях до файлу на диску" },
-          room: { type: "string" },
-          to: { type: "string" },
-          text: { type: "string", description: "підпис до файлу (типово ім'я файлу)" },
-          reply_to: { type: "number" },
-        },
+        properties: { path: { type: "string", description: "шлях до файлу в outbox або тимчасовій теці" } },
         required: ["path"],
         additionalProperties: false,
       },
-      options: { namespace: "aichat", codemode: true },
+      options: { namespace: "aichat_files", codemode: true },
       execute: async (input, context) => {
         const c = requireToken();
-        const hasTo = Boolean(input.to);
-        const hasRoom = Boolean(input.room);
-        if (hasTo === hasRoom) throw new Error("вкажи рівно одне з полів: to або room");
         const requested = path.resolve(String(input.path));
-        // розкриваємо symlink: лінк у теці профілю, що веде на ~/.secrets, інакше пройшов би
+        // розкриваємо symlink: лінк у теці агента, що веде на ~/.secrets, інакше пройшов би
         let file;
         try {
           file = realpathSync(requested);
         } catch {
           throw new Error(`файл не знайдено: ${requested}`);
         }
-        // чат не має витягувати з диска секрети: дозволяємо лише теку профілю й
-        // <tmp>/aichat-files (куди пише file_get), а ~/.secrets, .env і схоже на ключі — зась
-        const toReal = (p) => {
-          try {
-            return realpathSync(p);
-          } catch {
-            return path.resolve(p);
-          }
-        };
-        const tempDir = path.join(tmpdir(), "aichat-files");
-        mkdirSync(tempDir, { recursive: true });
-        const allowedDirs = [toReal(ctx.location?.directory || process.cwd()), toReal(tempDir)];
-        const inAllowed = (dir) => {
-          const rel = path.relative(dir, file);
-          return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
-        };
+        mkdirSync(tempDir(), { recursive: true });
         const base = path.basename(file).toLowerCase();
-        const looksSecret = /(^|[._-])(token|secret|secrets|key|keys|creds|credentials|password|passwd)([._-]|$)/.test(base) ||
-          base === ".env" || base.startsWith(".env.");
-        const inSecrets = /[\\/]\.secrets([\\/]|$)/i.test(file);
-        if (looksSecret || inSecrets) throw new Error(`не надсилаю схоже на секрет: ${path.basename(file)}`);
-        if (!allowedDirs.some(inAllowed)) {
-          throw new Error(`можна надсилати лише файли з теки профілю або ${tempDir}: ${file}`);
+        if (looksSecret(base) || /[\\/]\.secrets([\\/]|$)/i.test(file)) {
+          throw new Error(`не надсилаю схоже на секрет: ${path.basename(file)}`);
+        }
+        if (![toReal(outbox()), toReal(tempDir())].some((dir) => within(dir, file))) {
+          throw new Error(`можна вивантажувати лише з ${outbox()} або ${tempDir()}: ${file}`);
         }
         const size = statSync(file).size;
         const bytes = readFileSync(file);
@@ -1375,87 +1086,35 @@ function registerTools(ctx, cfg, state) {
         });
         const fileID = uploaded?.file?.id;
         if (!fileID) throw new Error("брокер не повернув id файлу");
-        const body = { text: String(input.text ?? name), attachments: [String(fileID)] };
-        if (hasTo) body.to = String(input.to);
-        if (hasRoom) body.room = String(input.room).replace(/^#/, "");
-        if (input.reply_to) body.reply_to = Number(input.reply_to);
-        const res = await apiRequest(c, "/api/messages", { method: "POST", body, signal: context?.signal });
-        const id = res?.message?.id ?? res?.id;
-        if (hasRoom) state.rooms = [...new Set([...state.rooms, String(input.room).replace(/^#/, "")])];
-        return { content: `надіслано ${name} (${size} байт), файл ${fileID}, повідомлення ${id ?? "?"}` + pauseNote };
+        return { content: JSON.stringify({ file_id: String(fileID), name, size }) };
       },
     });
 
     editor.add({
-      name: "note",
-      description:
-        "Нотатник AIChat — пам'ять між сесіями: list, get, add, update, delete. Для update/delete/get потрібен id.",
+      name: "get_attachment",
+      description: "Зберегти вкладення AIChat за file_id у тимчасову теку й повернути шлях, ім'я та розмір.",
       input: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["list", "get", "add", "update", "delete"] },
-          id: { type: "number", description: "id нотатки (get/update/delete)" },
-          title: { type: "string" },
-          description: { type: "string" },
-          text: { type: "string" },
-          topic: { type: "string" },
-          q: { type: "string", description: "пошук для list" },
+          file_id: { type: "string", description: "id файлу з повідомлення" },
+          name: { type: "string", description: "бажане ім'я (типово з Content-Disposition)" },
         },
-        required: ["action"],
+        required: ["file_id"],
         additionalProperties: false,
       },
-      options: { namespace: "aichat", codemode: true },
+      options: { namespace: "aichat_files", codemode: true },
       execute: async (input, context) => {
         const c = requireToken();
-        const render = (n) => {
-          const head = `[${n.id}] ${n.topic ? `(${n.topic}) ` : ""}${n.title}: ${n.description ?? ""}`;
-          return n.text ? `${head}\n${n.text}` : head;
-        };
-        if (input.action === "list") {
-          const params = new URLSearchParams();
-          if (input.q) params.set("q", String(input.q));
-          if (input.topic) params.set("topic", String(input.topic));
-          const qs = params.toString();
-          const res = await apiRequest(c, `/api/notes${qs ? `?${qs}` : ""}`, { signal: context?.signal });
-          const notes = Array.isArray(res?.notes) ? res.notes : [];
-          if (!notes.length) return { content: "нотатник порожній" };
-          return {
-            content: notes
-              .map((n) => `[${n.id}] ${n.topic ? `(${n.topic}) ` : ""}${n.title}: ${n.description ?? ""}`)
-              .join("\n"),
-          };
-        }
-        const id = input.action === "add" ? 0 : Number(input.id);
-        if (input.action === "add") {
-          const body = {};
-          for (const key of ["title", "description", "text", "topic"]) {
-            if (input[key] !== undefined) body[key] = String(input[key]);
-          }
-          if (!body.title) throw new Error("для add потрібен title");
-          body.description = body.description ?? "";
-          const res = await apiRequest(c, "/api/notes", { method: "POST", body, signal: context?.signal });
-          const newId = res?.note?.id ?? res?.id;
-          return { content: newId ? `записано, id ${newId}` : "записано" };
-        }
-        if (!id) throw new Error(`для ${input.action} потрібен id`);
-        if (input.action === "get") {
-          const res = await apiRequest(c, `/api/notes/${id}`, { signal: context?.signal });
-          return { content: res?.note ? render(res.note) : "нотатки немає" };
-        }
-        if (input.action === "delete") {
-          await apiRequest(c, `/api/notes/${id}`, { method: "DELETE", signal: context?.signal });
-          return { content: `нотатку ${id} видалено` };
-        }
-        const body = {};
-        for (const key of ["title", "description", "text", "topic"]) {
-          if (input[key] !== undefined) body[key] = String(input[key]);
-        }
-        if (input.action === "update") {
-          if (!Object.keys(body).length) throw new Error("для update передай хоча б одне поле");
-          const res = await apiRequest(c, `/api/notes/${id}`, { method: "PUT", body, signal: context?.signal });
-          return { content: `нотатку ${id} оновлено${res?.note ? `: ${render(res.note)}` : ""}` };
-        }
-        throw new Error(`невідома дія: ${input.action}`);
+        const id = String(input.file_id);
+        const { bytes, headers } = await apiDownload(c, `/api/files/${encodeURIComponent(id)}`, context?.signal);
+        const dir = tempDir();
+        mkdirSync(dir, { recursive: true });
+        const wanted = typeof input.name === "string" && input.name.trim() ? String(input.name) : `file-${id}`;
+        const fallback = safeFileName(wanted, `file-${id}`);
+        const name = safeFileName(nameFromDisposition(headers.get("content-disposition"), fallback), fallback);
+        const file = path.join(dir, name);
+        writeFileSync(file, bytes);
+        return { content: JSON.stringify({ path: file, name, size: bytes.byteLength }) };
       },
     });
   });
@@ -1505,7 +1164,12 @@ export default {
       return;
     }
 
-    const tools = await registerTools(ctx, cfg, state);
+    // The server tools live on the broker's /mcp now: an older broker would leave the agent with the two local
+    // file utilities only, so say it plainly instead of letting the agent guess (AIChat 3862).
+    await apiRequest(cfg, "/api/tools")
+      .catch(() => console.warn("[aichat] брокер не має /api/tools (старіший за 0.29.0): серверні інструменти AIChat через /mcp недоступні — оновіть брокер"));
+
+    const tools = await registerTools(ctx, cfg);
     // Сесія має існувати до першого повідомлення: тоді її видно у списку, і в ній
     // одразу стоїть профільна модель.
     await ensureSession(ctx, cfg, state)

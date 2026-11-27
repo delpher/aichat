@@ -118,35 +118,30 @@ test("the bundled OpenCode plugin carries the broker's version and exports only 
   }
 });
 
-test("aichat_react posts/deletes a fixed emoji and aichat_read renders reactions", async () => {
+test("the plugin's own tools are only upload_file and get_attachment: the server tools live on the broker", async () => {
   const dir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
   const realFetch = globalThis.fetch;
   try {
-    const out = await build({
-      entryPoints: [source],
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      target: "node22",
-      write: false,
-      logLevel: "silent",
-      define: { __AICHAT_VERSION__: JSON.stringify(VERSION) },
-    });
-    const file = join(dir, "index.js");
-    writeFileSync(file, out.outputFiles[0].text);
-    writeFileSync(join(dir, "package.json"), '{"type":"module"}');
-    const mod = await import(pathToFileURL(file).href);
-    const plugin = mod.default as { setup: (ctx: unknown) => Promise<() => Promise<void> | void> };
-
-    const tools: { name: string; execute: (input: unknown, context: unknown) => Promise<{ content: string }> }[] = [];
-    const calls: { url: string; method: string; body?: string }[] = [];
+    const plugin = await buildBundle(dir);
+    const tools: { name: string; execute: (input: Record<string, unknown>, context: unknown) => Promise<{ content: string }> }[] = [];
+    const calls: { url: string; method: string }[] = [];
+    const outbox = join(dir, "outbox");
+    mkdirSync(outbox, { recursive: true });
+    writeFileSync(join(outbox, "note.txt"), "hello");
+    writeFileSync(join(dir, "outside.txt"), "no");
     globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input);
-      calls.push({ url, method: init.method ?? "GET", body: typeof init.body === "string" ? init.body : undefined });
-      const json = url.includes("/api/history")
-        ? { messages: [{ id: 11, ts: "t", room: "lab", from: "alexey", text: "hi", reactions: { "👍": ["claude-alexey"] } }] }
-        : { reactions: { "👍": ["opencode-alexey"] } };
-      return new Response(JSON.stringify(json), { status: 200, headers: { "content-type": "application/json" } });
+      calls.push({ url, method: init.method ?? "GET" });
+      if (url.endsWith("/api/files") && (init.method ?? "GET") === "POST") {
+        return new Response(JSON.stringify({ file: { id: "f1" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/api/files/f1")) {
+        return new Response(new TextEncoder().encode("image-bytes"), {
+          status: 200,
+          headers: { "content-type": "image/png", "content-disposition": 'attachment; filename="pic.png"' },
+        });
+      }
+      return new Response(JSON.stringify({ tools: [] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
     const ctx = {
@@ -173,28 +168,27 @@ test("aichat_react posts/deletes a fixed emoji and aichat_read renders reactions
     };
     const dispose = await plugin.setup(ctx);
     try {
+      assert.deepEqual(
+        tools.map((t) => t.name).sort(),
+        ["get_attachment", "upload_file"],
+        "no server tools are defined in the adapter any more",
+      );
       const byName = new Map(tools.map((t) => [t.name, t]));
-      const react = byName.get("react");
-      const read = byName.get("read");
-      assert.ok(react, "react tool registered");
-      assert.ok(read, "read tool registered");
 
-      const placed = await react.execute({ id: 11, emoji: "👍" }, {});
-      assert.match(placed.content, /поставлено 👍 на #11/);
+      const up = await byName.get("upload_file")!.execute({ path: join(outbox, "note.txt") }, {});
+      const uploaded = JSON.parse(up.content) as { file_id: string; name: string; size: number };
+      assert.deepEqual(uploaded, { file_id: "f1", name: "note.txt", size: 5 });
+      assert.equal(calls.at(-1)?.url, "http://127.0.0.1:9/api/files");
       assert.equal(calls.at(-1)?.method, "POST");
-      assert.equal(calls.at(-1)?.url, "http://127.0.0.1:9/api/messages/11/reactions");
-      assert.deepEqual(JSON.parse(calls.at(-1)?.body ?? "{}"), { emoji: "👍" });
 
-      await react.execute({ id: 11, emoji: "👍", remove: true }, {});
-      assert.equal(calls.at(-1)?.method, "DELETE");
+      await assert.rejects(() => byName.get("upload_file")!.execute({ path: join(dir, "outside.txt") }, {}), /можна вивантажувати/);
 
-      const before = calls.length;
-      await assert.rejects(() => react.execute({ id: 11, emoji: "🔥" }, {}), /emoji/);
-      assert.equal(calls.length, before, "invalid emoji never reaches the broker");
-      await assert.rejects(() => react.execute({ id: 0, emoji: "👍" }, {}), /id/);
-
-      const history = await read.execute({ room: "lab" }, {});
-      assert.match(history.content, /\[реакції: 👍 claude-alexey\]/);
+      const got = await byName.get("get_attachment")!.execute({ file_id: "f1" }, {});
+      const saved = JSON.parse(got.content) as { path: string; name: string; size: number };
+      assert.equal(saved.name, "pic.png");
+      assert.equal(saved.size, 11);
+      assert.equal(readFileSync(saved.path, "utf8"), "image-bytes");
+      rmSync(saved.path, { force: true });
     } finally {
       await dispose();
     }
