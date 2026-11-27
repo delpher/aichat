@@ -561,6 +561,29 @@ class BrokerHttp {
   }
 }
 
+const MIME_TYPES = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  json: "application/json",
+  html: "text/html",
+  zip: "application/zip",
+  log: "text/plain",
+};
+
+/** Guess a MIME type from a filename's extension (matching src/client/attachments.ts). */
+function mimeFor(name) {
+  const ext = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  return MIME_TYPES[ext] ?? "application/octet-stream";
+}
+
 /** Extract filename from Content-Disposition (RFC 5987 filename*=UTF-8''... or plain filename="..."). */
 function nameFromDisposition(header) {
   if (!header) return "";
@@ -691,7 +714,7 @@ async function callTool(cfg, name, args, http = new BrokerHttp(cfg)) {
       const uploaded = await http.request("/api/files", {
         method: "POST",
         body: bytes,
-        headers: { "Content-Type": "application/octet-stream", "X-Filename": enc(filename) },
+        headers: { "Content-Type": mimeFor(filename), "X-Filename": enc(filename) },
       });
       if (!uploaded.file?.id) throw new Error("Upload returned no file id");
       return JSON.stringify({
@@ -3886,6 +3909,7 @@ export {
   install,
   loadConfig,
   main,
+  mimeFor,
   nameFromDisposition,
   parseConsoleCommand,
   safeUploadPath,
