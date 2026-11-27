@@ -636,6 +636,19 @@ test("manager wizard: connects an agent the broker already knows, with its token
     url: broker.url.replace("http", "ws") + "/ws", tokenFile: join(secrets, "aichat-claude-bot.token"), wake: "always", delivery: "steer", paused: true, session: "resume", rooms: [],
   });
   assert.equal(oc.steps.length, 4);
+  // the broker's tools: /mcp as the remote server "aichat", the bearer from the token file, not the token itself
+  const ocText = readFileSync(join(root, "claude-bot", "opencode.jsonc"), "utf8");
+  assert.ok(!ocText.includes("tok-claude"), "the token is not in opencode.jsonc");
+  assert.deepEqual(parseJsonc(ocText)?.mcp, {
+    aichat: {
+      type: "remote",
+      url: broker.url + "/mcp",
+      headers: { Authorization: `Bearer {file:${join(secrets, "aichat-claude-bot.token").replace(/\\/g, "/")}}` },
+    },
+  });
+  // the manager's settings see it as an enabled server of the agent
+  const ocAgent = discover(root).find((a) => a.agent.folder === "claude-bot")!.agent;
+  assert.ok(readAgentSettings(ocAgent, root, () => []).mcp.some((m) => m.name === "aichat" && m.source === "opencode.jsonc" && m.enabled === true));
 
   const info = installInfo(root);
   assert.equal(info.broker, broker.url);

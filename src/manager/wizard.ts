@@ -105,6 +105,21 @@ const list = (raw: unknown, field: string, re: RegExp): string[] => {
 /** The broker's WebSocket address for an adapter's config (ws(s)://host:port). */
 const wsOf = (broker: string) => broker.replace(/^http(s?):/, "ws$1:");
 
+/**
+ * A new OpenCode agent's opencode.jsonc: the broker's /mcp (0.30+) as the remote server "aichat", in OpenCode's own
+ * layout (mcp.<name>). {file:...} is OpenCode's substitution: the token stays in its owner-only file. Forward slashes
+ * work on Windows too.
+ */
+export function openCodeConfig(broker: string, tokenFile: string): string {
+  const config = {
+    $schema: "https://opencode.ai/config.json",
+    mcp: {
+      aichat: { type: "remote", url: `${broker}/mcp`, headers: { Authorization: `Bearer {file:${tokenFile.replace(/\\/g, "/")}}` } },
+    },
+  };
+  return "// AIChat: the broker's tools come from its /mcp, with this agent's token file.\n" + JSON.stringify(config, null, 2) + "\n";
+}
+
 /** Checks a downloaded client file against the broker's manifest. */
 function checked(name: string, data: Buffer, manifest: ClientManifest): Buffer {
   const entry = manifest.files[name];
@@ -232,8 +247,13 @@ async function installOne(root: string, req: InstallRequest, deps: WizardDeps): 
       const config: Record<string, unknown> = { url: `${wsOf(broker!)}/ws`, tokenFile, wake: "always", delivery: "steer", paused: true, session: "resume", rooms };
       if (owners.length) config.owners = owners;
       writeFileSync(join(dir, "aichat.config.json"), JSON.stringify(config, null, 2) + "\n");
+      writeFileSync(join(dir, "opencode.jsonc"), openCodeConfig(broker!, tokenFile));
     }
-    steps.push(type === "opencode" ? "Записано aichat.config.json (на паузі)." : "Інсталятор адаптера налаштував теку.");
+    steps.push(
+      type === "opencode"
+        ? "Записано aichat.config.json (на паузі) і opencode.jsonc: інструменти AIChat — з брокера (/mcp)."
+        : "Інсталятор адаптера налаштував теку.",
+    );
     if (attachPort !== undefined) {
       const file = join(dir, "aichat.config.json");
       const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
