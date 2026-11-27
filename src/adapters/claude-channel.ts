@@ -4,7 +4,7 @@
 // Claude Code spawns this over stdio (configure it in .mcp.json) and must be started with
 //   claude --dangerously-load-development-channels server:aichat
 // Incoming messages are pushed into the session as <channel source="aichat" ...> events;
-// Claude answers with the send_message tool.
+// Claude answers with the broker's send_message tool, which this adapter passes on to the broker's /mcp.
 //
 // Env: AICHAT_URL (default ws://127.0.0.1:8787), AICHAT_TOKEN or AICHAT_TOKEN_FILE (a file holding it).
 // stdout belongs to MCP, so all logging goes to stderr.
@@ -14,28 +14,24 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ToolListChangedNotificationSchema,
+  type CallToolResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, delimiter, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
 import { mimeFor, textWithAttachments } from "../client/attachments.js";
-import {
-  INLINE_IMAGE_TYPES,
-  MAX_ATTACHMENTS,
-  REACTIONS,
-  type AgentNote,
-  type ChatMessage,
-  type GameInfo,
-  type GameRatings,
-  type GameType,
-  type ReactionNote,
-  type RoomBrief,
-} from "../protocol.js";
+import { INLINE_IMAGE_TYPES, type ChatMessage, type ReactionNote } from "../protocol.js";
 import { runInstall } from "./install.js";
-import { buildInstructions, fetchWorld, noteFull, noteSummary, worldText } from "./instructions.js";
+import { buildInstructions, fetchWorld } from "./instructions.js";
 import { ADAPTER_VERSION, compareVersions, newerAdapter, updateNotice } from "./version.js";
 
 if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
@@ -82,222 +78,62 @@ if (!world) console.error("[aichat-channel] no intro from the broker: using the 
 let toldNewer = newer;
 const notices = newer ? [updateNotice(ADAPTER_FILE, ADAPTER_VERSION, newer, client.httpUrl)] : [];
 
+/**
+ * The broker's tools (/mcp, AIChat 0.29+): this adapter defines none of them, it lists and calls them on the broker,
+ * so a new AIChat tool needs no adapter change (stage 1.1 of the platform plan). Only the two file tools are its own:
+ * they read and write this machine's disk.
+ */
+const toolsOnBroker = await fetch(`${client.httpUrl}/api/tools`, {
+  headers: { authorization: `Bearer ${token}` },
+  signal: AbortSignal.timeout(5000),
+}).then(
+  (r) => r.ok,
+  () => false,
+);
+if (!toolsOnBroker) {
+  console.error("[aichat-channel] the broker has no /mcp (older than 0.29.0): only the file tools are available");
+  notices.push(
+    "Your AIChat broker is older than 0.29.0 and does not give its tools to this adapter: messages arrive, but you cannot " +
+      "answer through AIChat tools. Tell your user to update the broker.",
+  );
+}
+
 const mcp = new Server(
   { name: "aichat", version: "0.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
-      tools: {},
+      tools: { listChanged: true },
     },
     instructions: buildInstructions(world, notices),
   },
 );
 
-const TOOLS = [
+/** Folders upload_file takes files from: the agent's outbox, the attachments folder, the system temp folder. */
+const OUTBOX = join(process.cwd(), "outbox");
+const UPLOAD_DIRS = [OUTBOX, FILES_DIR, tmpdir(), ...(process.env.AICHAT_UPLOAD_DIRS ?? "").split(delimiter).filter(Boolean)].map((d) =>
+  resolve(d),
+);
+
+const LOCAL_TOOLS = [
   {
-    name: "send_message",
+    name: "upload_file",
     description:
-      "Send a message to another agent (to) or to a room (room) on AIChat. Set exactly one of to/room. " +
-      "When answering a message, pass its msg_id as reply_to. " +
-      "Links in the text: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        to: { type: "string", description: "Name of the agent to message directly" },
-        room: { type: "string", description: "Room to post in (you join it automatically)" },
-        text: { type: "string", description: "Message text" },
-        reply_to: { type: "number", description: "msg_id of the message you are answering" },
-        files: {
-          type: "array",
-          items: { type: "string" },
-          description: `Local paths of files to attach (at most ${MAX_ATTACHMENTS})`,
-        },
-      },
-      required: ["text"],
-    },
+      "Upload a local file to AIChat and get its file_id, to attach with send_message(attachments=[file_id, ...]). " +
+      `Only files in your outbox folder (${OUTBOX}) or a temporary folder can be uploaded: copy a file there first.`,
+    inputSchema: { type: "object" as const, properties: { path: { type: "string", description: "Local path of the file" } }, required: ["path"] },
   },
   {
     name: "get_attachment",
     description:
       "Download a file attached to an AIChat message (file_id from an [attachment ...] line). " +
       "Saves it locally and returns the path; images are also returned as an image.",
-    inputSchema: { type: "object", properties: { file_id: { type: "string" } }, required: ["file_id"] },
-  },
-  {
-    name: "list_games",
-    description:
-      "List the kinds of games you can play (with their seats) and the games on AIChat: open ones you can join, " +
-      "games in progress and finished ones.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        status: { type: "string", enum: ["open", "active", "finished"], description: "Only games with this status" },
-        game: { type: "string", description: "Only games of this kind, e.g. checkers" },
-      },
-    },
-  },
-  {
-    name: "create_game",
-    description:
-      "Start a game and sit at it. Name an opponent to start at once, or leave the other seats free so anyone can join. " +
-      "list_games shows the kinds of games and their seats.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        game: { type: "string", description: "Kind of game, e.g. checkers or nardy; list_games shows them all (default checkers)" },
-        seat: { type: "string", description: "Your seat id, e.g. w or b (default: the first seat)" },
-        opponent: { type: "string", description: "Agent or person who takes the next seat (optional)" },
-        seats: {
-          type: "number",
-          description: "How many seats, for a game that allows fewer than all (list_games shows e.g. 2-4 players); default: all",
-        },
-      },
-    },
-  },
-  {
-    name: "join_game",
-    description: "Take a free seat in an open game; when every seat is taken the game starts and the board appears in its room.",
-    inputSchema: {
-      type: "object",
-      properties: { game_id: { type: "number" }, seat: { type: "string", description: "Seat id (default: the first free one)" } },
-      required: ["game_id"],
-    },
-  },
-  {
-    name: "set_status",
-    description:
-      "Tell people what you are working on and where: a topic of 1-4 words and the room (or the agent you work with). " +
-      "Shown next to your name and in that room. An empty topic clears it.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: 'e.g. "web", "settings validation"; empty to clear' },
-        room: { type: "string", description: "Room you work in (default: the conversation of your latest message)" },
-        with: { type: "string", description: "Or the agent you work with directly" },
-      },
-      required: ["topic"],
-    },
-  },
-  {
-    name: "thank",
-    description:
-      "Thank the author of a message you found useful (not your own, once per message). " +
-      "Everyone who sees the message sees who thanked; the count shows on the author's card.",
-    inputSchema: { type: "object", properties: { msg_id: { type: "number" } }, required: ["msg_id"] },
-  },
-  {
-    name: "react",
-    description:
-      `Put an emoji reaction on a message (${REACTIONS.join(" ")}), or take yours back with remove: true. ` +
-      "Use it instead of a reply that only says ok/thanks/seen. It wakes no one; the author learns of it with their next message.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        msg_id: { type: "number" },
-        emoji: { type: "string", enum: [...REACTIONS] },
-        remove: { type: "boolean", description: "Take your reaction back" },
-      },
-      required: ["msg_id", "emoji"],
-    },
-  },
-  {
-    name: "room_info",
-    description: "Read a room's brief (its goal and rules) and its members.",
-    inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
-  },
-  {
-    name: "set_room_brief",
-    description: "Replace a room's brief (Markdown; empty text removes it). Only when your user asks.",
-    inputSchema: {
-      type: "object",
-      properties: { room: { type: "string" }, text: { type: "string" } },
-      required: ["room", "text"],
-    },
-  },
-  {
-    name: "remember",
-    description:
-      "Write a note in your AIChat notebook, or change note `id`. The notebook is your memory of AIChat itself, kept by the " +
-      "broker across sessions and machines. Write a note when you agree with someone on how to work together, when someone " +
-      "corrects you, or when you learn something about a participant, a room or AIChat worth knowing next time; when a note " +
-      "gets out of date, change it instead of adding another. A note has a title and a short description, which your next " +
-      "sessions start with, and an optional text with the details, which you read with recall(id) when you need them. " +
-      "A new note needs a title and a description; a change keeps the fields you leave out (an empty text or topic removes it). " +
-      "Only the current state is kept. People can read the notebook in the web; other agents cannot.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "What the note is about, in a few words (up to 100 characters)" },
-        description: {
-          type: "string",
-          description: "The gist in one to three sentences: enough to know what you know and whether to read the text",
-        },
-        text: { type: "string", description: "Optional details: examples, history, the whole story" },
-        topic: { type: "string", description: "Optional short subject that groups notes, e.g. a person or a project" },
-        id: { type: "number", description: "Id of a note to change (from recall); omit to add a new one" },
-      },
-    },
-  },
-  {
-    name: "recall",
-    description:
-      "Find notes in your AIChat notebook by text (in titles, descriptions and texts) or topic, any case; with neither, lists " +
-      "every note. The list shows titles and descriptions; recall with `id` shows one note with its text.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "number", description: "Show this note in full, with its text" },
-        query: { type: "string", description: "Text to look for in notes and topics" },
-        topic: { type: "string", description: "Only notes with this topic" },
-      },
-    },
-  },
-  {
-    name: "forget",
-    description: "Delete a note from your AIChat notebook for good.",
-    inputSchema: { type: "object", properties: { id: { type: "number" } }, required: ["id"] },
-  },
-  {
-    name: "world_info",
-    description: "Read the AIChat intro as it is now: what AIChat is, what is in it, and its current limits, with the intro's version (when it last changed) first.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "list_agents",
-    description: "List the agents on AIChat with their kind, online status and rooms.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "join_room",
-    description: "Join a room so you receive its messages.",
-    inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
-  },
-  {
-    name: "leave_room",
-    description: "Leave a room.",
-    inputSchema: { type: "object", properties: { room: { type: "string" } }, required: ["room"] },
-  },
-  {
-    name: "read_history",
-    description: "Read earlier messages of a room, or of your direct conversation with one agent.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        room: { type: "string" },
-        with: { type: "string", description: "Agent name for direct-message history" },
-        limit: { type: "number", description: "How many messages (default 30)" },
-      },
-    },
+    inputSchema: { type: "object" as const, properties: { file_id: { type: "string" } }, required: ["file_id"] },
   },
 ];
+const LOCAL = new Set(LOCAL_TOOLS.map((t) => t.name));
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
-const fmt = (m: ChatMessage) =>
-  `[#${m.id} ${m.ts}] ${m.from} -> ${m.room ? "#" + m.room : m.to}${m.reply_to ? ` (re #${m.reply_to})` : ""}: ${textWithAttachments(m)}` +
-  (m.thanked_by?.length ? ` [thanked by ${m.thanked_by.join(", ")}]` : "") +
-  (m.reactions && Object.keys(m.reactions).length
-    ? ` [reactions: ${Object.entries(m.reactions).map(([e, by]) => `${e} ${by.join(", ")}`).join("; ")}]`
-    : "");
 
 /** Reactions to the agent's own messages that came since it last heard: one line, after the message. */
 const reactionLine = (notes: ReactionNote[]) =>
@@ -307,230 +143,119 @@ const reactionLine = (notes: ReactionNote[]) =>
         .join("; ")}]`
     : "";
 
-async function uploadAll(paths: unknown): Promise<string[]> {
-  if (paths == null) return [];
-  if (!Array.isArray(paths) || !paths.every((p) => typeof p === "string")) throw new Error("files must be a list of paths");
-  if (paths.length > MAX_ATTACHMENTS) throw new Error(`at most ${MAX_ATTACHMENTS} files per message`);
-  const ids: string[] = [];
-  for (const p of paths as string[]) {
-    const path = resolve(p);
-    if (!(await stat(path)).isFile()) throw new Error(`not a file: ${p}`);
-    const name = basename(path);
-    ids.push((await client.upload(await readFile(path), name, mimeFor(name))).id);
+/** Is `path` inside one of the upload folders, once links are resolved? */
+async function uploadable(path: string): Promise<boolean> {
+  const real = await realpath(path);
+  for (const dir of UPLOAD_DIRS) {
+    const root = await realpath(dir).catch(() => undefined);
+    if (root && real.startsWith(root.endsWith(sep) ? root : root + sep)) return true;
   }
-  return ids;
+  return false;
 }
 
-/**
- * Kinds of games: they give the seat names for the game lines. Kept between calls, but fetched again for
- * list_games and for a game this session has not seen, since a rebuilt broker may host new games.
- */
-let gameTypes: GameType[] | undefined;
-async function loadGameTypes(fresh = false): Promise<GameType[]> {
-  if (fresh || !gameTypes) gameTypes = (await client.api<{ types: GameType[] }>("GET", "/api/games/types")).types;
-  return gameTypes;
+async function uploadFile(p: unknown): Promise<string> {
+  if (typeof p !== "string" || !p) throw new Error("path is required");
+  const path = resolve(p);
+  if (!(await stat(path)).isFile()) throw new Error(`not a file: ${p}`);
+  if (!(await uploadable(path)))
+    throw new Error(`${p} is outside the upload folders (${UPLOAD_DIRS.join(", ")}): copy it to your outbox or a temporary folder first`);
+  const name = basename(path);
+  const f = await client.upload(await readFile(path), name, mimeFor(name));
+  return `uploaded ${f.name} (${f.size} bytes): file_id ${f.id}`;
 }
 
-const fmtType = (t: GameType) =>
-  `${t.id} (${t.title}): seats ${t.seats.map((s) => `${s.id}=${s.name}`).join(", ")}` +
-  (t.minSeats ? ` (${t.minSeats}-${t.seats.length} players)` : "");
-
-/** `ratings`: by game type, then player (GET /api/games/ratings); a player without one shows no number. */
-function fmtGame(g: GameInfo, ratings: Record<string, GameRatings> = {}): string {
-  const seats = gameTypes?.find((t) => t.id === g.game)?.seats;
-  const rating = (p: string) => (ratings[g.game]?.[p] !== undefined ? ` (rating ${ratings[g.game][p]})` : "");
-  const players = g.players.map((p, i) => `${seats?.[i]?.name ?? `seat ${i}`}: ${p ? p + rating(p) : "(free)"}`).join(", ");
-  const turn = g.turn !== null ? `, to move: ${g.players[g.turn]}` : "";
-  return `#${g.id} ${g.game} [${g.status}] ${players}, moves: ${g.moves.length}${turn}` + (g.result ? `, ${g.result.text}` : "") + ` - room ${g.room}`;
-}
-
-const enc = encodeURIComponent;
-async function roomInfo(room: string): Promise<string> {
-  const [{ brief }, agents] = await Promise.all([
-    client.api<{ brief: RoomBrief | null }>("GET", `/api/rooms/${enc(room)}/brief`),
-    client.listAgents(),
-  ]);
-  const members = agents.filter((g) => g.rooms.includes(room)).map((g) => `${g.name}${g.online ? "" : " (offline)"}`);
-  return [
-    `#${room}`,
-    brief ? `Brief (by ${brief.by}):\n${brief.text}` : "No brief.",
-    `Members: ${members.join(", ") || "none"}`,
-  ].join("\n\n");
-}
-
-
-/** Remembered from incoming messages so get_attachment knows a file's name and type. */
+/** Remembered from incoming messages: a file's name and type when the download does not say. */
 const known = new Map<string, { name: string; mime: string }>();
 const remember = (m: ChatMessage) => {
   for (const f of m.attachments ?? []) known.set(f.id, f);
 };
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+/** The file name the broker sent (Content-Disposition), else the one an incoming message gave, else the id. */
+function fileName(disposition: string | null, id: string): string {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition ?? "")?.[1];
+  let name: string | undefined;
+  try {
+    name = star ? decodeURIComponent(star) : undefined;
+  } catch {
+    name = undefined;
+  }
+  return (name || known.get(id)?.name || id).replace(/[\\/:*?"<>|]/g, "_");
+}
+
+async function getAttachment(raw: unknown) {
+  const id = String(raw ?? "");
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(id)) throw new Error("invalid file_id");
+  const r = await fetch(`${client.httpUrl}/api/files/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${token}` } });
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `download failed: HTTP ${r.status}`);
+  }
+  const data = Buffer.from(await r.arrayBuffer());
+  const name = fileName(r.headers.get("content-disposition"), id);
+  const mime = (r.headers.get("content-type") ?? "").split(";")[0].trim();
+  const image = INLINE_IMAGE_TYPES.includes(mime) ? mime : known.get(id)?.mime;
+  await mkdir(FILES_DIR, { recursive: true });
+  const path = join(FILES_DIR, `${id}-${name}`);
+  await writeFile(path, data);
+  const note = { type: "text" as const, text: `saved ${name} (${data.length} bytes) to ${path}` };
+  if (image && INLINE_IMAGE_TYPES.includes(image) && data.length <= MAX_INLINE_IMAGE)
+    return { content: [{ type: "image" as const, data: data.toString("base64"), mimeType: image }, note] };
+  return { content: [note] };
+}
+
+/** The MCP client of the broker's /mcp; opened on first use, and again when the broker forgot the session. */
+let brokerMcp: Client | undefined;
+let opening: Promise<Client> | undefined;
+function brokerClient(): Promise<Client> {
+  if (brokerMcp) return Promise.resolve(brokerMcp);
+  opening ??= (async () => {
+    const c = new Client({ name: "claude-channel", version: ADAPTER_VERSION });
+    // the broker's tool list changed: Claude Code asks this adapter for the list again
+    c.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      await mcp.sendToolListChanged().catch(() => {});
+    });
+    await c.connect(
+      new StreamableHTTPClientTransport(new URL(`${client.httpUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }),
+    );
+    brokerMcp = c;
+    return c;
+  })().finally(() => (opening = undefined));
+  return opening;
+}
+
+/** Runs `fn` on the broker; when the broker forgot the session (a restart: 404), once more on a new one. */
+async function onBroker<T>(fn: (c: Client) => Promise<T>): Promise<T> {
+  const c = await brokerClient();
+  try {
+    return await fn(c);
+  } catch (e) {
+    if (brokerMcp === c) brokerMcp = undefined;
+    void c.close().catch(() => {});
+    // 404: the request never ran, so repeating it cannot do anything twice
+    if (!/\b404\b|session not found/i.test((e as Error).message)) throw e;
+    return fn(await brokerClient());
+  }
+}
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  if (!toolsOnBroker) return { tools: LOCAL_TOOLS };
+  try {
+    const { tools } = await onBroker((c) => c.listTools());
+    return { tools: [...tools.filter((t) => !LOCAL.has(t.name)), ...LOCAL_TOOLS] };
+  } catch (e) {
+    console.error(`[aichat-channel] could not list the broker's tools: ${(e as Error).message}`);
+    return { tools: LOCAL_TOOLS };
+  }
+});
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const a = (req.params.arguments ?? {}) as Record<string, unknown>;
   try {
-    switch (req.params.name) {
-      case "send_message": {
-        const attachments = await uploadAll(a.files);
-        const id = await client.send({
-          to: (a.to as string) || undefined,
-          room: (a.room as string) || undefined,
-          text: String(a.text ?? ""),
-          reply_to: a.reply_to != null ? Number(a.reply_to) : undefined,
-          ...(attachments.length ? { attachments } : {}),
-        });
-        return text(`sent (msg_id ${id}${attachments.length ? `, ${attachments.length} file(s)` : ""})`);
-      }
-      case "get_attachment": {
-        const id = String(a.file_id ?? "");
-        if (!/^[A-Za-z0-9_-]{16,64}$/.test(id)) throw new Error("invalid file_id");
-        const data = await client.download(id);
-        const info = known.get(id);
-        const name = (info?.name ?? "file").replace(/[\\/:*?"<>|]/g, "_");
-        await mkdir(FILES_DIR, { recursive: true });
-        const path = join(FILES_DIR, `${id}-${name}`);
-        await writeFile(path, data);
-        const note = { type: "text" as const, text: `saved ${info?.name ?? id} (${data.length} bytes) to ${path}` };
-        if (info && INLINE_IMAGE_TYPES.includes(info.mime) && data.length <= MAX_INLINE_IMAGE)
-          return { content: [{ type: "image" as const, data: Buffer.from(data).toString("base64"), mimeType: info.mime }, note] };
-        return { content: [note] };
-      }
-      case "list_games": {
-        const q = new URLSearchParams();
-        if (a.status) q.set("status", String(a.status));
-        if (a.game) q.set("game", String(a.game));
-        const types = await loadGameTypes(true);
-        const [{ games }, ratings] = await Promise.all([
-          client.api<{ games: GameInfo[] }>("GET", `/api/games${q.size ? `?${q}` : ""}`),
-          // a broker older than ratings answers 404: list the games without them
-          client.api<{ ratings: Record<string, GameRatings> }>("GET", "/api/games/ratings").then((r) => r.ratings, () => ({})),
-        ]);
-        const lines = [`Games you can play: ${types.map(fmtType).join("; ")}`, ...games.map((g) => fmtGame(g, ratings))];
-        return text(lines.join("\n") + (games.length ? "" : "\nno games yet"));
-      }
-      case "create_game": {
-        const want = (a.game as string) || "checkers";
-        let types = await loadGameTypes();
-        if (!types.some((t) => t.id === want)) types = await loadGameTypes(true);
-        const type = types.find((t) => t.id === want);
-        if (!type) return text(`unknown game ${String(a.game)}; games: ${types.map((t) => t.id).join(", ")}`);
-        const n = a.seats != null ? Number(a.seats) : type.seats.length;
-        const seats = type.seats.slice(0, n);
-        const mine = a.seat ? seats.findIndex((s) => s.id === a.seat) : 0;
-        if (mine < 0) return text(`unknown seat ${String(a.seat)}; seats: ${seats.map((s) => s.id).join(", ")}`);
-        const players: (string | null)[] = seats.map(() => null);
-        players[mine] = client.agent!;
-        if (a.opponent) players[(mine + 1) % players.length] = a.opponent as string;
-        const { game } = await client.api<{ game: GameInfo }>("POST", "/api/games", {
-          game: type.id,
-          players,
-          ...(a.seats != null ? { seats: n } : {}),
-        });
-        return text(`created ${fmtGame(game)}`);
-      }
-      case "join_game": {
-        await loadGameTypes();
-        const body = a.seat ? { seat: a.seat } : {};
-        const { game } = await client.api<{ game: GameInfo }>("POST", `/api/games/${Number(a.game_id)}/join`, body);
-        return text(`joined ${fmtGame(game)}`);
-      }
-      case "list_agents": {
-        const agents = await client.listAgents();
-        return text(
-          agents
-            .map(
-              (g) =>
-                `${g.name}${g.name === client.agent ? " (you)" : ""} [${g.kind}] ${g.online ? "online" : "offline"}` +
-                (g.activity && g.activity.state !== "idle" ? `, ${g.activity.state}${g.activity.detail ? ` (${g.activity.detail})` : ""}` : "") +
-                (g.thanks ? `, thanks: ${g.thanks}` : "") +
-                (g.rooms.length ? ` rooms: ${g.rooms.join(", ")}` : "") +
-                (g.description ? ` - ${g.description}` : ""),
-            )
-            .join("\n") || "no agents",
-        );
-      }
-      case "join_room":
-        await client.join(String(a.room));
-        return text(`joined #${a.room}\n\n${await roomInfo(String(a.room)).catch(() => "")}`.trim());
-      case "set_status": {
-        const body: Record<string, unknown> = { topic: String(a.topic ?? "") };
-        if (a.room) body.room = a.room;
-        else if (a.with) body.with = a.with;
-        const { activity } = await client.api<{ activity: { topic?: string; room?: string; with?: string } | null }>("POST", "/api/status", body);
-        if (!activity?.topic) return text("status cleared");
-        const where = activity.room ? ` in #${activity.room}` : activity.with ? ` with ${activity.with}` : "";
-        return text(`status: ${activity.topic}${where}`);
-      }
-      case "react": {
-        const remove = a.remove === true;
-        const { reactions } = await client.api<{ reactions: Record<string, string[]> }>(
-          remove ? "DELETE" : "POST",
-          `/api/messages/${Number(a.msg_id)}/reactions`,
-          { emoji: a.emoji },
-        );
-        const now = Object.entries(reactions).map(([e, by]) => `${e} ${by.length}`).join(" ") || "none";
-        return text(`${remove ? "took back" : "put"} ${a.emoji} on #${a.msg_id} (reactions now: ${now})`);
-      }
-      case "thank": {
-        const { thanked_by } = await client.api<{ thanked_by: string[] }>("POST", `/api/messages/${Number(a.msg_id)}/thanks`);
-        return text(`thanked for #${a.msg_id} (thanked by: ${thanked_by.join(", ")})`);
-      }
-      case "room_info":
-        return text(await roomInfo(String(a.room)));
-      case "remember": {
-        const body: Record<string, unknown> = {};
-        for (const k of ["title", "description", "text", "topic"]) if (a[k] != null) body[k] = String(a[k]);
-        const { note } =
-          a.id != null
-            ? await client.api<{ note: AgentNote }>("PUT", `/api/notes/${Number(a.id)}`, body)
-            : await client.api<{ note: AgentNote }>("POST", "/api/notes", body);
-        return text(`${a.id != null ? "changed" : "remembered"} ${noteSummary(note)}`);
-      }
-      case "recall": {
-        if (a.id != null) {
-          const { note } = await client.api<{ note: AgentNote }>("GET", `/api/notes/${Number(a.id)}`);
-          return text(noteFull(note));
-        }
-        const q = new URLSearchParams();
-        if (a.query) q.set("q", String(a.query));
-        if (a.topic) q.set("topic", String(a.topic));
-        const { notes, count, max } = await client.api<{ notes: AgentNote[]; count: number; max: number }>(
-          "GET",
-          `/api/notes${q.size ? `?${q}` : ""}`,
-        );
-        const head = `${notes.length} of ${count} notes (the notebook holds up to ${max})`;
-        return text([head, ...notes.map(noteSummary)].join("\n"));
-      }
-      case "forget":
-        await client.api("DELETE", `/api/notes/${Number(a.id)}`);
-        return text(`forgot note #${Number(a.id)}`);
-      case "world_info": {
-        const now = await fetchWorld(client.httpUrl, token, 10_000);
-        if (!now) return text("This AIChat broker has no intro to give (it may be older than 0.3, or out of reach).");
-        return text(worldText(now));
-      }
-      case "set_room_brief": {
-        const { brief } = await client.api<{ brief: RoomBrief | null }>("PUT", `/api/rooms/${enc(String(a.room))}/brief`, {
-          text: String(a.text ?? ""),
-        });
-        return text(brief ? `brief of #${a.room} updated` : `brief of #${a.room} removed`);
-      }
-      case "leave_room":
-        await client.leave(String(a.room));
-        return text(`left #${a.room}`);
-      case "read_history": {
-        const msgs = await client.history({
-          room: (a.room as string) || undefined,
-          with: (a.with as string) || undefined,
-          limit: Number(a.limit) || 30,
-        });
-        msgs.forEach(remember);
-        return text(msgs.map(fmt).join("\n") || "no messages");
-      }
-      default:
-        return { ...text(`unknown tool: ${req.params.name}`), isError: true };
-    }
+    if (req.params.name === "upload_file") return text(await uploadFile(a.path));
+    if (req.params.name === "get_attachment") return await getAttachment(a.file_id);
+    if (!toolsOnBroker)
+      return { ...text("this AIChat broker is older than 0.29.0 and gives no tools: ask your user to update it"), isError: true };
+    return (await onBroker((c) => c.callTool({ name: req.params.name, arguments: a }))) as CallToolResult;
   } catch (e) {
     return { ...text(`error: ${(e as Error).message}`), isError: true };
   }
