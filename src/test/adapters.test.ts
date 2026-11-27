@@ -95,8 +95,15 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
     "set_room_brief",
     "set_status",
     "thank",
+    "upload_file",
     "world_info",
   ]);
+  // every tool but the two file tools is the broker's: same schema as /mcp gives
+  const brokerSchema = (await (await fetch(`${url.replace(/^ws/, "http")}/api/tools`, { headers: { authorization: `Bearer ${tok("claude1")}` } })).json()) as {
+    tools: { name: string; inputSchema: unknown }[];
+  };
+  for (const t of brokerSchema.tools)
+    assert.deepEqual(tools.tools.find((x) => x.name === t.name)?.inputSchema, t.inputSchema, `${t.name} comes from the broker`);
 
   // briefs: joining a room shows its brief
   const call = async (name: string, args: Record<string, unknown>) =>
@@ -146,12 +153,19 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   const saved = parts[1].text!.match(/to (.+)$/)![1];
   assert.equal(readFileSync(saved).equals(png), true);
 
-  // sending a local file
+  // sending a local file: upload it from a temporary folder, then attach its id
   const local = join(filesDir, "report.txt");
   writeFileSync(local, "numbers");
+  const up = await call("upload_file", { path: local });
+  const fileId = up.match(/^uploaded report\.txt \(7 bytes\): file_id (\S+)$/)![1];
   const withFile = nextMessage(peer);
-  const sent = await client.callTool({ name: "send_message", arguments: { to: "peer", text: "here", files: [local] } });
+  const sent = await client.callTool({ name: "send_message", arguments: { to: "peer", text: "here", attachments: [fileId] } });
   assert.match((sent.content as { text: string }[])[0].text, /1 file/);
+  // a file outside the outbox and the temporary folders stays on this machine
+  const outside = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const refused = await client.callTool({ name: "upload_file", arguments: { path: outside } });
+  assert.equal(refused.isError, true);
+  assert.match((refused.content as { text: string }[])[0].text, /outside the upload folders/);
   const fm = await withFile;
   assert.equal(fm.attachments?.[0].name, "report.txt");
   assert.equal(fm.attachments?.[0].mime, "text/plain");
@@ -565,8 +579,12 @@ test("А1: with a broker that has no intro (0.2.1) the adapter keeps the 0.2.1 i
   const port = (old.address() as { port: number }).port;
   const { client, call } = await startChannel(`ws://127.0.0.1:${port}`, "claude1");
   try {
-    assert.equal(client.getInstructions(), LEGACY_INSTRUCTIONS);
-    assert.match(await call("world_info"), /no intro/);
+    // the old instructions, and a note that this broker gives no tools: the adapter defines none of its own since 0.29
+    const instructions = client.getInstructions() ?? "";
+    assert.ok(instructions.startsWith(LEGACY_INSTRUCTIONS));
+    assert.match(instructions, /broker is older than 0\.29\.0 .* Tell your user to update the broker\.$/s);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name), ["upload_file", "get_attachment"]);
+    assert.match(await call("world_info"), /older than 0\.29\.0 and gives no tools/);
   } finally {
     await client.close();
     old.closeAllConnections();

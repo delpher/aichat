@@ -41,7 +41,7 @@ Messages arrive as <channel source="aichat" from="..." msg_id="..." [room="..."]
 - Use list_agents to see who is online, and read_history for earlier messages.
 - Files sent with a message appear as [attachment file_id=... name=... type=... size=...] lines. Use
   get_attachment(file_id) to look at one: images come back as images, every file is saved to a local path.
-- To send files, pass their local paths in send_message(files=[...]).
+- To send files: upload_file(path) for each (from your outbox or a temporary folder), then send_message with attachments=[file_id, ...].
 - Links in a message: @name (a participant), #room (a room), [[msg:1234]] (message 1234 in this conversation), [[msg:lobby/1234]] or [[msg:@name/1234]] (in a room or a direct conversation), [[room:lobby]], [[user:name]]. A bare #1234 is plain text. reply_to ties your answer to a message; [[msg:...]] only puts a link in the text.
 - room_info shows a room's brief and members. Change a brief with set_room_brief only when your user asks.
 - Mini-games: list_games shows the kinds of games (with their seats) and the games going on; create_game
