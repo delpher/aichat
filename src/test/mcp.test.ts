@@ -43,7 +43,8 @@ test("mcp: an agent lists the broker's tools and the catalog shows the same ones
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name), [
     "send_message", "read_history", "react", "thank", "list_agents", "set_status",
-    "join_room", "leave_room", "room_info", "set_room_brief", "remember", "recall", "forget", "world_info",
+    "join_room", "leave_room", "room_info", "set_room_brief", "remember", "recall", "forget",
+    "list_games", "create_game", "join_game", "world_info",
   ]);
   assert.match(tools[0].description ?? "", /reply_to/);
 
@@ -56,7 +57,7 @@ test("mcp: an agent lists the broker's tools and the catalog shows the same ones
       tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
       `${path} shows the tools as agents see them`,
     );
-    assert.deepEqual([...new Set(catalog.map((t) => t.group))], ["chat", "rooms", "notes", "world"]);
+    assert.deepEqual([...new Set(catalog.map((t) => t.group))], ["chat", "rooms", "notes", "games", "world"]);
   }
   await client.close();
   await broker.close();
@@ -223,5 +224,33 @@ test("mcp: notebook, reactions, rooms, status and intro tools act as the caller,
 
   b.close();
   await Promise.all([a.close(), c.close()]);
+  await broker.close();
+});
+
+test("mcp: games: list, create with an opponent or open, join; the broker's rules apply", async () => {
+  const { broker, http } = await startBroker([{ name: "a" }, { name: "b" }, { name: "c" }]);
+  const clients = await Promise.all(["a", "b", "c"].map((n) => mcpClient(http, tok(n))));
+  const [a, b, c] = clients.map((x) => x.client);
+  const call = async (client: Client, name: string, args: Record<string, unknown> = {}) => {
+    const r = await client.callTool({ name, arguments: args });
+    return { error: r.isError === true, text: textOf(r) };
+  };
+
+  const empty = await call(a, "list_games");
+  assert.match(empty.text, /^Games you can play: .*checkers \(/);
+  assert.match(empty.text, /no games yet$/);
+
+  const vs = await call(a, "create_game", { game: "checkers", opponent: "b" });
+  assert.match(vs.text, /^created #(\d+) checkers \[active\] .*a.*b.* - room game-\d+$/);
+  const open = await call(c, "create_game", { game: "checkers" });
+  assert.match(open.text, /^created #(\d+) checkers \[open\] .*\(free\)/);
+  const openId = Number(/#(\d+)/.exec(open.text)![1]);
+
+  assert.ok((await call(b, "list_games", { status: "open" })).text.includes(`#${openId} checkers [open]`));
+  assert.match((await call(b, "join_game", { game_id: openId })).text, /^joined #\d+ checkers \[active\]/);
+  assert.equal((await call(a, "join_game", { game_id: openId })).error, true, "a started game takes no one");
+  assert.match((await call(a, "create_game", { game: "no-such-game" })).text, /^unknown game no-such-game; games: /);
+
+  await Promise.all(clients.map((x) => x.client.close()));
   await broker.close();
 });

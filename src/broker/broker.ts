@@ -48,6 +48,8 @@ import {
   type ClientFrame,
   type FileInfo,
   type GameInfo,
+  type GameRatings,
+  type GameType,
   type UsageReport,
   type ServerFrame,
   type WorldLimits,
@@ -1543,18 +1545,55 @@ export class Broker {
 
   // ---------------- mini-games ----------------
 
+  // ---- games, as REST and the MCP tools use them ----
+
+  gameTypes(): GameType[] {
+    return this.games.types();
+  }
+
+  gameList(q: { status?: string; game?: string } = {}): GameInfo[] {
+    return this.gameOp(() => this.games.list(q).map((g) => this.games.info(g)));
+  }
+
+  gameRatings(game?: string): Record<string, GameRatings> {
+    return this.gameOp(() => this.games.ratings(game));
+  }
+
+  createGame(me: string, args: Record<string, unknown>): GameInfo {
+    return this.gameOp(() => {
+      if (this.isKeeper(me)) throw new GameError(`${me} is the keeper: it plays no games`, 403);
+      return this.games.info(this.games.create(me, args));
+    });
+  }
+
+  joinGame(me: string, id: number, seat?: unknown): GameInfo {
+    return this.gameOp(() => {
+      if (this.isKeeper(me)) throw new GameError(`${me} is the keeper: it plays no games`, 403);
+      return this.games.info(this.games.join(me, id, seat));
+    });
+  }
+
+  /** The games' own errors become broker errors with their status. */
+  private gameOp<T>(fn: () => T): T {
+    try {
+      return fn();
+    } catch (e) {
+      throw e instanceof GameError ? new BrokerError(e.message, e.status) : e;
+    }
+  }
+
   private async onGameRequest(req: IncomingMessage, url: URL, me: string, reply: (status: number, body: unknown) => void) {
     try {
       const route = `${req.method} ${url.pathname}`;
       const info = (g: Parameters<Games["info"]>[0]) => this.games.info(g);
       if (req.method === "POST" && this.isKeeper(me)) throw new GameError(`${me} is the keeper: it plays no games`, 403);
-      if (route === "GET /api/games/types") return reply(200, { types: this.games.types() });
+      if (route === "GET /api/games/types") return reply(200, { types: this.gameTypes() });
       if (route === "GET /api/games/ratings") return reply(200, { ratings: this.games.ratings(url.searchParams.get("game") || undefined) });
       if (route === "GET /api/games") {
         const q = { status: url.searchParams.get("status") || undefined, game: url.searchParams.get("game") || undefined };
-        return reply(200, { games: this.games.list(q).map(info) });
+        return reply(200, { games: this.gameList(q) });
       }
-      if (route === "POST /api/games") return reply(201, { game: info(this.games.create(me, await readJson(req))) });
+      if (route === "POST /api/games") return reply(201, { game: this.createGame(me, await readJson(req)) });
       const m = url.pathname.match(/^\/api\/games\/(\d+)(?:\/(join|move|resign|draw|card))?$/);
       if (!m) return reply(404, { error: "not found" });
       const id = Number(m[1]);
@@ -1562,10 +1601,9 @@ export class Broker {
       if (req.method === "GET" && m[2] === "card") return reply(200, { card: this.games.card(me, id) });
       if (req.method !== "POST" || !m[2]) return reply(404, { error: "not found" });
       const b = m[2] === "join" || m[2] === "move" ? await readJson(req) : {};
+      if (m[2] === "join") return reply(200, { game: this.joinGame(me, id, b.seat) });
       const g =
-        m[2] === "join"
-          ? this.games.join(me, id, b.seat)
-          : m[2] === "move"
+        m[2] === "move"
             ? this.games.move(me, id, typeof b.move === "string" ? b.move : "", true)
             : m[2] === "resign"
               ? this.games.resign(me, id)

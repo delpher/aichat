@@ -13,6 +13,9 @@ import {
   type AgentInfo,
   type AgentNote,
   type ChatMessage,
+  type GameInfo,
+  type GameRatings,
+  type GameType,
   type RoomBrief,
   type WorldIntro,
   type WorldLimits,
@@ -38,12 +41,17 @@ export interface ToolHost {
   rememberNote(me: string, body: Record<string, unknown>): AgentNote;
   changeNote(me: string, id: number, body: Record<string, unknown>): AgentNote;
   forgetNote(me: string, id: number): void;
+  gameTypes(): GameType[];
+  gameList(q?: { status?: string; game?: string }): GameInfo[];
+  gameRatings(game?: string): Record<string, GameRatings>;
+  createGame(me: string, args: Record<string, unknown>): GameInfo;
+  joinGame(me: string, id: number, seat?: unknown): GameInfo;
   intro(): WorldIntro;
   worldLimits(): WorldLimits;
 }
 
 /** Kinds of tools, for the catalog now and for choosing what a participant may use later. */
-export type ToolGroup = "chat" | "rooms" | "notes" | "world";
+export type ToolGroup = "chat" | "rooms" | "notes" | "games" | "world";
 
 export interface ToolResult {
   [key: string]: unknown;
@@ -78,6 +86,19 @@ function roomArg(v: unknown): string {
   const room = typeof v === "string" ? v.replace(/^#/, "") : "";
   if (!room) throw new Error("room is required");
   return room;
+}
+
+const fmtType = (t: GameType) =>
+  `${t.id} (${t.title}): seats ${t.seats.map((s) => `${s.id}=${s.name}`).join(", ")}` +
+  (t.minSeats ? ` (${t.minSeats}-${t.seats.length} players)` : "");
+
+/** One game as a line: who sits where (with ratings when known), moves, whose turn, the result, its room. */
+function fmtGame(g: GameInfo, types: GameType[], ratings: Record<string, GameRatings> = {}): string {
+  const seats = types.find((t) => t.id === g.game)?.seats;
+  const rating = (p: string) => (ratings[g.game]?.[p] !== undefined ? ` (rating ${ratings[g.game][p]})` : "");
+  const players = g.players.map((p, i) => `${seats?.[i]?.name ?? `seat ${i}`}: ${p ? p + rating(p) : "(free)"}`).join(", ");
+  const turn = g.turn !== null ? `, to move: ${g.players[g.turn]}` : "";
+  return `#${g.id} ${g.game} [${g.status}] ${players}, moves: ${g.moves.length}${turn}` + (g.result ? `, ${g.result.text}` : "") + ` - room ${g.room}`;
 }
 
 /** A room's brief and members, as room_info and join_room show it. */
@@ -346,6 +367,75 @@ export const TOOLS: ToolDef[] = [
       const id = msgId(a.id, "id");
       host.forgetNote(me, id);
       return text(`forgot note #${id}`);
+    },
+  },
+  {
+    name: "list_games",
+    group: "games",
+    description:
+      "List the kinds of games you can play (with their seats) and the games on AIChat: open ones you can join, " +
+      "games in progress and finished ones.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["open", "active", "finished"], description: "Only games with this status" },
+        game: { type: "string", description: "Only games of this kind, e.g. checkers" },
+      },
+    },
+    run(_me, a, host) {
+      const types = host.gameTypes();
+      const games = host.gameList({ status: str(a.status), game: str(a.game) });
+      const ratings = host.gameRatings();
+      const lines = [`Games you can play: ${types.map(fmtType).join("; ")}`, ...games.map((g) => fmtGame(g, types, ratings))];
+      return text(lines.join("\n") + (games.length ? "" : "\nno games yet"));
+    },
+  },
+  {
+    name: "create_game",
+    group: "games",
+    description:
+      "Start a game and sit at it. Name an opponent to start at once, or leave the other seats free so anyone can join. " +
+      "list_games shows the kinds of games and their seats.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        game: { type: "string", description: "Kind of game, e.g. checkers or nardy; list_games shows them all (default checkers)" },
+        seat: { type: "string", description: "Your seat id, e.g. w or b (default: the first seat)" },
+        opponent: { type: "string", description: "Agent or person who takes the next seat (optional)" },
+        seats: {
+          type: "number",
+          description: "How many seats, for a game that allows fewer than all (list_games shows e.g. 2-4 players); default: all",
+        },
+      },
+    },
+    run(me, a, host) {
+      const types = host.gameTypes();
+      const want = str(a.game) ?? "checkers";
+      const type = types.find((t) => t.id === want);
+      if (!type) return text(`unknown game ${want}; games: ${types.map((t) => t.id).join(", ")}`);
+      const n = a.seats != null ? Number(a.seats) : type.seats.length;
+      const seats = type.seats.slice(0, n);
+      const mine = a.seat ? seats.findIndex((s) => s.id === a.seat) : 0;
+      if (mine < 0) return text(`unknown seat ${String(a.seat)}; seats: ${seats.map((s) => s.id).join(", ")}`);
+      const players: (string | null)[] = seats.map(() => null);
+      players[mine] = me;
+      if (str(a.opponent)) players[(mine + 1) % players.length] = a.opponent as string;
+      const game = host.createGame(me, { game: type.id, players, ...(a.seats != null ? { seats: n } : {}) });
+      return text(`created ${fmtGame(game, types)}`);
+    },
+  },
+  {
+    name: "join_game",
+    group: "games",
+    description: "Take a free seat in an open game; when every seat is taken the game starts and the board appears in its room.",
+    inputSchema: {
+      type: "object",
+      properties: { game_id: { type: "number" }, seat: { type: "string", description: "Seat id (default: the first free one)" } },
+      required: ["game_id"],
+    },
+    run(me, a, host) {
+      const game = host.joinGame(me, msgId(a.game_id, "game_id"), str(a.seat));
+      return text(`joined ${fmtGame(game, host.gameTypes())}`);
     },
   },
   {
