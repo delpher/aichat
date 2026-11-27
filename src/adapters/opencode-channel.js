@@ -264,7 +264,7 @@ function formatIncoming(msg, me, reactionNotes) {
   }
   lines.push("");
   lines.push(
-    `Відповісти: aichat_send з reply_to=${msg.id}. Не відповідай, якщо відповіді не потрібно.`,
+    `Відповісти: send_message з reply_to=${msg.id}. Не відповідай, якщо відповіді не потрібно.`,
   );
   return lines.join("\n");
 }
