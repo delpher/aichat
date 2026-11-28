@@ -336,7 +336,14 @@ test("the OpenCode plugin drops the channel on .aichat/stop and brings it back o
       const stopped = JSON.parse(readFileSync(join(dir, ".aichat", "status.json"), "utf8"));
       assert.equal(stopped.connected, false);
       writeFileSync(join(dir, ".aichat", "start"), "");
-      assert.ok(await waits(() => connections === 2), "connected again on .aichat/start");
+      const backConnected = () => {
+        try {
+          return JSON.parse(readFileSync(join(dir, ".aichat", "status.json"), "utf8")).connected === true;
+        } catch {
+          return false;
+        }
+      };
+      assert.ok(await waits(() => connections === 2 && backConnected()), "connected again on .aichat/start");
       assert.equal(existsSync(join(dir, ".aichat", "start")), false, "the start marker is spent");
       const back = JSON.parse(readFileSync(join(dir, ".aichat", "status.json"), "utf8"));
       assert.equal(back.connected, true);
