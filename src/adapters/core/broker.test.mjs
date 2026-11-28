@@ -264,3 +264,23 @@ test("atomicJSON / writeStatus leave a whole file and no temporary ones", (t) =>
   atomicJSON(path.join(dir, "deep", "x.json"), [1]);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "deep", "x.json"), "utf8")), [1]);
 });
+
+test("BrokerSocket.retryNow opens at once instead of waiting out the delay, and only when it may", async (t) => {
+  const b = await fakeBroker(t);
+  const { s, phases } = socketFor(b, t, { firstDelayMs: 5000, maxDelayMs: 5000 });
+  s.retryNow();
+  await sleep(30);
+  assert.equal(b.connections, 0, "not before start()");
+  s.start();
+  await until(() => s.ready);
+  b.last().close(1011);
+  await until(() => phases.some(([p]) => p === "reconnecting"));
+  const started = Date.now();
+  s.retryNow();
+  await until(() => b.connections === 2 && s.ready);
+  assert.ok(Date.now() - started < 2000, "did not wait the 5 s delay");
+  assert.equal(s.delay, 5000);
+  s.retryNow(); // a socket is open: nothing
+  await sleep(30);
+  assert.equal(b.connections, 2);
+});

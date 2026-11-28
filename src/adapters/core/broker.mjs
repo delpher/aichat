@@ -292,6 +292,17 @@ export class BrokerSocket {
     return this.ready && this.send({ type: "delivered", id });
   }
 
+  /**
+   * Opens the socket now instead of waiting out the reconnect delay, and starts the delay over (an adapter coming back
+   * from its own pause, say). Does nothing while a socket is open or after a rejected token or stop().
+   */
+  retryNow() {
+    if (this.stopped || this.halted || this.socket) return;
+    clearTimeout(this.reconnectTimer);
+    this.delay = this.firstDelayMs;
+    this.open();
+  }
+
   /** Closes the socket without reconnecting; start() opens it again. */
   stop() {
     if (this.stopped && !this.socket) return;
