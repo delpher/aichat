@@ -33,6 +33,7 @@ import { readUpload, saveDownload } from "./core/files.mjs";
 import { INLINE_IMAGE_TYPES, type ChatMessage, type ReactionNote } from "../protocol.js";
 import { runInstall } from "./install.js";
 import { buildInstructions, fetchWorld } from "./instructions.js";
+import { fetchInstructions } from "./core/instructions.mjs";
 import { ADAPTER_VERSION, compareVersions, newerAdapter, updateNotice } from "./version.js";
 
 if (process.argv[2] === "install") process.exit(await runInstall(process.argv.slice(3), fileURLToPath(import.meta.url)));
@@ -71,10 +72,14 @@ const client = new BrokerClient({
   log: (m) => console.error(`[aichat-channel] ${m}`),
 });
 
-// The world is described by the broker; an older or unreachable broker leaves the 0.2.1 instructions.
+// The broker gives the rules every agent works by (0.32+); an older one, the intro (0.3+) or nothing (the 0.2.1 text).
 // The broker also tells which adapter version is the newest: it builds and serves the adapters.
-const [world, newer] = await Promise.all([fetchWorld(client.httpUrl, token), newerAdapter(client.httpUrl)]);
-if (!world) console.error("[aichat-channel] no intro from the broker: using the built-in instructions");
+const [fetched, world, newer] = await Promise.all([
+  fetchInstructions({ httpBase: client.httpUrl, token }),
+  fetchWorld(client.httpUrl, token),
+  newerAdapter(client.httpUrl),
+]);
+if (!fetched) console.error(`[aichat-channel] no agent rules from the broker: using the built-in ${world ? "" : "0.2.1 "}instructions`);
 /** The newest adapter version the session has been told about. */
 let toldNewer = newer;
 const notices = newer ? [updateNotice(ADAPTER_FILE, ADAPTER_VERSION, newer, client.httpUrl)] : [];
@@ -106,7 +111,7 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: { listChanged: true },
     },
-    instructions: buildInstructions(world, notices),
+    instructions: buildInstructions(world, notices, fetched),
   },
 );
 
