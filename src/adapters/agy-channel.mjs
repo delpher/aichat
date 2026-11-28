@@ -10,11 +10,11 @@ import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import { expandPath as expand, mimeFor, nameFromDisposition, readUpload, saveDownload, within } from "./core/files.mjs";
+import { BrokerHttp, BrokerSocket, UncertainError, atomicJSON, newerVersion, writeStatus } from "./core/broker.mjs";
 
 const VERSION = typeof __AICHAT_VERSION__ !== "undefined" ? __AICHAT_VERSION__ : "0.0.0-dev";
 const SELF = fileURLToPath(import.meta.url);
-const sleepCell = new Int32Array(new SharedArrayBuffer(4));
-const RETRY_DELAYS = [10, 25, 50, 100, 200, 400, 800];
 const TERMINAL_STATES = new Set(["failed", "delivered"]);
 // Any server tool exposed by the broker's Remote MCP server (`aichat`) plus the adapter's two local file helpers
 // (`aichat_files`). Prefix-based on `aichat` so adding a new broker tool requires zero adapter changes (stage 1.1).
@@ -38,42 +38,8 @@ const ATTACH_MAX_LINE_BYTES = 256 * 1024;
 const nowISO = () => new Date().toISOString();
 const enc = encodeURIComponent;
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
-
-function atomicJSON(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`;
-  for (const op of [
-    () => fs.writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600, flush: true }),
-    () => fs.renameSync(temp, file),
-  ]) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        op();
-        break;
-      } catch (error) {
-        if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= RETRY_DELAYS.length) {
-          throw error;
-        }
-        Atomics.wait(sleepCell, 0, 0, RETRY_DELAYS[attempt]);
-      }
-    }
-  }
-}
-
-function expand(value, base = process.cwd()) {
-  if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
-    value = path.join(os.homedir(), value.slice(2));
-  }
-  return path.resolve(base, value);
-}
-
-function within(root, file) {
-  const relative = path.relative(root, file);
-  return (
-    relative === "" ||
-    (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))
-  );
-}
+const makeHttp = (cfg) =>
+  BrokerHttp.fromTokenFile(cfg.tokenFile, { httpBase: cfg.httpBase, timeoutMs: cfg.requestTimeoutMs });
 
 function validateProfileName(name) {
   if (typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,63}$/.test(name)) {
@@ -234,13 +200,6 @@ class RpcError extends Error {
     super(error?.message || String(error));
     this.code = error?.code;
     this.explicit = true;
-  }
-}
-
-class UncertainError extends Error {
-  constructor(message) {
-    super(message);
-    this.uncertain = true;
   }
 }
 
@@ -502,161 +461,6 @@ class AcpRpc extends EventEmitter {
   }
 }
 
-class BrokerHttp {
-  constructor(cfg) {
-    this.cfg = cfg;
-    this.token = fs.readFileSync(cfg.tokenFile, "utf8").trim();
-    if (!this.token) throw new Error("Empty AIChat token");
-    this.tokenHash = crypto.createHash("sha256").update(this.token).digest("hex").slice(0, 16);
-  }
-  redact(value) {
-    return String(value).split(this.token).join("[REDACTED]");
-  }
-  async request(route, { method = "GET", body, headers = {}, binary = false, withHeaders = false } = {}) {
-    let response;
-    try {
-      response = await fetch(this.cfg.httpBase + route, {
-        method,
-        redirect: "error",
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          ...(body === undefined || Buffer.isBuffer(body) ? {} : { "Content-Type": "application/json" }),
-          ...headers,
-        },
-        body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.cfg.requestTimeoutMs),
-      });
-    } catch (error) {
-      throw new UncertainError(this.redact(`${method} ${route}: ${error.message}`));
-    }
-    if (!response.ok) {
-      const error = new Error(
-        this.redact(`AIChat HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`)
-      );
-      error.status = response.status;
-      error.definite = response.status >= 400 && response.status < 500;
-      throw error;
-    }
-    if (binary) {
-      const limit = 20 * 1024 * 1024;
-      if (Number(response.headers.get("content-length") || 0) > limit) throw new Error("Attachment too large");
-      const parts = [];
-      let size = 0;
-      for await (const part of response.body) {
-        size += part.length;
-        if (size > limit) {
-          await response.body.cancel().catch(() => {});
-          throw new Error("Attachment too large");
-        }
-        parts.push(part);
-      }
-      const bytes = Buffer.concat(parts);
-      if (withHeaders) {
-        return { bytes, contentDisposition: response.headers.get("content-disposition") || "" };
-      }
-      return bytes;
-    }
-    if (response.status === 204) return {};
-    return response.json();
-  }
-}
-
-const MIME_TYPES = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  txt: "text/plain",
-  md: "text/markdown",
-  csv: "text/csv",
-  json: "application/json",
-  html: "text/html",
-  zip: "application/zip",
-  log: "text/plain",
-};
-
-/** Guess a MIME type from a filename's extension (matching src/client/attachments.ts). */
-function mimeFor(name) {
-  const ext = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  return MIME_TYPES[ext] ?? "application/octet-stream";
-}
-
-/** Extract filename from Content-Disposition (RFC 5987 filename*=UTF-8''... or plain filename="..."). */
-function nameFromDisposition(header) {
-  if (!header) return "";
-  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  const raw = star?.[1] ?? plain?.[1];
-  if (!raw) return "";
-  try {
-    return decodeURIComponent(raw.trim());
-  } catch {
-    return raw.trim();
-  }
-}
-
-function safeUploadPath(cfg, requested) {
-  const original = expand(requested, cfg.agentDir);
-  const real = fs.realpathSync(original);
-  const sensitive = (file) =>
-    file
-      .split(/[\\/]/)
-      .some(
-        (part) =>
-          /^(\.env.*|\.secrets|\.gemini|\.codex(?:-.*)?|\.claude(?:-.*)?|\.aichat|auth\.json(?:\..*)?)$/i.test(
-            part
-          ) ||
-          /(^|[._-])(token|secret|secrets|key|keys|creds|credentials|password|passwd)([._-]|$)/i.test(part)
-      );
-  const blocked = [cfg.profileDir, cfg.runtime, cfg.tokenFile].map((file) => {
-    try {
-      return fs.realpathSync(file);
-    } catch {
-      return path.resolve(file);
-    }
-  });
-  if (
-    [original, real].some(sensitive) ||
-    blocked.some((file) => within(file, real) || within(file, original))
-  ) {
-    throw new Error("Refusing to upload a private/profile file");
-  }
-  const permitted = [cfg.outbox, cfg.tempFiles].some((root) => {
-    if (!fs.existsSync(root)) return false;
-    const rootReal = fs.realpathSync(root);
-    const expectedParent = fs.realpathSync(root === cfg.outbox ? cfg.agentDir : os.tmpdir());
-    return within(expectedParent, rootReal) && within(rootReal, real) && real !== rootReal;
-  });
-  if (!permitted) throw new Error("upload_file only permits outbox and temporary aichat-files");
-  const stat = fs.statSync(real);
-  if (!stat.isFile() || stat.nlink > 1 || stat.size > 20 * 1024 * 1024) {
-    throw new Error("Invalid, hard-linked or oversized attachment");
-  }
-  return { real, stat };
-}
-
-function readUpload(cfg, requested) {
-  const { real, stat } = safeUploadPath(cfg, requested);
-  const fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-  try {
-    const actual = fs.fstatSync(fd);
-    if (
-      actual.ino !== stat.ino ||
-      actual.dev !== stat.dev ||
-      actual.nlink > 1 ||
-      actual.size > 20 * 1024 * 1024
-    ) {
-      throw new Error("Attachment changed during validation");
-    }
-    return { bytes: fs.readFileSync(fd), name: path.basename(real) };
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 // Only the two domain-neutral local file utilities live in the adapter (Architecture v2, stage 1.1).
 // All server-side AIChat tools are served directly by the broker's Remote MCP endpoint (`/mcp`).
 const TOOLS = [
@@ -706,15 +510,20 @@ function validateTool(name, args) {
   }
 }
 
-async function callTool(cfg, name, args, http = new BrokerHttp(cfg)) {
+async function callTool(cfg, name, args, http = makeHttp(cfg)) {
   validateTool(name, args);
   switch (name) {
     case "upload_file": {
-      const { bytes, name: filename } = readUpload(cfg, args.path);
+      const { bytes, name: filename, mime } = readUpload({
+        path: args.path,
+        base: cfg.agentDir,
+        roots: [cfg.outbox, cfg.tempFiles],
+        blocked: [cfg.profileDir, cfg.runtime, cfg.tokenFile],
+      });
       const uploaded = await http.request("/api/files", {
         method: "POST",
         body: bytes,
-        headers: { "Content-Type": mimeFor(filename), "X-Filename": enc(filename) },
+        headers: { "Content-Type": mime, "X-Filename": enc(filename) },
       });
       if (!uploaded.file?.id) throw new Error("Upload returned no file id");
       return JSON.stringify({
@@ -728,21 +537,19 @@ async function callTool(cfg, name, args, http = new BrokerHttp(cfg)) {
       const raw = await http.request("/api/files/" + enc(args.file_id), { binary: true, withHeaders: true });
       const bytes = Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : raw?.bytes;
       if (!bytes) throw new Error("Download returned no file bytes");
-      const dispName = typeof raw === "object" && !Buffer.isBuffer(raw) ? nameFromDisposition(raw.contentDisposition) : "";
-      const preferred = dispName || args.name || args.file_id || "attachment";
-      const safeName =
-        String(preferred)
-          .replace(/[^\p{L}\p{N}._-]/gu, "_")
-          .replace(/^\.+/, "")
-          .slice(0, 100) || "attachment";
       fs.mkdirSync(cfg.tempFiles, { recursive: true });
-      const file = path.join(cfg.tempFiles, crypto.randomUUID() + "-" + safeName);
       const realParent = fs.realpathSync(cfg.tempFiles);
       if (!within(fs.realpathSync(os.tmpdir()), realParent)) {
         throw new Error("Temporary attachment directory escapes temp");
       }
-      fs.writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
-      return JSON.stringify({ path: file, name: safeName, size: bytes.length });
+      const saved = saveDownload({
+        dir: cfg.tempFiles,
+        id: args.file_id,
+        disposition: typeof raw === "object" && !Buffer.isBuffer(raw) ? raw.contentDisposition : "",
+        fallback: args.name,
+        bytes,
+      });
+      return JSON.stringify({ path: saved.path, name: saved.name, size: bytes.length });
     }
   }
 }
@@ -778,7 +585,7 @@ async function serveMcp(configFile) {
             write({ result: { tools: TOOLS } });
           } else if (frame.method === "tools/call") {
             const cfg = loadConfig(configFile);
-            const http = new BrokerHttp(cfg);
+            const http = makeHttp(cfg);
             try {
               const text = await callTool(cfg, frame.params.name, frame.params.arguments || {}, http);
               write({ result: { content: [{ type: "text", text }] } });
@@ -2478,7 +2285,7 @@ Local installation instructions (configured by the local user, not supplied by c
 class Channel {
   constructor(cfg, { rpc, http, store, consoleUI = null, fresh = false } = {}) {
     this.cfg = cfg;
-    this.http = http || new BrokerHttp(cfg);
+    this.http = http || makeHttp(cfg);
     this.store = store || new State(path.join(cfg.runtime, "state.json"));
     this.rpc = rpc;
     this.consoleUI = consoleUI;
@@ -2490,9 +2297,26 @@ class Channel {
     this.stopping = false;
     this.halted = false;
     this.session = crypto.randomUUID();
-    this.reconnectDelay = 1000;
-    this.lastFrame = Date.now();
-    this.ready = false;
+    this.broker = new BrokerSocket({
+      url: cfg.wsUrl,
+      auth: () => ({
+        token: this.http.token,
+        client: {
+          name: "agy-channel",
+          version: VERSION,
+          surface: "terminal",
+          ...(this.sessionStart ? { start: this.sessionStart } : {}),
+        },
+        session: this.session,
+      }),
+      onFrame: (frame) => this.handleFrame(frame),
+      onPhase: (phase) => this.handleBrokerPhase(phase),
+      onFatal: (error) => {
+        this.log("receive_failed", { error: error.message });
+        void this.stop(error);
+      },
+      log: (event) => this.log(event),
+    });
     this.activityChain = Promise.resolve();
     this.desiredActivity = { state: "idle" };
     this.lastActivity = 0;
@@ -2670,7 +2494,7 @@ class Channel {
       activeTurnId: this.engine?.active || null,
     });
     try {
-      atomicJSON(path.join(this.cfg.runtime, "status.json"), this.status);
+      writeStatus(this.cfg.runtime, this.status);
     } catch (error) {
       console.error("status write failed:", this.http.redact(error.message));
     }
@@ -2806,9 +2630,7 @@ class Channel {
   }
 
   acknowledge(id) {
-    if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify({ type: "delivered", id }));
-    return true;
+    return this.broker.ack(id);
   }
 
   mcpServerSpec() {
@@ -2834,9 +2656,9 @@ class Channel {
     this.engine?.setPaused(this.runtimePaused);
     this.log(this.runtimePaused ? "runtime_paused" : "runtime_resumed", { connected: this.connected });
     if (!this.runtimePaused) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectDelay = 1000;
-      if (this.wsAllowed && !this.connected && !this.socket && !this.stopping && !this.halted) {
+      clearTimeout(this.broker.reconnectTimer);
+      this.broker.delay = this.broker.firstDelayMs;
+      if (this.wsAllowed && !this.connected && !this.broker.socket && !this.stopping && !this.halted) {
         this.connect();
       }
     }
@@ -3385,14 +3207,26 @@ class Channel {
     }
   }
 
-  async handleFrame(frame, socket) {
+  handleBrokerPhase(phase) {
+    if (phase === "halted") {
+      this.connected = false;
+      this.halted = true;
+      this.engine?.close();
+      this.report({ phase: "halted", error: "AIChat token rejected; reconnect disabled" });
+    } else if (phase === "reconnecting") {
+      this.connected = false;
+      this.report({ phase: this.halted ? "halted" : this.stopping ? "stopped" : "reconnecting" });
+    } else if (phase === "stopped") {
+      this.connected = false;
+    }
+  }
+
+  async handleFrame(frame) {
     if (frame.type === "welcome") {
       if (frame.agent !== this.me) throw new Error("Broker identity mismatch");
-      if (socket.readyState !== WebSocket.OPEN) return;
-      this.ready = true;
+      if (!this.broker.ready) return;
       this.connected = true;
-      this.reconnectDelay = 1000;
-      for (const room of this.cfg.rooms) socket.send(JSON.stringify({ type: "join", room }));
+      for (const room of this.cfg.rooms) this.broker.send({ type: "join", room });
       await this.engine.ack(
         Object.values(this.store.value.messages)
           .filter((m) => m.status === "accepted")
@@ -3431,100 +3265,12 @@ class Channel {
 
   connect() {
     if (this.stopping || this.halted || !this.wsAllowed) return;
-    const socket = new WebSocket(this.cfg.wsUrl);
-    this.socket = socket;
-    this.lastFrame = Date.now();
-    this.ready = false;
-
-    const authTimer = setTimeout(() => {
-      if (this.socket === socket && !this.ready) socket.close();
-    }, 10000);
-
-    socket.addEventListener("open", () => {
-      socket.send(
-        JSON.stringify({
-          type: "auth",
-          token: this.http.token,
-          client: {
-            name: "agy-channel",
-            version: VERSION,
-            surface: "terminal",
-            ...(this.sessionStart ? { start: this.sessionStart } : {}),
-          },
-          session: this.session,
-        })
-      );
-    });
-
-    socket.addEventListener("message", (event) => {
-      if (this.socket !== socket) return;
-      this.lastFrame = Date.now();
-      this.incoming = (this.incoming || Promise.resolve())
-        .then(async () => {
-          let frame;
-          try {
-            frame = JSON.parse(String(event.data));
-          } catch {
-            this.log("invalid_broker_frame");
-            return;
-          }
-          if (!frame || typeof frame.type !== "string") {
-            this.log("invalid_broker_frame");
-            return;
-          }
-          if (frame.type === "welcome") clearTimeout(authTimer);
-          await this.handleFrame(frame, socket);
-        })
-        .catch((error) => {
-          this.log("receive_failed", { error: error.message });
-          void this.stop(error);
-        });
-    });
-
-    socket.addEventListener("error", () => this.log("websocket_error"));
-
-    socket.addEventListener("close", (event) => {
-      clearTimeout(authTimer);
-      clearInterval(this.heartbeat);
-      if (this.socket !== socket) return;
-      this.socket = null;
-      this.connected = false;
-      this.ready = false;
-      if (event.code === 4003) {
-        this.halted = true;
-        this.engine?.close();
-        this.report({ phase: "halted", error: "AIChat token rejected; reconnect disabled" });
-      } else {
-        this.report({ phase: this.halted ? "halted" : this.stopping ? "stopped" : "reconnecting" });
-      }
-      if (!this.stopping && !this.halted) {
-        this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay);
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
-      }
-    });
-
-    clearInterval(this.heartbeat);
-    this.heartbeat = setInterval(() => {
-      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - this.lastFrame > 75000) {
-        this.log("heartbeat_timeout");
-        socket.close();
-      } else if (this.ready) {
-        socket.send(JSON.stringify({ type: "ping" }));
-      }
-    }, 30000);
+    this.broker.start();
   }
 
   async checkUpdate() {
     const health = await this.http.request("/health");
-    const parse = (value) => (/^\d+\.\d+\.\d+$/.test(value || "") ? value.split(".").map(Number) : null);
-    const current = parse(VERSION);
-    const latest = parse(health.version);
-    if (
-      current &&
-      latest &&
-      latest.some((n, i) => n > current[i] && latest.slice(0, i).every((v, j) => v === current[j]))
-    ) {
+    if (newerVersion(VERSION, health.version)) {
       this.log("update_available", {
         installed: VERSION,
         available: health.version,
@@ -3544,15 +3290,13 @@ class Channel {
     this.clearPermissionWatchdog();
     this.cancelPendingPermissions("closed");
     this.engine?.close();
-    for (const timer of [this.reconnectTimer, this.activityTimer, this.usageTimer]) clearTimeout(timer);
+    for (const timer of [this.activityTimer, this.usageTimer]) clearTimeout(timer);
     clearInterval(this.stopWatcher);
-    clearInterval(this.heartbeat);
-    this.ready = false;
     this.connected = false;
     this.activity("idle");
     await this.activityChain.catch(() => {});
     try {
-      this.socket?.close();
+      this.broker.stop();
     } catch {}
     try {
       const stopFile = path.join(this.cfg.runtime, "stop");
@@ -3799,7 +3543,7 @@ async function main(args = process.argv.slice(2)) {
           before: String(id + 1),
           limit: "500",
         });
-        const history = await new BrokerHttp(cfg).request("/api/history?" + query);
+        const history = await makeHttp(cfg).request("/api/history?" + query);
         const original = history.messages?.find((message) => message.id === id);
         if (!original) {
           throw new Error("Original message not available in broker history; cannot retry a compact receipt");
@@ -3887,6 +3631,7 @@ export {
   AcpRpc,
   AttachServer,
   BrokerHttp,
+  BrokerSocket,
   CapacityError,
   Channel,
   ConsoleUI,
@@ -3912,7 +3657,6 @@ export {
   mimeFor,
   nameFromDisposition,
   parseConsoleCommand,
-  safeUploadPath,
   sanitizeTerminal,
   serveMcp,
   summarizeToolCall,
