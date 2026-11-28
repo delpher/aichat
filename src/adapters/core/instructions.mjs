@@ -18,16 +18,23 @@ export async function fetchInstructions({ httpBase, token, timeoutMs = 3000 }) {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!r.ok) return null;
-    const data = await r.json();
-    const rules = data?.rules;
-    if (!rules || typeof rules.text !== "string" || !rules.text.trim() || typeof data.self?.name !== "string") return null;
-    return {
-      rules: { text: rules.text, by: String(rules.by ?? ""), ts: String(rules.ts ?? ""), ...(rules.draft ? { draft: true } : {}) },
-      self: { name: data.self.name, ...(typeof data.self.description === "string" && data.self.description ? { description: data.self.description } : {}) },
-    };
+    return parseInstructions(await r.json());
   } catch {
     return null;
   }
+}
+
+/**
+ * The answer of GET /api/instructions checked and cut to what is used, or null when it is not one. For an adapter
+ * that asks the broker its own way (agy through BrokerHttp, which its tests replace).
+ */
+export function parseInstructions(data) {
+  const rules = data?.rules;
+  if (!rules || typeof rules.text !== "string" || !rules.text.trim() || typeof data.self?.name !== "string") return null;
+  return {
+    rules: { text: rules.text, by: String(rules.by ?? ""), ts: String(rules.ts ?? ""), ...(rules.draft ? { draft: true } : {}) },
+    self: { name: data.self.name, ...(typeof data.self.description === "string" && data.self.description ? { description: data.self.description } : {}) },
+  };
 }
 
 /** Which rules these are: the broker's draft, or who saved them and when. */

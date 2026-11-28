@@ -19,7 +19,9 @@ import {
   State,
   TOOLS,
   UncertainError,
+  agyRuntime,
   attachTerminal,
+  buildAgentInstructions,
   callTool,
   cleanOldAttachFiles,
   formatReactionsSince,
@@ -527,6 +529,7 @@ test("install creates config paused=true and refuses overwrite; callTool appends
   assert.equal(res.mode, "accept-edits");
   assert.ok(fs.existsSync(path.join(agentDir, "agy-channel.mjs")));
   assert.ok(fs.existsSync(path.join(agentDir, "aichat.config.json")));
+  assert.equal(fs.existsSync(path.join(agentDir, "AGENTS.md")), false);
   assert.ok(fs.existsSync(path.join(agentDir, "start.ps1")));
   assert.ok(fs.existsSync(path.join(agentDir, "stop.ps1")));
   const startSh = path.join(agentDir, "start.sh");
@@ -1996,6 +1999,71 @@ test("Channel wires Remote MCP (/mcp + Bearer) alongside local aichat_files and 
   await assert.rejects(() => chOld.start({ probe: true }), /upgrade the broker to 0\.29\.0/i);
   assert.equal(rpcOld.requests.length, 0);
   await chOld.stop();
+});
+
+test("Channel composes instructions from /api/instructions with local precedence and falls back on pre-0.32 broker", async (t) => {
+  const { agentDir, cfg } = makeTempEnv(t);
+
+  // Runtime block itself carries no hardcoded participant names
+  const runtimeNoOwners = agyRuntime({ owners: [] });
+  assert.doesNotMatch(runtimeNoOwners, /\b(alexey|claude|opencode|codex)\b/i);
+  assert.match(runtimeNoOwners, /mcp_aichat_\*/);
+  assert.match(runtimeNoOwners, /mcp_aichat_files_upload_file/);
+  assert.match(runtimeNoOwners, /verifiedOwner/);
+
+  // 1. 0.32+ broker serves GET /api/instructions -> broker rules + self + runtime + local rules last
+  const cfgWithLocal = { ...cfg, instructions: "Only edit files inside the repo clone." };
+  const storeBroker = new State(path.join(agentDir, ".aichat", "state-instr-broker.json"));
+  const rpcBroker = new FakeRpc();
+  rpcBroker.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcBroker.onRequest("session/new", () => ({ sessionId: "sess-instr-broker" }));
+  const httpBroker = new FakeHttp("tok-instr-broker");
+  httpBroker.responses.set("/api/instructions", {
+    rules: { text: "# Broker Rules\n- Always set reply_to.", by: "alexey", ts: "2026-11-28T12:00:00.000Z" },
+    self: { name: "antigravity-alexey", description: "Потужний хлопець!" },
+  });
+
+  const chBroker = new Channel(cfgWithLocal, { rpc: rpcBroker, http: httpBroker, store: storeBroker });
+  await chBroker.start({ probe: true });
+  const promptBroker = rpcBroker.requests.find((r) => r.method === "session/new").params._meta.antigravity.systemPrompt.append;
+  const idxRules = promptBroker.indexOf("# Broker Rules");
+  const idxSelf = promptBroker.indexOf("You are antigravity-alexey on AIChat.");
+  const idxRuntime = promptBroker.indexOf("## How your runtime connects you to AIChat");
+  const idxLocal = promptBroker.indexOf("## Local rules from your owner");
+  assert.ok(idxRules >= 0 && idxSelf > idxRules && idxRuntime > idxSelf && idxLocal > idxRuntime);
+  assert.ok(promptBroker.includes("An AIChat admin wrote about you: Потужний хлопець!"));
+  assert.ok(promptBroker.includes("Only edit files inside the repo clone."));
+  assert.deepEqual(chBroker.status.instructions, [
+    { source: "broker", version: "2026-11-28T12:00:00.000Z, by alexey" },
+    { source: "adapter" },
+    { source: "local" },
+  ]);
+  await chBroker.stop();
+
+  // 2. Pre-0.32 broker (/api/instructions returns 404) -> graceful fallback to built-in rules + runtime
+  const storeFallback = new State(path.join(agentDir, ".aichat", "state-instr-fallback.json"));
+  const rpcFallback = new FakeRpc();
+  rpcFallback.onRequest("initialize", () => ({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } }));
+  rpcFallback.onRequest("session/new", () => ({ sessionId: "sess-instr-fallback" }));
+  const httpFallback = new FakeHttp("tok-instr-fallback");
+  httpFallback.responses.set("/api/instructions", () => {
+    const err = new Error("AIChat HTTP 404: not found");
+    err.status = 404;
+    throw err;
+  });
+
+  const chFallback = new Channel(cfg, { rpc: rpcFallback, http: httpFallback, store: storeFallback });
+  await chFallback.start({ probe: true });
+  const promptFallback = rpcFallback.requests.find((r) => r.method === "session/new").params._meta.antigravity.systemPrompt.append;
+  assert.ok(promptFallback.includes("Always set reply_to"));
+  assert.ok(promptFallback.includes("mcp_aichat_*"));
+  assert.doesNotMatch(promptFallback, /## Local rules from your owner/);
+  assert.deepEqual(chFallback.status.instructions, [
+    { source: "fallback", version: "built into the adapter" },
+    { source: "adapter" },
+  ]);
+  assert.deepEqual(buildAgentInstructions(cfg, null).parts, chFallback.status.instructions);
+  await chFallback.stop();
 });
 
 test("Channel ignores live reaction frames and forwards reactions_since on incoming messages without empty fields (#2443/#2445)", async (t) => {
