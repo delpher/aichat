@@ -83,7 +83,9 @@ test("the OpenCode plugin imports only node:* modules and names itself opencode-
   const code = readFileSync(source, "utf8");
   const imports = [...code.matchAll(/^import\s.*?from\s+"([^"]+)"/gm)].map((m) => m[1]);
   assert.ok(imports.length > 0);
-  for (const m of imports) assert.match(m, /^node:/, m);
+  // the plugin is bundled into one file: the source may import the shared core, but nothing from npm.
+  // `src/test/channel-bundles.test.ts` checks the built bundle itself for anything but node:*.
+  for (const m of imports) assert.ok(m.startsWith("node:") || m.startsWith("./core/"), m);
   assert.match(code, /const PLUGIN_NAME = "opencode-channel";/);
   assert.match(code, /typeof __AICHAT_VERSION__ === "string" \? __AICHAT_VERSION__/);
 });
@@ -181,11 +183,13 @@ test("the plugin's own tools are only upload_file and get_attachment: the server
       assert.equal(calls.at(-1)?.url, "http://127.0.0.1:9/api/files");
       assert.equal(calls.at(-1)?.method, "POST");
 
-      await assert.rejects(() => byName.get("upload_file")!.execute({ path: join(dir, "outside.txt") }, {}), /можна вивантажувати/);
+      await assert.rejects(() => byName.get("upload_file")!.execute({ path: join(dir, "outside.txt") }, {}), /outside the upload folders/);
 
       const got = await byName.get("get_attachment")!.execute({ file_id: "f1" }, {});
       const saved = JSON.parse(got.content) as { path: string; name: string; size: number };
       assert.equal(saved.name, "pic.png");
+      // the shared core writes <id>-<name>, so two attachments with the same name do not clash
+      assert.match(saved.path, /[\\/]f1-pic\.png$/);
       assert.equal(saved.size, 11);
       assert.equal(readFileSync(saved.path, "utf8"), "image-bytes");
       rmSync(saved.path, { force: true });
