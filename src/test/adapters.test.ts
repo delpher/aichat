@@ -42,10 +42,12 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   // a message sent while Claude is offline must still arrive
   const firstId = await peer.send({ to: "claude1", text: "are you there?" });
 
+  // the adapter's attachments folder: downloads go there, and it is one of the folders upload_file takes files from
+  const filesDir = mkdtempSync(join(tmpdir(), "aichat-test-"));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL("../adapters/claude-channel.js", import.meta.url))],
-    env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok("claude1") } as Record<string, string>,
+    env: { ...process.env, AICHAT_URL: url, AICHAT_TOKEN: tok("claude1"), AICHAT_FILES_DIR: filesDir } as Record<string, string>,
     stderr: "pipe",
   });
   const client = new Client({ name: "fake-claude-code", version: "0.0.0" });
@@ -144,16 +146,16 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   while (!notes.length && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
   assert.match(notes[0].params!.content, new RegExp(`^look\\n\\[attachment file_id=${pic.id} name="dot.png" type=image/png`));
   assert.equal((notes[0].params!.meta as Record<string, string>).attachments, "1");
-  const filesDir = mkdtempSync(join(tmpdir(), "aichat-test-"));
   const att = await client.callTool({ name: "get_attachment", arguments: { file_id: pic.id } });
   const parts = att.content as { type: string; data?: string; mimeType?: string; text?: string }[];
   assert.equal(parts[0].type, "image");
   assert.equal(parts[0].mimeType, "image/png");
   assert.equal(Buffer.from(parts[0].data!, "base64").equals(png), true);
   const saved = parts[1].text!.match(/to (.+)$/)![1];
+  assert.equal(saved, join(filesDir, `${pic.id}-dot.png`));
   assert.equal(readFileSync(saved).equals(png), true);
 
-  // sending a local file: upload it from a temporary folder, then attach its id
+  // sending a local file: upload it from the attachments folder, then attach its id
   const local = join(filesDir, "report.txt");
   writeFileSync(local, "numbers");
   const up = await call("upload_file", { path: local });
@@ -161,11 +163,21 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
   const withFile = nextMessage(peer);
   const sent = await client.callTool({ name: "send_message", arguments: { to: "peer", text: "here", attachments: [fileId] } });
   assert.match((sent.content as { text: string }[])[0].text, /1 file/);
-  // a file outside the outbox and the temporary folders stays on this machine
+  // a file outside the outbox and the attachments folder stays on this machine
   const outside = fileURLToPath(new URL("../../package.json", import.meta.url));
   const refused = await client.callTool({ name: "upload_file", arguments: { path: outside } });
   assert.equal(refused.isError, true);
   assert.match((refused.content as { text: string }[])[0].text, /outside the upload folders/);
+  // nor does a file elsewhere in the temp folder, where other programs keep theirs (codex-alexey, 3947)
+  const elsewhere = mkdtempSync(join(tmpdir(), "aichat-other-"));
+  writeFileSync(join(elsewhere, "notes.txt"), "theirs");
+  const notMine = await client.callTool({ name: "upload_file", arguments: { path: join(elsewhere, "notes.txt") } });
+  assert.equal(notMine.isError, true);
+  rmSync(elsewhere, { recursive: true, force: true });
+  // and a private one is refused even in the attachments folder (the shared rule, core/files.mjs)
+  writeFileSync(join(filesDir, ".env"), "SECRET=1");
+  const priv = await client.callTool({ name: "upload_file", arguments: { path: join(filesDir, ".env") } });
+  assert.match((priv.content as { text: string }[])[0].text, /private/);
   const fm = await withFile;
   assert.equal(fm.attachments?.[0].name, "report.txt");
   assert.equal(fm.attachments?.[0].mime, "text/plain");
