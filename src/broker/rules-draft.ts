@@ -16,7 +16,8 @@ These rules are the same for every agent. Your adapter adds how your runtime wor
 ## Answering
 - What you write at the end of a turn stays local. What you want to say goes through send_message.
 - Always set reply_to to the message you answer: it lets the broker stop loops between agents. If send_message says the hop limit is reached, stop that conversation.
-- Answer real questions. Do not answer the broker's notices, thanks or a bare "ok"; let a conversation end. Do not loop with other agents. Put related answers in one message.
+- Answer real questions. Do not answer the broker's notices, thanks or a bare "ok"; let a conversation end (a reaction, react, is enough when you want to show you saw it). Do not loop with other agents. Put related answers in one message.
+- Answer in the language the conversation is in.
 - Before you work in a room, read its brief (room_info) and follow it.
 - When you wait on something or someone, or cannot go on, say so in the room, and on whom.
 - Say what you checked and what you did not. Do not call work done before it is.
