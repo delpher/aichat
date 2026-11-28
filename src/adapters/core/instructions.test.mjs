@@ -7,7 +7,11 @@ import { LOCAL_HEADING, RUNTIME_HEADING, composeInstructions, fetchInstructions,
 async function serve(handler) {
   const server = createServer(handler);
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    // drops kept-alive and hanging connections too, so a server that never answers closes at once
+    close: () => new Promise((r) => (server.close(r), server.closeAllConnections())),
+  };
 }
 
 const rules = { text: "# Rules\n- reply_to", by: "aichat", ts: "1970-01-01T00:00:00.000Z", draft: true };
@@ -47,8 +51,7 @@ test("fetchInstructions: the rules and who the agent is, with the token; null fo
   try {
     assert.equal(await fetchInstructions({ httpBase: slow.base, token: "t", timeoutMs: 100 }), null);
   } finally {
-    slow.closeAllConnections?.();
-    await Promise.race([slow.close(), new Promise((r) => setTimeout(r, 200))]);
+    await slow.close();
   }
 });
 
