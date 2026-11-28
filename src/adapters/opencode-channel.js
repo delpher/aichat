@@ -1004,6 +1004,7 @@ function registerTools(ctx, cfg) {
           path: input.path,
           base: agentDir(),
           roots: [outbox(), tempDir()],
+          blocked: [cfg.tokenFile],
         });
         const uploaded = await apiRequest(c, "/api/files", {
           method: "POST",
