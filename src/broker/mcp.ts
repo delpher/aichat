@@ -2,8 +2,8 @@
 // of tools.ts here with their usual bearer token. Each MCP session belongs to the participant that opened it;
 // the token is checked on every request, so a removed or changed token stops the session at once.
 //
-// Sessions live in memory: after a restart a client gets 404 and opens a new one (Claude Code does it on its
-// own, sometimes several at once), so sessions are cheap, idle ones close and each participant has a cap.
+// Sessions live in memory and are cheap: idle ones close and each participant has a cap. A request with a session
+// the broker no longer knows (it closed, or the broker restarted) is still served, without a session (see handle).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -41,10 +41,18 @@ export class McpEndpoint {
     const sid = req.headers["mcp-session-id"];
     if (typeof sid === "string" && sid) {
       const s = this.sessions.get(sid);
-      // another participant's session id is as unknown to this caller as an expired one
-      if (!s || s.agent !== agent) return rpcError(res, 404, -32001, "Session not found");
-      s.last = this.o.now();
-      return s.transport.handleRequest(req, res, body);
+      if (s && s.agent === agent) {
+        s.last = this.o.now();
+        return s.transport.handleRequest(req, res, body);
+      }
+      // A session the broker no longer knows: it closed while idle (a computer asleep), or the broker restarted (every
+      // release). agy, OpenCode and Codex do not open a new one after 404 and lose every AIChat tool until a reload
+      // (AIChat 4001-4006), so a POST is served without a session: who calls is the token, checked on every request,
+      // and the tools need nothing from the session. Another participant's id is as unknown to this caller.
+      // Without a session there is no stream for the broker to push into: GET is 405, DELETE has nothing to end.
+      if (req.method === "POST") return this.stateless(req, res, agent, body);
+      if (req.method === "GET") return rpcError(res, 405, -32000, "Method not allowed: no stream without a session");
+      return rpcError(res, 404, -32001, "Session not found");
     }
     if (req.method !== "POST" || !isInitializeRequest(body))
       return rpcError(res, 400, -32000, "Bad Request: no Mcp-Session-Id, and this is not an initialize request");
@@ -53,12 +61,31 @@ export class McpEndpoint {
     return s.transport.handleRequest(req, res, body);
   }
 
-  private open(agent: string): Session {
+  /** How many requests were served without a session (for tests and the log). */
+  statelessServed = 0;
+
+  /** One request on a server of its own, with no session; both are gone when the answer is sent. */
+  private async stateless(req: IncomingMessage, res: ServerResponse, agent: string, body: unknown): Promise<void> {
+    const server = this.server(agent);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => void server.close().catch(() => {}));
+    this.statelessServed++;
+    await server.connect(transport);
+    return transport.handleRequest(req, res, body);
+  }
+
+  /** The MCP server of one participant: the broker's tools, called as that participant. */
+  private server(agent: string): Server {
     const server = new Server({ name: "aichat", version: this.o.version }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolList() }));
     server.setRequestHandler(CallToolRequestSchema, async (req) =>
       callTool(agent, req.params.name, req.params.arguments as Record<string, unknown> | undefined, this.o.host),
     );
+    return server;
+  }
+
+  private open(agent: string): Session {
+    const server = this.server(agent);
     const s: Session = {
       agent,
       server,
