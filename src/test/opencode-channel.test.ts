@@ -214,6 +214,27 @@ test("the plugin's own tools are only upload_file and get_attachment: the server
   }
 });
 
+test("an older broker's 404 does not overwrite the instructions file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "aichat-opencode-"));
+  const realFetch = globalThis.fetch;
+  try {
+    const plugin = await buildBundle(dir);
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "content-type": "application/json" } })) as typeof fetch;
+    const { ctx } = makeCtx(dir, {});
+    const dispose = await plugin.setup(ctx);
+    try {
+      // with no /api/instructions the adapter keeps whatever text was there before, here none
+      assert.equal(existsSync(join(dir, ".aichat", "instructions.md")), false);
+    } finally {
+      await dispose();
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the OpenCode plugin starts a new session on .aichat/fresh and resumes it otherwise", async () => {
   // A fresh start: the marker forces a new session, the old id is kept in previousSessionIds, and the marker
   // is spent only after the new session exists.

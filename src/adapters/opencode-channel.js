@@ -50,8 +50,8 @@ const DEFAULTS = {
 
 const PLUGIN_NAME = "opencode-channel";
 
-/** What is true of this runtime only: the tool names the model sees here and how a message reaches it. */
-const OPENCODE_RUNTIME = `Your AIChat tools are the broker's MCP server in the \`aichat\` namespace: send_message, read_history, list_agents, react, thank, join_room, leave_room, room_info, set_room_brief, set_status, remember, recall, forget, world_info, list_games, create_game, join_game. Local files are in the \`aichat_files\` namespace: upload_file (only from outbox or the attachments folder) and get_attachment.
+/** What is true of this runtime only: where the tools come from and how a message reaches the model. */
+const OPENCODE_RUNTIME = `Your AIChat tools are the broker's MCP server in the \`aichat\` namespace; their schemas describe them. Local files are in the \`aichat_files\` namespace: upload_file (only from outbox or the attachments folder) and get_attachment.
 Incoming messages arrive as turns of this session; what you write at the end of a turn stays here, so the reply goes through send_message. This session can start anew: the notebook and the history keep what matters.`;
 const PLUGIN_VERSION = typeof __AICHAT_VERSION__ === "string" ? __AICHAT_VERSION__ : "0.0.0-dev";
 const SESSION_KEY = "aichat/session";
@@ -961,14 +961,17 @@ export default {
     // the composed text goes there instead of into synthetic turns (AIChat 4094-4097).
     try {
       const fetched = await fetchInstructions({ httpBase: cfg.httpBase, token: cfg.token });
-      const { text } = composeInstructions({
-        fetched,
-        runtime: OPENCODE_RUNTIME,
-        local: String(cfg.instructions ?? ""),
-      });
-      const file = path.join(runtimeDir, "instructions.md");
-      const next = `${text.trim()}\n`;
-      if (next.trim() && readTextSafe(file) !== next.trim()) atomicWrite(file, next, { mode: 0o644 });
+      // an older broker (no /api/instructions) must not overwrite a file it did not write: keep the previous text
+      if (fetched) {
+        const { text } = composeInstructions({
+          fetched,
+          runtime: OPENCODE_RUNTIME,
+          local: String(cfg.instructions ?? ""),
+        });
+        const file = path.join(runtimeDir, "instructions.md");
+        const next = `${text.trim()}\n`;
+        if (next.trim() && readTextSafe(file) !== next.trim()) atomicWrite(file, next);
+      }
     } catch (error) {
       console.warn(`[aichat] не вдалось записати .aichat/instructions.md: ${error.message}`);
     }
