@@ -200,6 +200,14 @@ test("BrokerHttp: bearer, JSON both ways, 204, and errors sorted into definite /
   await assert.rejects(http.request("/no"), (e) => e.status === 409 && e.definite === true && !e.message.includes("secret-token-123"));
   await assert.rejects(http.request("/boom"), (e) => e.status === 502 && e.definite === false);
   await assert.rejects(http.request("/slow"), (e) => e instanceof UncertainError && e.uncertain === true);
+  // the caller's own signal cancels too, before the timeout (opencode-alexey, 3964)
+  const slower = new BrokerHttp({ httpBase: base, token: "secret-token-123", timeoutMs: 5000 });
+  const started = Date.now();
+  await assert.rejects(slower.request("/slow", { signal: AbortSignal.timeout(30) }), (e) => e instanceof UncertainError);
+  assert.ok(Date.now() - started < 400, "cancelled by the caller's signal, not the timeout");
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(slower.request("/ok", { signal: aborted.signal }), UncertainError);
   assert.equal(http.redact("x secret-token-123 y"), "x [REDACTED] y");
   assert.equal(http.tokenHash.length, 16);
   assert.throws(() => new BrokerHttp({ httpBase: base, token: "" }), /Empty AIChat token/);

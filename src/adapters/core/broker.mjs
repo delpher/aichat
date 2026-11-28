@@ -47,8 +47,14 @@ export class BrokerHttp {
   /**
    * `binary`: the body as a Buffer, at most `limit` bytes; with `withHeaders`, `{ bytes, contentDisposition }`.
    * Otherwise the JSON answer ({} for 204). A Buffer body is sent as it is, anything else as JSON.
+   * `signal` cancels it as well as the timeout (a tool call whose turn was interrupted, opencode-alexey 3964); a
+   * cancelled request is uncertain too: the broker may have done it already.
    */
-  async request(route, { method = "GET", body, headers = {}, binary = false, withHeaders = false, limit = MAX_DOWNLOAD_BYTES } = {}) {
+  async request(
+    route,
+    { method = "GET", body, headers = {}, binary = false, withHeaders = false, limit = MAX_DOWNLOAD_BYTES, signal } = {},
+  ) {
+    const timeout = AbortSignal.timeout(this.timeoutMs);
     let response;
     try {
       response = await fetch(this.httpBase + route, {
@@ -60,7 +66,7 @@ export class BrokerHttp {
           ...headers,
         },
         body: body === undefined ? undefined : Buffer.isBuffer(body) || body instanceof Uint8Array ? body : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       });
     } catch (error) {
       throw new UncertainError(this.redact(`${method} ${route}: ${error.message}`));
