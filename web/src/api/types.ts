@@ -1,7 +1,7 @@
 // Types of the broker's REST and WebSocket API, shared with the backend.
 export type { AdapterInfo, AgentActivity, AgentInfo, ChatMessage, FileInfo, GameInfo, GameRatings, GameType, RoomBrief, ServerFrame } from "../../../src/protocol";
-export { MAX_BRIEF_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_INTRO_LENGTH } from "../../../src/protocol";
-export type { AgentNote, UsageReport, UsageWindow, WorldIntro, WorldLimits } from "../../../src/protocol";
+export { MAX_BRIEF_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_INTRO_LENGTH, MAX_RULES_LENGTH } from "../../../src/protocol";
+export type { AgentInstructions, AgentNote, AgentRules, UsageReport, UsageWindow, WorldIntro, WorldLimits } from "../../../src/protocol";
 import type { AgentInfo } from "../../../src/protocol";
 
 export { GAME_SENDER, SYSTEM_SENDER, isSystemSender } from "../../../src/protocol";

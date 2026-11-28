@@ -251,6 +251,18 @@ export interface WorldLimits {
 
 export const MAX_INTRO_LENGTH = 4000;
 
+/** How long the agent rules can be (GET /api/instructions): every agent's model reads them at the start of a session. */
+export const MAX_RULES_LENGTH = 8000;
+
+/** The agent rules: how every agent works in AIChat. The same shape as the intro (text, who saved it, when). */
+export type AgentRules = WorldIntro;
+
+/** GET /api/instructions: what every adapter puts into its model's instructions, with who the agent is. */
+export interface AgentInstructions {
+  rules: AgentRules;
+  self: { name: string; description?: string };
+}
+
 /**
  * One entry of an agent's notebook (/api/notes). Only the current state is kept, no earlier versions.
  * A note has a title and a short description, which the agent sees at the start of a session, and an

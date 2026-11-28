@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { connect, nextMessage, startBroker, tok } from "./helpers.js";
 import { Store } from "../broker/store.js";
-import type { AgentNote, WorldIntro } from "../protocol.js";
+import type { AgentInstructions, AgentNote, AgentRules, WorldIntro } from "../protocol.js";
 
 const BOSS = { name: "boss", kind: "human", admin: true };
 
@@ -46,6 +46,54 @@ test("world intro: any token reads it (the draft until an admin saves one), only
     // clearing the saved intro brings the draft back
     assert.equal((await boss<{ intro: WorldIntro }>("PUT", "/admin/api/intro", { text: "" })).data.intro.draft, true);
     assert.equal((await bot<{ intro: WorldIntro }>("GET", "/api/intro")).data.intro.draft, true);
+  } finally {
+    await broker.close();
+  }
+});
+
+// One text of rules for every agent, whatever runs it (AIChat 4024-4033): each adapter puts it into its model's
+// instructions, so it has no participant names and no tool-name prefixes.
+test("agent rules: any token reads them with who it is (the draft until an admin saves some), only admins write them", async () => {
+  const { broker, url, http } = await startBroker([{ name: "bot", description: "Тестовий агент." }, { name: "olena", kind: "human" }, BOSS]);
+  try {
+    const bot = api(http, "bot");
+    const boss = api(http, "boss");
+    const first = await bot<AgentInstructions>("GET", "/api/instructions");
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.data.self, { name: "bot", description: "Тестовий агент." });
+    assert.equal(first.data.rules.draft, true);
+    assert.equal(first.data.rules.by, "aichat");
+    assert.match(first.data.rules.text, /^# How agents work in AIChat/);
+    assert.match(first.data.rules.text, /reply_to/);
+    // the draft is the same for every runtime: no tool-name prefixes, nobody named
+    assert.doesNotMatch(first.data.rules.text, /mcp_|aichat_send|alexey|claude-|codex-|antigravity|opencode/);
+    assert.equal((await bot("PUT", "/admin/api/rules", { text: "hi" })).status, 401);
+    assert.equal((await api(http, "olena")("PUT", "/admin/api/rules", { text: "hi" })).status, 401);
+
+    const online = await connect(url, "bot");
+    const told = nextMessage(online);
+    const r = await boss<{ rules: AgentRules }>("PUT", "/admin/api/rules", { text: "  Rules: be kind.  " });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.rules.text, "Rules: be kind.");
+    assert.equal(r.data.rules.by, "boss");
+    assert.equal(r.data.rules.draft, undefined);
+    // agents online are told; the rules hold from their next session, when the adapter reads them
+    const m = await told;
+    assert.equal(m.from, "aichat");
+    assert.match(m.text, /^boss змінив правила агентів\. Вони діятимуть з наступної сесії, ось новий текст:\n\nRules: be kind\.$/);
+    const again = await bot<AgentInstructions>("GET", "/api/instructions");
+    assert.equal(again.data.rules.text, "Rules: be kind.");
+    // the intro is a text of its own
+    assert.equal((await bot<{ intro: WorldIntro }>("GET", "/api/intro")).data.intro.draft, true);
+
+    assert.equal((await boss("PUT", "/admin/api/rules", { text: "x".repeat(8001) })).status, 400);
+    assert.equal((await boss("PUT", "/admin/api/rules", { text: 5 })).status, 400);
+    // the same text again tells nobody; clearing brings the draft back
+    await boss("PUT", "/admin/api/rules", { text: "Rules: be kind." });
+    await assert.rejects(nextMessage(online, 300));
+    assert.equal((await boss<{ rules: AgentRules }>("PUT", "/admin/api/rules", { text: "" })).data.rules.draft, true);
+    assert.equal((await bot<AgentInstructions>("GET", "/api/instructions")).data.rules.draft, true);
+    online.close();
   } finally {
     await broker.close();
   }

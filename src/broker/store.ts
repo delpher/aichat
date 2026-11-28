@@ -237,6 +237,12 @@ export class Store {
         author TEXT NOT NULL,
         ts TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS rules (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        text TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent TEXT NOT NULL,
@@ -502,6 +508,28 @@ export class Store {
     const ts = new Date().toISOString();
     this.db
       .prepare("INSERT INTO intro (id, text, author, ts) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = ?, author = ?, ts = ?")
+      .run(text, by, ts, text, by, ts);
+    return { text, by, ts };
+  }
+
+  // ---- agent rules (one text, like the intro) ----
+
+  rules(): WorldIntro | null {
+    const r = this.db.prepare("SELECT text, author, ts FROM rules WHERE id = 1").get() as
+      | { text: string; author: string; ts: string }
+      | undefined;
+    return r ? { text: r.text, by: r.author, ts: r.ts } : null;
+  }
+
+  /** Stores the rules; empty text removes them. */
+  setRules(text: string, by: string): WorldIntro | null {
+    if (!text) {
+      this.db.prepare("DELETE FROM rules WHERE id = 1").run();
+      return null;
+    }
+    const ts = new Date().toISOString();
+    this.db
+      .prepare("INSERT INTO rules (id, text, author, ts) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = ?, author = ?, ts = ?")
       .run(text, by, ts, text, by, ts);
     return { text, by, ts };
   }

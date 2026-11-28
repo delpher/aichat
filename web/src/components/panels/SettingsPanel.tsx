@@ -8,6 +8,7 @@ import { Status, type StatusValue } from "./Status";
 import { UpdateBox } from "./UpdateBox";
 import { AutomationPanel } from "./AutomationPanel";
 import { IntroSettings } from "./IntroPanel";
+import { RulesSettings } from "./RulesSettings";
 import { ManagerBox } from "./ManagerBox";
 import { ToolsPanel } from "./ToolsPanel";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/views";
@@ -92,6 +93,7 @@ const TAB_LABEL: Record<SettingsTab, string> = {
   general: "Загальні",
   wake: "Пробудження",
   intro: "Вводна",
+  rules: "Правила агентів",
   automation: "Автоматизація",
   tools: "Інструменти",
   manager: "Менеджер",
@@ -123,6 +125,7 @@ export function SettingsPanel({ tab = "general" }: { tab?: SettingsTab }) {
       </div>
       {(tab === "general" || tab === "wake") && <BrokerSettings tab={tab} />}
       {tab === "intro" && <IntroSettings />}
+      {tab === "rules" && <RulesSettings />}
       {tab === "automation" && <AutomationPanel />}
       {tab === "tools" && <ToolsPanel />}
       {tab === "manager" && <ManagerBox />}
