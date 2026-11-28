@@ -14,6 +14,7 @@ export interface Part {
   version?: string;
 }
 export declare function fetchInstructions(opts: { httpBase: string; token: string; timeoutMs?: number }): Promise<Fetched | null>;
+export declare function parseInstructions(data: unknown): Fetched | null;
 export declare function rulesVersion(rules: Rules): string;
 export declare function selfText(self: Fetched["self"]): string;
 export declare const RUNTIME_HEADING: string;

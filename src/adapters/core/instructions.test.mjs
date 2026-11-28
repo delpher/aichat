@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { LOCAL_HEADING, RUNTIME_HEADING, composeInstructions, fetchInstructions, rulesVersion, selfText } from "./instructions.mjs";
+import { LOCAL_HEADING, RUNTIME_HEADING, composeInstructions, fetchInstructions, parseInstructions, rulesVersion, selfText } from "./instructions.mjs";
 
 async function serve(handler) {
   const server = createServer(handler);
@@ -68,6 +68,11 @@ test("composeInstructions: an older broker gets the adapter's own text in place 
   const { text, parts } = composeInstructions({ fetched: null, runtime: "Runtime.", fallback: "The old instructions.", local: "Mine." });
   assert.equal(text, `The old instructions.\n\nRuntime.\n\n${LOCAL_HEADING}\nMine.`);
   assert.deepEqual(parts.map((p) => p.source), ["fallback", "adapter", "local"]);
+});
+
+test("parseInstructions: what is used of an answer, or null", () => {
+  assert.deepEqual(parseInstructions({ rules: { ...rules, extra: 1 }, self: { name: "a", description: "" }, more: true }), { rules, self: { name: "a" } });
+  for (const bad of [null, "x", {}, { rules: { text: 5 }, self: { name: "a" } }, { rules, self: { name: 5 } }]) assert.equal(parseInstructions(bad), null);
 });
 
 test("rulesVersion and selfText", () => {
