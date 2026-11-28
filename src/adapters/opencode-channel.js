@@ -11,9 +11,9 @@
 //     перепідключається з backoff; close 4003 (токен відкинуто) не повторює;
 //   * вхідні `message` кладе в ОКРЕМУ сесію (id тримає в ctx.storage, назва з
 //     конфігу), після успішної ін'єкції відповідає {"type":"delivered","id":...};
-//   * додає тули aichat_send / aichat_read / aichat_react / aichat_agents /
-//     aichat_join / aichat_status / aichat_note. Відправка, реакції й читання —
-//     звичайним HTTP API брокера: WS потрібен лише для push.
+//   * the plugin's own tools are the two local file ones (upload_file / get_attachment);
+//     the server tools (send_message, read_history, ...) come from the broker's /mcp;
+//     the broker's HTTP API stays for what the socket cannot push.
 //
 // Налаштування (перше знайдене переважає): options плагіна → aichat.config.json у
 // теці профілю → типові значення. Токен — з ~/.secrets/aichat-token або AICHAT_TOKEN
@@ -21,9 +21,10 @@
 //
 // Підключення: файл у <профіль>/.opencode/plugins/ — OpenCode вантажить звідти сам.
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { readUpload, saveDownload } from "./core/files.mjs";
 
 const DEFAULTS = {
   url: "ws://aichat.home/ws",
@@ -182,53 +183,6 @@ async function apiDownload(cfg, pathname, signal) {
   return { bytes, headers: res.headers };
 }
 
-const MIME_BY_EXT = {
-  ".txt": "text/plain; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".json": "application/json",
-  ".jsonc": "application/json",
-  ".js": "text/javascript; charset=utf-8",
-  ".ts": "text/plain; charset=utf-8",
-  ".cjs": "text/javascript; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".log": "text/plain; charset=utf-8",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".svg": "image/svg+xml",
-  ".pdf": "application/pdf",
-  ".zip": "application/zip",
-  ".mp3": "audio/mpeg",
-  ".ogg": "audio/ogg",
-  ".wav": "audio/wav",
-  ".mp4": "video/mp4",
-};
-
-const guessMime = (name) => MIME_BY_EXT[path.extname(name).toLowerCase()] || "application/octet-stream";
-
-// RFC 5987: attachment; filename*=UTF-8''%D1%84... — беремо те, що після ''
-function nameFromDisposition(header, fallback) {
-  if (!header) return fallback;
-  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  const value = star?.[1] ?? plain?.[1];
-  if (!value) return fallback;
-  try {
-    return decodeURIComponent(value.trim());
-  } catch {
-    return value.trim() || fallback;
-  }
-}
-
-// безпечне ім'я для запису на диск
-function safeFileName(name, fallback) {
-  const base = path.basename(String(name || "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim();
-  return base && base !== "." && base !== ".." ? base : fallback;
-}
 
 // Реакції на власні повідомлення, які брокер доклеює до наступного вхідного кадру.
 // Сама реакція агента не будить: це лише довідка в контексті вже наявного ходу.
@@ -1024,21 +978,6 @@ function registerTools(ctx, cfg) {
   const agentDir = () => path.resolve(ctx.location?.directory || process.cwd());
   const outbox = () => path.join(agentDir(), "outbox");
   const tempDir = () => path.join(tmpdir(), "aichat-files");
-  const toReal = (p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  const within = (dir, file) => {
-    const rel = path.relative(dir, file);
-    return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel);
-  };
-  const looksSecret = (base) =>
-    /(^|[._-])(token|secret|secrets|key|keys|creds|credentials|password|passwd)([._-]|$)/.test(base) ||
-    base === ".env" ||
-    base.startsWith(".env.");
 
   return ctx.tool.transform((editor) => {
     editor.namespace({
@@ -1059,34 +998,23 @@ function registerTools(ctx, cfg) {
       options: { namespace: "aichat_files", codemode: true },
       execute: async (input, context) => {
         const c = requireToken();
-        const requested = path.resolve(String(input.path));
-        // розкриваємо symlink: лінк у теці агента, що веде на ~/.secrets, інакше пройшов би
-        let file;
-        try {
-          file = realpathSync(requested);
-        } catch {
-          throw new Error(`файл не знайдено: ${requested}`);
-        }
         mkdirSync(tempDir(), { recursive: true });
-        const base = path.basename(file).toLowerCase();
-        if (looksSecret(base) || /[\\/]\.secrets([\\/]|$)/i.test(file)) {
-          throw new Error(`не надсилаю схоже на секрет: ${path.basename(file)}`);
-        }
-        if (![toReal(outbox()), toReal(tempDir())].some((dir) => within(dir, file))) {
-          throw new Error(`можна вивантажувати лише з ${outbox()} або ${tempDir()}: ${file}`);
-        }
-        const size = statSync(file).size;
-        const bytes = readFileSync(file);
-        const name = path.basename(file);
+        // the same rule as every adapter: only outbox and this adapter's attachment folder, no private files
+        const { bytes, name, mime } = readUpload({
+          path: input.path,
+          base: agentDir(),
+          roots: [outbox(), tempDir()],
+          blocked: [cfg.tokenFile],
+        });
         const uploaded = await apiRequest(c, "/api/files", {
           method: "POST",
           body: bytes,
-          headers: { "Content-Type": guessMime(name), "X-Filename": encodeURIComponent(name) },
+          headers: { "Content-Type": mime, "X-Filename": encodeURIComponent(name) },
           signal: context?.signal,
         });
         const fileID = uploaded?.file?.id;
         if (!fileID) throw new Error("брокер не повернув id файлу");
-        return { content: JSON.stringify({ file_id: String(fileID), name, size }) };
+        return { content: JSON.stringify({ file_id: String(fileID), name, size: bytes.byteLength }) };
       },
     });
 
@@ -1107,14 +1035,14 @@ function registerTools(ctx, cfg) {
         const c = requireToken();
         const id = String(input.file_id);
         const { bytes, headers } = await apiDownload(c, `/api/files/${encodeURIComponent(id)}`, context?.signal);
-        const dir = tempDir();
-        mkdirSync(dir, { recursive: true });
-        const wanted = typeof input.name === "string" && input.name.trim() ? String(input.name) : `file-${id}`;
-        const fallback = safeFileName(wanted, `file-${id}`);
-        const name = safeFileName(nameFromDisposition(headers.get("content-disposition"), fallback), fallback);
-        const file = path.join(dir, name);
-        writeFileSync(file, bytes);
-        return { content: JSON.stringify({ path: file, name, size: bytes.byteLength }) };
+        const saved = saveDownload({
+          dir: tempDir(),
+          id,
+          disposition: headers.get("content-disposition"),
+          fallback: typeof input.name === "string" ? input.name : undefined,
+          bytes,
+        });
+        return { content: JSON.stringify({ path: saved.path, name: saved.name, size: bytes.byteLength }) };
       },
     });
   });
