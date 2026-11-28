@@ -198,7 +198,14 @@ export class BrokerSocket {
 
   open() {
     if (this.stopped || this.halted || this.socket) return;
-    const socket = new globalThis.WebSocket(this.url);
+    let socket;
+    try {
+      socket = new globalThis.WebSocket(this.url);
+    } catch (error) {
+      // a URL the WebSocket refuses (not ws:// or wss://, not a URL at all) will not get better by retrying
+      this.fail(new Error(`cannot open ${this.url}: ${error.message}`));
+      return;
+    }
     this.socket = socket;
     this.ready = false;
     this.lastFrame = Date.now();
