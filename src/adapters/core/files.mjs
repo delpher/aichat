@@ -2,6 +2,7 @@
 // what type it has and which files an agent may upload, so the copies can no longer drift apart.
 // Plain JS with node:* imports only: the .mjs adapters and their tests import it as it is, the TS ones through
 // files.d.mts, and scripts/bundle.mjs puts it into each adapter's single file.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -147,8 +148,18 @@ export function readUpload({ path: requested, base = process.cwd(), roots, block
  */
 export function saveDownload({ dir, id, disposition, fallback, bytes }) {
   const name = safeFileName(nameFromDisposition(disposition) || fallback || "", "") || safeFileName(id, "file");
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, `${safeFileName(id, "file")}-${name}`);
-  fs.writeFileSync(file, bytes);
+  // The folder may be in a temp folder others can write to (/tmp): write a new owner-only file that cannot exist yet
+  // ("wx": never through a link someone put there), then rename it over the name, which replaces a link itself rather
+  // than writing where it points (antigravity-alexey's agy did so; AIChat 4007).
+  const temp = path.join(dir, `.${crypto.randomUUID()}.part`);
+  fs.writeFileSync(temp, bytes, { flag: "wx", mode: 0o600 });
+  try {
+    fs.renameSync(temp, file);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
   return { path: file, name };
 }

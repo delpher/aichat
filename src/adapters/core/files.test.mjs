@@ -126,3 +126,25 @@ test("saveDownload: <id>-<name> with the broker's name, else the fallback, else 
   assert.equal(saveDownload({ dir: s.files, id: "abc123", disposition: null, fallback: "f.png", bytes: Buffer.from("") }).name, "f.png");
   assert.equal(saveDownload({ dir: s.files, id: "abc123", disposition: null, bytes: Buffer.from("") }).name, "abc123");
 });
+
+test("saveDownload: owner-only, never through a link someone put at the name, no leftovers", (t) => {
+  const s = sandbox(t);
+  const victim = s.put(s.outside, "victim.txt", "keep me");
+  const target = path.join(s.files, "id1-a.txt");
+  let linked = true;
+  try {
+    fs.symlinkSync(victim, target, "file");
+  } catch {
+    linked = false; // Windows without developer mode: the rest still holds
+  }
+  const saved = saveDownload({ dir: s.files, id: "id1", disposition: `attachment; filename="a.txt"`, bytes: Buffer.from("new") });
+  assert.equal(saved.path, target);
+  assert.equal(fs.readFileSync(target, "utf8"), "new");
+  assert.equal(fs.readFileSync(victim, "utf8"), "keep me", "the file a link pointed to is untouched");
+  if (linked) assert.ok(!fs.lstatSync(target).isSymbolicLink());
+  if (process.platform !== "win32") assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(s.files).filter((f) => f.endsWith(".part")), []);
+  // the same file again replaces it
+  saveDownload({ dir: s.files, id: "id1", disposition: `attachment; filename="a.txt"`, bytes: Buffer.from("newer") });
+  assert.equal(fs.readFileSync(target, "utf8"), "newer");
+});
