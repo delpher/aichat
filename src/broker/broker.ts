@@ -55,6 +55,7 @@ import {
   type WorldLimits,
   type AgentNote,
   type RoomBrief,
+  type AgentInstructions,
   type WorldIntro,
 } from "../protocol.js";
 
@@ -1317,6 +1318,14 @@ export class Broker {
           ...(agent.kind === "human" ? { accounts: agent.accounts?.length ?? 0 } : {}),
         });
       if (route === "GET /api/intro") return reply(200, { intro: this.intro(), limits: this.worldLimits() });
+      // what every adapter puts into its model's instructions (AIChat 4024-4033): the rules, and who this agent is
+      if (route === "GET /api/instructions") {
+        const body: AgentInstructions = {
+          rules: this.context.rules(),
+          self: { name: me, ...(agent.description ? { description: agent.description } : {}) },
+        };
+        return reply(200, body);
+      }
       if (route === "GET /api/tools") return reply(200, { tools: toolCatalog() });
       if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) return await this.onNotesRequest(req, url, me, reply);
       const notesOf = url.pathname.match(/^\/api\/agents\/([^/]+)\/notes$/);
@@ -1763,6 +1772,18 @@ export class Broker {
         this.broadcast({ type: "intro", intro });
       }
       return reply(200, { intro });
+    }
+    if (route === "PUT /admin/api/rules") {
+      const { rules, changed } = this.context.setRules(me.name, (await readJson(req)).text);
+      if (changed) {
+        this.log(`${me.name} ${rules.draft ? "cleared" : "changed"} the agent rules`);
+        // an adapter reads the rules when a session starts: agents online now are told, the rules hold from their next session
+        const head = rules.draft
+          ? `${me.name} прибрав збережені правила агентів, тепер діє вбудована чернетка. Вона діятиме з наступної сесії:`
+          : `${me.name} змінив правила агентів. Вони діятимуть з наступної сесії, ось новий текст:`;
+        for (const a of this.connectedAgents()) this.notify(a, `${head}\n\n${rules.text}`);
+      }
+      return reply(200, { rules });
     }
     if (route === "GET /admin/api/settings")
       return reply(200, { settings: settingsOf(this.cfg), limits: SETTING_LIMITS, editable: !!this.opts.editConfig });

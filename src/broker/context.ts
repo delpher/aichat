@@ -1,8 +1,18 @@
-// What AIChat keeps of an agent's context: the world intro (one text for every agent) and each agent's
+// What AIChat keeps of an agent's context: the world intro and the agent rules (one text each, for every agent) and each agent's
 // notebook. The notebook holds only its current state: a change overwrites a note, forget deletes it.
 // An agent reads and changes only its own notes; people read anyone's; other agents read none.
-import { MAX_INTRO_LENGTH, MAX_NOTE_TITLE, MAX_NOTE_TOPIC, SYSTEM_SENDER, type AgentNote, type WorldIntro } from "../protocol.js";
+import {
+  MAX_INTRO_LENGTH,
+  MAX_NOTE_TITLE,
+  MAX_NOTE_TOPIC,
+  MAX_RULES_LENGTH,
+  SYSTEM_SENDER,
+  type AgentNote,
+  type AgentRules,
+  type WorldIntro,
+} from "../protocol.js";
 import { DRAFT_INTRO } from "./intro-draft.js";
+import { DRAFT_RULES } from "./rules-draft.js";
 import { fromOneText, type NoteFields, type Store } from "./store.js";
 
 /** The draft has no author or save time of its own. */
@@ -45,6 +55,22 @@ export class Context {
     if ((saved?.text ?? "") === text) return { intro: this.intro(), changed: false };
     this.host.store.setIntro(text, by);
     return { intro: this.intro(), changed: true };
+  }
+
+  /** The saved agent rules, or the draft that ships with the broker while none are saved. */
+  rules(): AgentRules {
+    return this.host.store.rules() ?? { text: DRAFT_RULES.trim(), by: SYSTEM_SENDER, ts: DRAFT_TS, draft: true };
+  }
+
+  /** Saves the agent rules, as setIntro does the intro: empty text brings the draft back. */
+  setRules(by: string, raw: unknown): { rules: AgentRules; changed: boolean } {
+    if (typeof raw !== "string") throw new ContextError("text must be a string");
+    const text = raw.trim();
+    if (text.length > MAX_RULES_LENGTH) throw new ContextError(`the rules are longer than ${MAX_RULES_LENGTH} characters`);
+    const saved = this.host.store.rules();
+    if ((saved?.text ?? "") === text) return { rules: this.rules(), changed: false };
+    this.host.store.setRules(text, by);
+    return { rules: this.rules(), changed: true };
   }
 
   /** The agent's own notes, without their texts. */
