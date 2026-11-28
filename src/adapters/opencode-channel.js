@@ -24,7 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { BrokerSocket } from "./core/broker.mjs";
+import { BrokerHttp, BrokerSocket, newerVersion } from "./core/broker.mjs";
 import { readUpload, saveDownload } from "./core/files.mjs";
 
 const DEFAULTS = {
@@ -139,29 +139,10 @@ function writeStatus(ctx, cfg, state) {
   }
 }
 
-async function apiRequest(cfg, pathname, { method = "GET", body, headers: extra, signal } = {}) {
-  const headers = { Authorization: `Bearer ${cfg.token}`, ...(extra || {}) };
-  // JSON — лише для звичайних об'єктів; рядок/байти (файли) відправляємо як є
-  const isJson = body !== undefined && typeof body === "object" && !(body instanceof Uint8Array) && !(body instanceof ArrayBuffer);
-  if (isJson && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-  const res = await fetch(cfg.httpBase + pathname, {
-    method,
-    headers,
-    body: body === undefined ? undefined : isJson ? JSON.stringify(body) : body,
-    signal: signal ?? AbortSignal.timeout(cfg.requestTimeoutMs),
-  });
-  const raw = await res.text();
-  let data;
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch {
-    data = raw;
-  }
-  if (!res.ok) {
-    const reason = typeof data === "string" ? data : data?.error || "";
-    throw new Error(`${pathname}: HTTP ${res.status}${reason ? ` — ${reason}` : ""}`);
-  }
-  return data;
+const httpClient = (cfg) => new BrokerHttp({ httpBase: cfg.httpBase, token: cfg.token, timeoutMs: cfg.requestTimeoutMs });
+
+async function apiRequest(cfg, pathname, { method = "GET", body, headers, signal } = {}) {
+  return httpClient(cfg).request(pathname, { method, body, headers, signal });
 }
 
 // Стан роботи для веба AIChat (busy / waiting / idle). Помилки не мають валити чат.
@@ -175,13 +156,8 @@ async function postActivity(cfg, body) {
 
 // скачати файл суцільними байтами (apiRequest віддає текст і зіпсує бінарне)
 async function apiDownload(cfg, pathname, signal) {
-  const res = await fetch(cfg.httpBase + pathname, {
-    headers: { Authorization: `Bearer ${cfg.token}` },
-    signal: signal ?? AbortSignal.timeout(cfg.requestTimeoutMs),
-  });
-  if (!res.ok) throw new Error(`${pathname}: HTTP ${res.status}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  return { bytes, headers: res.headers };
+  const { bytes, contentDisposition } = await httpClient(cfg).request(pathname, { binary: true, withHeaders: true, signal });
+  return { bytes, headers: new Map([["content-disposition", contentDisposition]]) };
 }
 
 
@@ -485,29 +461,17 @@ function parseSemver(value) {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
-function semverNewer(candidate, current) {
-  const a = parseSemver(candidate);
-  const b = parseSemver(current);
-  if (!a || !b) return false;
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] > b[i];
-  }
-  return false;
-}
-
 async function checkForUpdate(ctx, cfg, state) {
   // локальна незбудована копія — нічого не кажемо
   if (PLUGIN_VERSION === "0.0.0-dev" || !parseSemver(PLUGIN_VERSION)) return;
   let info;
   try {
-    const res = await fetch(cfg.httpBase + "/health", { signal: AbortSignal.timeout(cfg.requestTimeoutMs) });
-    if (!res.ok) return;
-    info = await res.json();
+    info = await httpClient(cfg).request("/health");
   } catch {
     return; // /health недоступний — не турбуємо
   }
   const latest = info?.version;
-  if (!latest || !semverNewer(latest, PLUGIN_VERSION)) return;
+  if (!latest || !newerVersion(PLUGIN_VERSION, latest)) return;
   if (state.lastUpdateNotice === latest) return; // про цю версію вже казали
   state.lastUpdateNotice = latest;
   let sessionID;
