@@ -117,14 +117,14 @@ const RETRY_DELAYS = [20, 50, 100, 200, 400];
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 
 /**
- * Writes JSON so that a reader never sees half of it: a temporary file, then a rename. On Windows a reader (the
- * agent manager) may hold the file for a moment, so EPERM / EACCES / EBUSY are tried again a few times.
+ * Writes text so that a reader never sees half of it: a temporary file, then a rename. On Windows a reader (the
+ * agent manager, an MCP client) may hold the file for a moment, so EPERM / EACCES / EBUSY are tried again a few times.
  */
-export function atomicJSON(file, data) {
+export function atomicWrite(file, text, { mode = 0o600 } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`;
   for (const op of [
-    () => fs.writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600, flush: true }),
+    () => fs.writeFileSync(temp, text, { mode, flush: true }),
     () => fs.renameSync(temp, file),
   ]) {
     for (let attempt = 0; ; attempt++) {
@@ -142,6 +142,11 @@ export function atomicJSON(file, data) {
       }
     }
   }
+}
+
+/** JSON written through `atomicWrite` (a status file: private, durable and never half-written). */
+export function atomicJSON(file, data) {
+  atomicWrite(file, JSON.stringify(data, null, 2));
 }
 
 /** The adapter's state for the agent manager: `<runtime>/status.json` (runtime is the agent's `.aichat` folder). */

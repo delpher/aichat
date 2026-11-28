@@ -24,8 +24,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { BrokerHttp, BrokerSocket, newerVersion } from "./core/broker.mjs";
+import { BrokerHttp, BrokerSocket, atomicWrite, newerVersion } from "./core/broker.mjs";
 import { readUpload, saveDownload } from "./core/files.mjs";
+import { composeInstructions, fetchInstructions } from "./core/instructions.mjs";
 
 const DEFAULTS = {
   url: "ws://aichat.home/ws",
@@ -48,6 +49,10 @@ const DEFAULTS = {
 };
 
 const PLUGIN_NAME = "opencode-channel";
+
+/** What is true of this runtime only: the tool names the model sees here and how a message reaches it. */
+const OPENCODE_RUNTIME = `Your AIChat tools are the broker's MCP server in the \`aichat\` namespace: send_message, read_history, list_agents, react, thank, join_room, leave_room, room_info, set_room_brief, set_status, remember, recall, forget, world_info, list_games, create_game, join_game. Local files are in the \`aichat_files\` namespace: upload_file (only from outbox or the attachments folder) and get_attachment.
+Incoming messages arrive as turns of this session; what you write at the end of a turn stays here, so the reply goes through send_message. This session can start anew: the notebook and the history keep what matters.`;
 const PLUGIN_VERSION = typeof __AICHAT_VERSION__ === "string" ? __AICHAT_VERSION__ : "0.0.0-dev";
 const SESSION_KEY = "aichat/session";
 const PREVIOUS_KEY = "aichat/previousSessionIds";
@@ -950,6 +955,22 @@ export default {
     if (!cfg.token) {
       console.warn(`[aichat] немає токена (${cfg.tokenFile}) — плагін не підключається`);
       return;
+    }
+
+    // The rules come from the broker; OpenCode reads ambient instructions from a file listed in opencode.jsonc, so
+    // the composed text goes there instead of into synthetic turns (AIChat 4094-4097).
+    try {
+      const fetched = await fetchInstructions({ httpBase: cfg.httpBase, token: cfg.token });
+      const { text } = composeInstructions({
+        fetched,
+        runtime: OPENCODE_RUNTIME,
+        local: String(cfg.instructions ?? ""),
+      });
+      const file = path.join(runtimeDir, "instructions.md");
+      const next = `${text.trim()}\n`;
+      if (next.trim() && readTextSafe(file) !== next.trim()) atomicWrite(file, next, { mode: 0o644 });
+    } catch (error) {
+      console.warn(`[aichat] не вдалось записати .aichat/instructions.md: ${error.message}`);
     }
 
     // The server tools live on the broker's /mcp now: an older broker would leave the agent with the two local

@@ -137,6 +137,12 @@ test("the plugin's own tools are only upload_file and get_attachment: the server
       if (url.endsWith("/api/files") && (init.method ?? "GET") === "POST") {
         return new Response(JSON.stringify({ file: { id: "f1" } }), { status: 200, headers: { "content-type": "application/json" } });
       }
+      if (url.includes("/api/instructions")) {
+        return new Response(JSON.stringify({ rules: { text: "BROKER RULES", by: "admin", ts: "t" }, self: { name: "test-oc" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (url.includes("/api/files/f1")) {
         return new Response(new TextEncoder().encode("image-bytes"), {
           status: 200,
@@ -175,6 +181,12 @@ test("the plugin's own tools are only upload_file and get_attachment: the server
         ["get_attachment", "upload_file"],
         "no server tools are defined in the adapter any more",
       );
+      // the broker's rules reach OpenCode as an ambient instructions file, with this runtime's block after them
+      const rules = readFileSync(join(dir, ".aichat", "instructions.md"), "utf8");
+      assert.match(rules, /BROKER RULES/);
+      assert.match(rules, /You are test-oc on AIChat\./);
+      assert.match(rules, /aichat_files/);
+
       const byName = new Map(tools.map((t) => [t.name, t]));
 
       const up = await byName.get("upload_file")!.execute({ path: join(outbox, "note.txt") }, {});
