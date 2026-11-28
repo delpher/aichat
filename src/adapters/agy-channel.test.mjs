@@ -29,7 +29,6 @@ import {
   mimeFor,
   nameFromDisposition,
   parseConsoleCommand,
-  safeUploadPath,
   sanitizeTerminal,
   summarizeToolCall,
   validateMode,
@@ -178,23 +177,28 @@ test("addDirs: extra workspace folders go to agy acp as --add-dir, never ones ho
   assert.throws(write({ addDirs: [path.join(os.homedir(), ".gemini", "config")] }), /must not contain/);
 });
 
-test("safeUploadPath permits outbox and blocks secrets/profile/escapes", (t) => {
+test("upload_file via core/files permits outbox and blocks secrets/profile/escapes", async (t) => {
   const { root, agentDir, cfg } = makeTempEnv(t);
+  const http = new FakeHttp("tok-guard");
+  http.responses.set("/api/files", () => ({ file: { id: "file-ok-1", name: "report.txt", size: 5 } }));
+
   const okFile = path.join(agentDir, "outbox", "report.txt");
   fs.writeFileSync(okFile, "hello", "utf8");
-  assert.equal(safeUploadPath(cfg, okFile).real, fs.realpathSync(okFile));
+  const okRes = JSON.parse(await callTool(cfg, "upload_file", { path: okFile }, http));
+  assert.equal(okRes.file_id, "file-ok-1");
+  assert.equal(http.calls.at(-1).opts.headers["Content-Type"], "text/plain");
 
   const secretInOutbox = path.join(agentDir, "outbox", "my-token.txt");
   fs.writeFileSync(secretInOutbox, "nope", "utf8");
-  assert.throws(() => safeUploadPath(cfg, secretInOutbox), /private\/profile/);
+  await assert.rejects(() => callTool(cfg, "upload_file", { path: secretInOutbox }, http), /private file/);
 
   const outsideFile = path.join(root, "outside.txt");
   fs.writeFileSync(outsideFile, "nope", "utf8");
-  assert.throws(() => safeUploadPath(cfg, outsideFile), /only permits outbox/);
+  await assert.rejects(() => callTool(cfg, "upload_file", { path: outsideFile }, http), /outside the upload folders/);
 
   const stateFile = path.join(agentDir, ".aichat", "state.json");
   fs.writeFileSync(stateFile, "{}", "utf8");
-  assert.throws(() => safeUploadPath(cfg, stateFile), /private\/profile/);
+  await assert.rejects(() => callTool(cfg, "upload_file", { path: stateFile }, http), /private file/);
 });
 
 test("State handles enqueue, dedupe, TTL, capacity, and receipt compaction", (t) => {
@@ -613,7 +617,7 @@ test("Local MCP exposes only upload_file and get_attachment (with Content-Dispos
   // Refuses files outside outbox/tempFiles
   const outsideFile = path.join(root, "nope.txt");
   fs.writeFileSync(outsideFile, "secret", "utf8");
-  await assert.rejects(() => callTool(cfg, "upload_file", { path: outsideFile }, http), /only permits outbox/);
+  await assert.rejects(() => callTool(cfg, "upload_file", { path: outsideFile }, http), /outside the upload folders/);
 
   // 2. get_attachment parses Content-Disposition (RFC 5987 & plain) and preserves extension
   assert.equal(nameFromDisposition("attachment; filename*=UTF-8''%D0%B7%D0%B2%D1%96%D1%82.pdf"), "звіт.pdf");
@@ -1496,8 +1500,8 @@ test("Console /pause keeps WS open while pausing broker drain, allows local prom
   // Simulate an open WS connection and track close/ack calls
   let wsClosed = false;
   ch.connected = true;
-  ch.ready = true;
-  ch.socket = { readyState: 1, close: () => (wsClosed = true), send: () => {} };
+  ch.broker.ready = true;
+  ch.broker.socket = { readyState: 1, close: () => (wsClosed = true), send: () => {} };
   const acked = [];
   ch.acknowledge = (id) => {
     acked.push(id);
@@ -1906,7 +1910,7 @@ test("Runtime /pause allows WebSocket reconnect after disconnect while keeping b
   });
 
   // Initial connect (wsAllowed = true because cfg.paused = false)
-  ch.reconnectDelay = 30;
+  ch.broker.delay = 30;
   ch.connect();
   assert.equal(sockets.length, 1);
 
@@ -1917,14 +1921,14 @@ test("Runtime /pause allows WebSocket reconnect after disconnect while keeping b
 
   // Simulate sudden WebSocket drop while paused -> reconnect timer MUST open a second socket!
   sockets[0].emit("close", { code: 1006 });
-  assert.equal(ch.socket, null);
+  assert.equal(ch.broker.socket, null);
   await waitFor(() => sockets.length === 2);
   assert.equal(ch.runtimePaused, true);
 
   // Drop again with long backoff, then /resume -> clears backoff timer and connects immediately!
-  ch.reconnectDelay = 30000;
+  ch.broker.delay = 30000;
   sockets[1].emit("close", { code: 1006 });
-  assert.equal(ch.socket, null);
+  assert.equal(ch.broker.socket, null);
   ui.handleLine("/resume");
   assert.equal(sockets.length, 3);
   assert.equal(ch.runtimePaused, false);
@@ -2121,12 +2125,17 @@ test("Lifecycle contract: session policy, .aichat/fresh, previousSessionIds, del
   assert.equal(sockets[0].sent[0].client.surface, "terminal");
   assert.equal(sockets[0].sent[0].client.start, "resumed");
   // Reconnect preserves start="resumed"
-  chRes.reconnectDelay = 20;
+  chRes.broker.delay = 20;
   sockets[0].emit("close", { code: 1006 });
   await waitFor(() => sockets.length === 2);
   sockets[1].emit("open");
   assert.equal(sockets[1].sent[0].client.surface, "terminal");
   assert.equal(sockets[1].sent[0].client.start, "resumed");
+  // Token rejection (4003) halts Channel without reconnecting
+  sockets[1].emit("close", { code: 4003 });
+  assert.equal(chRes.halted, true);
+  assert.equal(chRes.status.phase, "halted");
+  assert.equal(sockets.length, 2);
   await chRes.stop();
 
   // 2. .aichat/fresh failure safety: if session/new fails, marker and old sessionId MUST remain intact
@@ -2222,7 +2231,7 @@ test("Channel.stop sends idle before closing WebSocket and removes .aichat/stop 
 
   const ch = new Channel(cfg, { rpc, http, store });
   await ch.start({ probe: true });
-  ch.socket = {
+  ch.broker.socket = {
     close() {
       events.push("ws_close");
     },
