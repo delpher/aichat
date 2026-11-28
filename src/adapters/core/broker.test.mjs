@@ -179,6 +179,15 @@ async function fakeHttp(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+test("BrokerSocket: a URL the WebSocket refuses ends it through onFatal, not a throw from start()", (t) => {
+  let fatal;
+  const s = new BrokerSocket({ url: "http//not a url", auth: () => ({}), onFrame: async () => {}, onFatal: (e) => (fatal = e) });
+  t.after(() => s.stop());
+  assert.doesNotThrow(() => s.start());
+  assert.match(fatal.message, /cannot open http\/\/not a url/);
+  assert.equal(s.halted, true);
+});
+
 test("BrokerHttp: bearer, JSON both ways, 204, and errors sorted into definite / uncertain", async (t) => {
   const seen = [];
   const base = await fakeHttp(t, (req, res) => {
