@@ -121,6 +121,8 @@ function writeStatus(ctx, cfg, state) {
     sessionID: state.sessionID || null,
     // what the session really runs on, so the manager can show it next to what was configured
     ...(model ? { model } : {}),
+    // where each part of the model's instructions came from, for the manager (AIChat 4102)
+    ...(Array.isArray(state.instructionParts) && state.instructionParts.length ? { instructions: state.instructionParts } : {}),
     paused: cfg.paused === true,
     connected: state.connected === true,
     effective: {
@@ -963,11 +965,12 @@ export default {
       const fetched = await fetchInstructions({ httpBase: cfg.httpBase, token: cfg.token });
       // an older broker (no /api/instructions) must not overwrite a file it did not write: keep the previous text
       if (fetched) {
-        const { text } = composeInstructions({
+        const { text, parts } = composeInstructions({
           fetched,
           runtime: OPENCODE_RUNTIME,
           local: String(cfg.instructions ?? ""),
         });
+        state.instructionParts = parts;
         const file = path.join(runtimeDir, "instructions.md");
         const next = `${text.trim()}\n`;
         if (next.trim() && readTextSafe(file) !== next.trim()) atomicWrite(file, next);
