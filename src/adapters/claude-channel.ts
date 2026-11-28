@@ -23,12 +23,13 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, delimiter, join, resolve, sep } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrokerClient } from "../client/broker-client.js";
-import { mimeFor, textWithAttachments } from "../client/attachments.js";
+import { textWithAttachments } from "../client/attachments.js";
+import { readUpload, saveDownload } from "./core/files.mjs";
 import { INLINE_IMAGE_TYPES, type ChatMessage, type ReactionNote } from "../protocol.js";
 import { runInstall } from "./install.js";
 import { buildInstructions, fetchWorld } from "./instructions.js";
@@ -109,9 +110,12 @@ const mcp = new Server(
   },
 );
 
-/** Folders upload_file takes files from: the agent's outbox, the attachments folder, the system temp folder. */
+/**
+ * Folders upload_file takes files from: the agent's outbox and the attachments folder, plus any the person names in
+ * AICHAT_UPLOAD_DIRS. Not the whole temp folder: other programs' files there have ordinary names (codex-alexey, 3947).
+ */
 const OUTBOX = join(process.cwd(), "outbox");
-const UPLOAD_DIRS = [OUTBOX, FILES_DIR, tmpdir(), ...(process.env.AICHAT_UPLOAD_DIRS ?? "").split(delimiter).filter(Boolean)].map((d) =>
+const UPLOAD_DIRS = [OUTBOX, FILES_DIR, ...(process.env.AICHAT_UPLOAD_DIRS ?? "").split(delimiter).filter(Boolean)].map((d) =>
   resolve(d),
 );
 
@@ -120,7 +124,8 @@ const LOCAL_TOOLS = [
     name: "upload_file",
     description:
       "Upload a local file to AIChat and get its file_id, to attach with send_message(attachments=[file_id, ...]). " +
-      `Only files in your outbox folder (${OUTBOX}) or a temporary folder can be uploaded: copy a file there first.`,
+      `Only files in your outbox folder (${OUTBOX}) or the attachments folder (${FILES_DIR}) can be uploaded: copy a file ` +
+      "into the outbox first. Private files (tokens, keys, .env, profiles) are refused.",
     inputSchema: { type: "object" as const, properties: { path: { type: "string", description: "Local path of the file" } }, required: ["path"] },
   },
   {
@@ -143,24 +148,10 @@ const reactionLine = (notes: ReactionNote[]) =>
         .join("; ")}]`
     : "";
 
-/** Is `path` inside one of the upload folders, once links are resolved? */
-async function uploadable(path: string): Promise<boolean> {
-  const real = await realpath(path);
-  for (const dir of UPLOAD_DIRS) {
-    const root = await realpath(dir).catch(() => undefined);
-    if (root && real.startsWith(root.endsWith(sep) ? root : root + sep)) return true;
-  }
-  return false;
-}
-
+/** The shared rule (core/files.mjs): inside the upload folders, nothing private, no hard links, size limit. */
 async function uploadFile(p: unknown): Promise<string> {
-  if (typeof p !== "string" || !p) throw new Error("path is required");
-  const path = resolve(p);
-  if (!(await stat(path)).isFile()) throw new Error(`not a file: ${p}`);
-  if (!(await uploadable(path)))
-    throw new Error(`${p} is outside the upload folders (${UPLOAD_DIRS.join(", ")}): copy it to your outbox or a temporary folder first`);
-  const name = basename(path);
-  const f = await client.upload(await readFile(path), name, mimeFor(name));
+  const { bytes, name, mime } = readUpload({ path: p, roots: UPLOAD_DIRS, blocked: [process.env.AICHAT_TOKEN_FILE] });
+  const f = await client.upload(bytes, name, mime);
   return `uploaded ${f.name} (${f.size} bytes): file_id ${f.id}`;
 }
 
@@ -169,18 +160,6 @@ const known = new Map<string, { name: string; mime: string }>();
 const remember = (m: ChatMessage) => {
   for (const f of m.attachments ?? []) known.set(f.id, f);
 };
-
-/** The file name the broker sent (Content-Disposition), else the one an incoming message gave, else the id. */
-function fileName(disposition: string | null, id: string): string {
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition ?? "")?.[1];
-  let name: string | undefined;
-  try {
-    name = star ? decodeURIComponent(star) : undefined;
-  } catch {
-    name = undefined;
-  }
-  return (name || known.get(id)?.name || id).replace(/[\\/:*?"<>|]/g, "_");
-}
 
 async function getAttachment(raw: unknown) {
   const id = String(raw ?? "");
@@ -191,12 +170,15 @@ async function getAttachment(raw: unknown) {
     throw new Error(body.error ?? `download failed: HTTP ${r.status}`);
   }
   const data = Buffer.from(await r.arrayBuffer());
-  const name = fileName(r.headers.get("content-disposition"), id);
   const mime = (r.headers.get("content-type") ?? "").split(";")[0].trim();
   const image = INLINE_IMAGE_TYPES.includes(mime) ? mime : known.get(id)?.mime;
-  await mkdir(FILES_DIR, { recursive: true });
-  const path = join(FILES_DIR, `${id}-${name}`);
-  await writeFile(path, data);
+  const { path, name } = saveDownload({
+    dir: FILES_DIR,
+    id,
+    disposition: r.headers.get("content-disposition"),
+    fallback: known.get(id)?.name,
+    bytes: data,
+  });
   const note = { type: "text" as const, text: `saved ${name} (${data.length} bytes) to ${path}` };
   if (image && INLINE_IMAGE_TYPES.includes(image) && data.length <= MAX_INLINE_IMAGE)
     return { content: [{ type: "image" as const, data: data.toString("base64"), mimeType: image }, note] };
