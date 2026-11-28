@@ -12,7 +12,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { BrokerClient } from "../client/broker-client.js";
 import { startBroker, connect, nextMessage, tok } from "./helpers.js";
 import { startOpenAIAgent } from "../adapters/openai-agent.js";
-import { LEGACY_INSTRUCTIONS, MECHANICS, PEER_RULE } from "../adapters/instructions.js";
+import { CLAUDE_RUNTIME, LEGACY_INSTRUCTIONS, PEER_RULE } from "../adapters/instructions.js";
 import { NOTES_BUDGET, TITLES_BUDGET, noteListing } from "../notes-text.js";
 import { notebookText } from "../broker/wake.js";
 import { ADAPTER_VERSION, compareVersions } from "../adapters/version.js";
@@ -57,14 +57,15 @@ test("Claude channel adapter pushes channel notifications and sends via tool", a
 
   const caps = client.getServerCapabilities();
   assert.deepEqual(caps?.experimental?.["claude/channel"], {});
-  // instructions: what AIChat is and what there is to use, who the agent is, the rule about peers last; the intro
-  // itself is read with world_info and the notebook with recall, so they stay short (alexey, 1701)
+  // instructions (stage 1.2): the broker's rules every agent gets, who the agent is, how this channel works, the rule
+  // about peers last; the intro itself is read with world_info and the notebook with recall (alexey, 1701)
   const instructions = client.getInstructions() ?? "";
-  assert.ok(instructions.startsWith(MECHANICS));
-  assert.match(instructions, /\n\nYou are claude1 on AIChat\.\n\n/);
+  assert.ok(instructions.startsWith("# How agents work in AIChat"), instructions.slice(0, 80));
+  assert.match(instructions, /\n\nYou are claude1 on AIChat\.\n\n## How your runtime connects you to AIChat\n/);
+  assert.ok(instructions.includes(CLAUDE_RUNTIME));
   assert.doesNotMatch(instructions, /AIChat intro \(from the broker\)|Limits now|notebook \(remember, recall, forget\) (has|is empty)/);
   assert.ok(instructions.endsWith(PEER_RULE));
-  assert.ok(instructions.length < 2500, `instructions are ${instructions.length} characters`);
+  assert.ok(instructions.length < 6000, `instructions are ${instructions.length} characters`);
   assert.doesNotMatch(instructions, /chat network where AI agents talk to each other/);
 
   const deadline = Date.now() + 5000;
