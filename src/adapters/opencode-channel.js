@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { BrokerSocket } from "./core/broker.mjs";
 import { readUpload, saveDownload } from "./core/files.mjs";
 
 const DEFAULTS = {
@@ -116,7 +117,7 @@ function writeStatus(ctx, cfg, state) {
     // what the session really runs on, so the manager can show it next to what was configured
     ...(model ? { model } : {}),
     paused: cfg.paused === true,
-    connected: Boolean(state.ws),
+    connected: state.connected === true,
     effective: {
       // OpenCode's plugin runs inside the OpenCode server, which has no sandbox of its own: be explicit, not reassuring.
       sandbox: false,
@@ -742,24 +743,8 @@ function followActivity(ctx, cfg, state) {
 }
 
 function startChannel(ctx, cfg, state) {
-  let stopped = false;
-  let attempt = 0;
-  let timer = null;
-  let socket = null;
-  let heartbeatTimer = null;
   let retryTimer = null;
-  let lastSeen = 0;
-  let gen = 0;
   const session = state.processSession;
-
-  const schedule = (connect) => {
-    if (stopped) return;
-    if (timer) clearTimeout(timer);
-    attempt += 1;
-    const delay = Math.min(1000 * 2 ** (attempt - 1), 30_000);
-    timer = setTimeout(connect, delay);
-    timer.unref?.();
-  };
 
   // усі ін'єкції та повтори — через один ланцюжок, щоб не зламати порядок повідомлень
   const enqueue = (task) => {
@@ -769,31 +754,9 @@ function startChannel(ctx, cfg, state) {
     return state.queue;
   };
 
-  const stopHeartbeat = () => {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-  };
-
-  // генеруємо нове покоління, щоб обробники старого сокета більше не спрацьовували
-  const forceReconnect = () => {
-    if (stopped) return;
-    gen += 1;
-    stopHeartbeat();
-    state.ws = null;
-    writeStatus(ctx, cfg, state);
-    try {
-      socket?.close();
-    } catch {
-      // вже закритий
-    }
-    schedule(connect);
-  };
-
   // останній рубіж для тих, що не вдалось вкласти навіть synthetic: пробуємо ще раз
   const flushPending = async () => {
-    if (stopped || !state.pending.length) return;
+    if (!state.pending.length) return;
     const items = state.pending;
     state.pending = [];
     for (const item of items) {
@@ -831,93 +794,6 @@ function startChannel(ctx, cfg, state) {
   }, 15_000);
   retryTimer.unref?.();
 
-  const connect = () => {
-    if (stopped || !cfg.token) return;
-    const myGen = ++gen;
-    const isCurrent = () => myGen === gen && !stopped;
-
-    let sock;
-    try {
-      sock = new WebSocket(cfg.url);
-    } catch (error) {
-      console.warn(`[aichat] не можу відкрити ${cfg.url}: ${error.message}`);
-      schedule(connect);
-      return;
-    }
-    socket = sock;
-    state.ws = {
-      send(frame) {
-        try {
-          if (sock.readyState === 1) {
-            sock.send(JSON.stringify(frame));
-            return true;
-          }
-        } catch {
-          // сокет закрився між перевіркою й відправкою
-        }
-        return false;
-      },
-    };
-
-    sock.addEventListener("open", () => {
-      if (!isCurrent()) return;
-      attempt = 0;
-      lastSeen = Date.now();
-      stopHeartbeat();
-      // Брокер шле WS-ping, і вбудований WebSocket відповідає на нього сам — плагін
-      // тих кадрів не бачить. Тому власний app-level ping: якщо 75 с немає жодного
-      // кадру від брокера, з'єднання вважаємо півмертвим і перепідключаємось.
-      heartbeatTimer = setInterval(() => {
-        if (stopped || !isCurrent()) return;
-        if (Date.now() - lastSeen > 75_000) {
-          console.warn("[aichat] немає кадрів 75 с — перепідключаюсь");
-          forceReconnect();
-          return;
-        }
-        state.ws?.send({ type: "ping" });
-      }, 30_000);
-      heartbeatTimer.unref?.();
-      sock.send(
-        JSON.stringify({
-          type: "auth",
-          token: cfg.token,
-          client: { name: PLUGIN_NAME, version: PLUGIN_VERSION, surface: "server", start: state.start || "new" },
-          session,
-        }),
-      );
-    });
-
-    sock.addEventListener("message", (event) => {
-      if (!isCurrent()) return;
-      lastSeen = Date.now();
-      let frame;
-      try {
-        frame = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
-      } catch {
-        return;
-      }
-      handleFrame(frame);
-    });
-
-    sock.addEventListener("close", (event) => {
-      if (!isCurrent()) return;
-      state.ws = null;
-      writeStatus(ctx, cfg, state);
-      stopHeartbeat();
-      if (stopped) return;
-      if (event.code === 4003) {
-        stopped = true;
-        console.warn("[aichat] брокер відкинув токен (4003) — реконект не повторюю");
-        return;
-      }
-      schedule(connect);
-    });
-
-    sock.addEventListener("error", () => {
-      // причину дасть close
-    });
-  };
-
   const handleFrame = (frame) => {
     switch (frame?.type) {
       case "welcome":
@@ -925,7 +801,6 @@ function startChannel(ctx, cfg, state) {
         state.rooms = Array.isArray(frame.rooms)
           ? frame.rooms.map((r) => String(r).replace(/^#/, ""))
           : state.rooms;
-        writeStatus(ctx, cfg, state);
         for (const room of cfg.rooms) state.ws?.send({ type: "join", room });
         // дошлемо ✓✓, які не пішли, бо сокета не було
         for (const id of [...(state.undelivered ?? [])]) ackDelivery(state, id);
@@ -950,19 +825,40 @@ function startChannel(ctx, cfg, state) {
     }
   };
 
-  connect();
+  // The connection itself (auth, welcome, heartbeat, reconnect, a rejected token) is the shared core; what a frame
+  // means for the model stays here (AIChat 3963).
+  const socket = new BrokerSocket({
+    url: cfg.url,
+    auth: () => ({
+      token: cfg.token,
+      client: { name: PLUGIN_NAME, version: PLUGIN_VERSION, surface: "server", start: state.start || "new" },
+      session,
+    }),
+    onFrame: handleFrame,
+    onPhase: (phase) => {
+      state.connected = phase === "connected";
+      if (phase === "halted") console.warn("[aichat] брокер відкинув токен (4003) — реконект не повторюю");
+      writeStatus(ctx, cfg, state);
+    },
+    onFatal: (error) => {
+      console.warn(`[aichat] кадр не оброблено — канал зупинено: ${error?.message ?? error}`);
+      state.connected = false;
+      writeStatus(ctx, cfg, state);
+    },
+    log: (event) => {
+      if (event === "auth_timeout") console.warn("[aichat] брокер не відповів на auth за 10 с — перепідключаюсь");
+      else if (event === "heartbeat_timeout") console.warn("[aichat] немає кадрів 75 с — перепідключаюсь");
+    },
+  });
+  state.ws = { send: (frame) => socket.send(frame) };
+  socket.start();
+
   return () => {
-    stopped = true;
-    gen += 1;
-    if (timer) clearTimeout(timer);
-    stopHeartbeat();
-    if (retryTimer) clearInterval(retryTimer);
+    clearInterval(retryTimer);
+    socket.stop();
+    state.connected = false;
     state.ws = null;
-    try {
-      socket?.close();
-    } catch {
-      // вже закритий
-    }
+    writeStatus(ctx, cfg, state);
   };
 }
 
