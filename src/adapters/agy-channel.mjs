@@ -2656,8 +2656,8 @@ class Channel {
     this.engine?.setPaused(this.runtimePaused);
     this.log(this.runtimePaused ? "runtime_paused" : "runtime_resumed", { connected: this.connected });
     if (!this.runtimePaused) {
-      clearTimeout(this.broker.reconnectTimer);
-      this.broker.delay = this.broker.firstDelayMs;
+      // back from a pause: reconnect now with the delay started over, not after the backoff it reached meanwhile
+      this.broker.retryNow();
       if (this.wsAllowed && !this.connected && !this.broker.socket && !this.stopping && !this.halted) {
         this.connect();
       }
